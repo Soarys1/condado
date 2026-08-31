@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Cinzel", "Palatino Linotype", Palatino, serif;
+  --font-sans: "Source Serif 4", "Iowan Old Style", "Palatino Linotype", serif;
+  --font-body: "Source Serif 4", "Iowan Old Style", Palatino, serif;
+
+  --color-ink: #1c1814;
+  --color-ink-2: #2a241c;
+  --color-panel: #241e18;
+  --color-panel-2: #2f2820;
+  --color-parchment: #e6d5b3;
+  --color-parchment-dim: #cbb892;
+  --color-moss: #5a6b48;
+  --color-moss-2: #6b8f4a;
+  --color-niens: #c9a227;
+  --color-gold: #d4b060;
+  --color-bread: #c49a5a;
+  --color-iron: #8b3a2a;
+  --color-line: color-mix(in oklab, #e6d5b3 16%, transparent);
+  --color-line-strong: color-mix(in oklab, #e6d5b3 28%, transparent);
+
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 28px;
+
+  --shadow-panel: 0 18px 40px rgba(8, 6, 4, 0.45);
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: #3d4a30;
+    color: var(--color-parchment);
+    font-family: var(--font-body);
+    overflow: hidden;
+  }
+
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.panel {
+  background: linear-gradient(180deg, #2c261e 0%, #1f1a15 100%);
+  border: 1px solid var(--color-line-strong);
+  box-shadow: var(--shadow-panel);
+}
+
+.gold-text {
+  color: var(--color-niens);
+}
