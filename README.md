@@ -7,11 +7,17 @@ Tema rústico em vista isométrica 3/4, otimizado para **celular e desktop**.
 ## Como jogar
 
 1. Constrói minas (ouro) e fazendas (pão). Recolhe quando a bolha aparecer.
-2. Treina infantaria, arqueiros, cavalaria, general e generala no quartel.
-3. Ataca bases inimigas. Tropas só derrubam muros se precisarem abrir caminho.
-4. Recua a qualquer momento — os soldados vivos voltam.
-5. Envia Niens, ouro e pão para outros jogadores pelo ID (aba Mercado).
-6. Muda o teu nome na aba **Perfil**. O ID é único e imutável.
+2. O **nível do Condado** limita o nível de todas as estruturas. Só avanças com full construção.
+3. Treina infantaria, arqueiros, cavalaria, defensores da guilda, general e generala.
+4. Evolui tropas no **Campo de Treino** com ouro, pão e cartas.
+5. Ataca bases inimigas. Tropas só derrubam muros se precisarem abrir caminho. Toque uma construção durante o ataque para focar.
+6. Recua a qualquer momento — os soldados vivos voltam. O saque é **só ouro**, teto 8.400.
+7. **Niens** são gemas raras. Não se saqueiam. Compram-se por 450.000 ouro e vendem-se por 150.000.
+8. Envia Niens, ouro, pão e cartas pelo ID (cola o ID, vê o nick, escolhe o envio).
+9. Muros retos (I) ou deitados (—). Gira com a seta. Toque 3 vezes para mover. Fileira inteira selecionável. Limite 200 + 55 por nível.
+10. **Passe de Batalha**: dia 1 de cada mês, 30 dias (fevereiro 27). 50 níveis.
+11. **Alianças**: 5 milhões para fundar. Guerra sábado 8h–23h de Brasília. Pares de alianças; ímpar espera.
+12. Se te atacam online, só assistes. Depois, 1 hora de escudo.
 
 ## Rodar localmente
 
@@ -33,23 +39,23 @@ A trilha **não é um MP3**. É gerada em tempo real (Web Audio API) em:
 
 [`src/lib/game/audio.ts`](src/lib/game/audio.ts)
 
+Três modos, sem drone grave contínuo:
+
 | O quê | Onde | Efeito |
 |---|---|---|
-| Melodia da vila | `VILLAGE_FLUTE` | Notas em Hz. `0` = pausa |
-| Melodia da batalha | `BATTLE_FLUTE` | Toca em raid / preparação |
-| Velocidade | `bpm` em `schedule()` | Vila `74`, batalha `116` |
-| Volume da música | `music.gain.value` | `0.0` a `1.0` |
-| Drone grave | `ensureDrone()` | Fundo contínuo |
+| Vila — flauta | `VILLAGE_FLUTE` | Melodia original |
+| Vila — alaúde | `VILLAGE_LUTE` | Segunda voz do condado |
+| Batalha | `BATTLE_FLUTE` + `BATTLE_HARMONY` | Raid / preparação |
+| Guerra de aliança | `WAR_HORN` + `WAR_FIFTH` | Sábado 8h–23h BRT |
+| Velocidade | `bpm` em `schedule()` | Vila 72, guerra 108, batalha 128 |
 
-Efeitos (clique, flecha, espada, coleta) ficam no mesmo arquivo, **acima** das melodias. Não precisa mexer neles para trocar só a trilha.
-
-Para usar um MP3 de verdade: coloca `public/game/village.mp3` e `public/game/battle.mp3` e troca o sequencer por `new Audio("/game/village.mp3")` no `setMusicMode`.
+Efeitos (clique, flecha, coleta, recuo) ficam no mesmo arquivo, **acima** das melodias.
 
 ## Estrutura
 
 ```
 src/lib/game/          regras, batalha, render, áudio, save
-src/components/game/   UI (HUD, folhas, perfil, mercado)
+src/components/game/   UI (HUD, folhas, perfil, mercado, passe, aliança)
 public/game/           sprites e texturas
 ```
 

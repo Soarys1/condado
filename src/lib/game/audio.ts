@@ -3,12 +3,19 @@ let master: GainNode | null = null;
 let music: GainNode | null = null;
 let sfx: GainNode | null = null;
 let muted = false;
-let musicMode: "off" | "village" | "battle" = "off";
+export type MusicMode = "off" | "village" | "battle" | "war";
+let musicMode: MusicMode = "off";
 let nextBeat = 0;
 let beatN = 0;
 let timer: number | null = null;
-let drone: OscillatorNode | null = null;
-let droneGain: GainNode | null = null;
+
+type AudioBag = { ctx: AudioContext; timer: number | null };
+const bag = globalThis as typeof globalThis & { __condadoAudio?: AudioBag };
+if (bag.__condadoAudio) {
+  if (bag.__condadoAudio.timer != null) window.clearTimeout(bag.__condadoAudio.timer);
+  void bag.__condadoAudio.ctx.close();
+  bag.__condadoAudio = undefined;
+}
 
 export function unlockAudio() {
   if (!ctx) {
@@ -18,11 +25,12 @@ export function unlockAudio() {
     music = ctx.createGain();
     sfx = ctx.createGain();
     master.gain.value = 0.72;
-    music.gain.value = 0.16;
+    music.gain.value = 0.18;
     sfx.gain.value = 0.55;
     music.connect(master);
     sfx.connect(master);
     master.connect(ctx.destination);
+    bag.__condadoAudio = { ctx, timer: null };
   }
   if (ctx.state === "suspended") void ctx.resume();
 }
@@ -137,22 +145,28 @@ function noiseBuf(): AudioBuffer | null {
 
 let noise: AudioBuffer | null = null;
 
-function drum(when: number, kind: "kick" | "stick" | "snare") {
+function drum(when: number, kind: "kick" | "stick" | "snare" | "tom") {
   if (!ctx || !music || muted) return;
   if (!noise) noise = noiseBuf();
   const g = ctx.createGain();
   g.connect(music);
-  if (kind === "kick") {
+  const war = musicMode === "war";
+  const battle = musicMode === "battle";
+  if (kind === "kick" || kind === "tom") {
     const o = ctx.createOscillator();
     o.type = "sine";
-    o.frequency.setValueAtTime(108, when);
-    o.frequency.exponentialRampToValueAtTime(38, when + 0.12);
+    const startF = kind === "tom" ? (war ? 200 : 180) : war ? 78 : 92;
+    const endF = kind === "tom" ? 90 : war ? 36 : 42;
+    const dur = kind === "tom" ? 0.16 : war ? 0.2 : 0.16;
+    const peak = kind === "tom" ? (war ? 0.34 : 0.28) : war ? 0.52 : battle ? 0.48 : 0.28;
+    o.frequency.setValueAtTime(startF, when);
+    o.frequency.exponentialRampToValueAtTime(endF, when + dur);
     g.gain.setValueAtTime(0.0001, when);
-    g.gain.exponentialRampToValueAtTime(0.55, when + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, when + 0.18);
+    g.gain.exponentialRampToValueAtTime(peak, when + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
     o.connect(g);
     o.start(when);
-    o.stop(when + 0.2);
+    o.stop(when + dur + 0.02);
     o.onended = () => {
       o.disconnect();
       g.disconnect();
@@ -164,12 +178,14 @@ function drum(when: number, kind: "kick" | "stick" | "snare") {
   src.buffer = noise;
   const f = ctx.createBiquadFilter();
   f.type = kind === "snare" ? "highpass" : "bandpass";
-  f.frequency.value = kind === "snare" ? 1800 : 900;
+  f.frequency.value = kind === "snare" ? 1800 : 1100;
   src.connect(f);
   f.connect(g);
+  const peak = kind === "snare" ? (war ? 0.32 : battle ? 0.28 : 0.12) : war ? 0.14 : 0.1;
+  const tail = kind === "snare" ? 0.13 : 0.06;
   g.gain.setValueAtTime(0.0001, when);
-  g.gain.exponentialRampToValueAtTime(kind === "snare" ? 0.22 : 0.12, when + 0.008);
-  g.gain.exponentialRampToValueAtTime(0.0001, when + (kind === "snare" ? 0.14 : 0.07));
+  g.gain.exponentialRampToValueAtTime(peak, when + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + tail);
   src.start(when);
   src.stop(when + 0.16);
   src.onended = () => {
@@ -184,8 +200,8 @@ function flute(when: number, freq: number, dur: number, peak = 0.11) {
   const g = ctx.createGain();
   g.connect(music);
   g.gain.setValueAtTime(0.0001, when);
-  g.gain.exponentialRampToValueAtTime(peak, when + 0.05);
-  g.gain.setValueAtTime(peak * 0.85, when + dur * 0.55);
+  g.gain.exponentialRampToValueAtTime(peak, when + 0.04);
+  g.gain.setValueAtTime(peak * 0.82, when + dur * 0.6);
   g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
 
   const o = ctx.createOscillator();
@@ -193,13 +209,13 @@ function flute(when: number, freq: number, dur: number, peak = 0.11) {
   o.frequency.setValueAtTime(freq, when);
   const o2 = ctx.createOscillator();
   o2.type = "triangle";
-  o2.frequency.setValueAtTime(freq * 2.01, when);
+  o2.frequency.setValueAtTime(freq * 2, when);
   const g2 = ctx.createGain();
-  g2.gain.value = 0.18;
+  g2.gain.value = musicMode === "battle" ? 0.12 : 0.08;
   const vib = ctx.createOscillator();
-  vib.frequency.value = 5.2;
+  vib.frequency.value = musicMode === "battle" ? 6.4 : 4.8;
   const vg = ctx.createGain();
-  vg.gain.value = freq * 0.006;
+  vg.gain.value = freq * (musicMode === "battle" ? 0.008 : 0.005);
   vib.connect(vg);
   vg.connect(o.frequency);
   o.connect(g);
@@ -221,54 +237,164 @@ function flute(when: number, freq: number, dur: number, peak = 0.11) {
   };
 }
 
-// D dorian-ish: grave, low, normal, high
+/** Plucked lute for the county — second village voice besides the flute. */
+function lute(when: number, freq: number, dur: number, peak = 0.07) {
+  if (!ctx || !music || muted || freq <= 0) return;
+  const g = ctx.createGain();
+  g.connect(music);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(peak, when + 0.008);
+  g.gain.exponentialRampToValueAtTime(peak * 0.35, when + 0.09);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+
+  const o = ctx.createOscillator();
+  o.type = "triangle";
+  o.frequency.setValueAtTime(freq, when);
+  o.frequency.exponentialRampToValueAtTime(freq * 0.985, when + dur);
+  const o2 = ctx.createOscillator();
+  o2.type = "sine";
+  o2.frequency.setValueAtTime(freq * 2.002, when);
+  const g2 = ctx.createGain();
+  g2.gain.value = 0.18;
+  o.connect(g);
+  o2.connect(g2);
+  g2.connect(g);
+  o.start(when);
+  o2.start(when);
+  o.stop(when + dur + 0.02);
+  o2.stop(when + dur + 0.02);
+  o.onended = () => {
+    o.disconnect();
+    o2.disconnect();
+    g.disconnect();
+    g2.disconnect();
+  };
+}
+
+/** Brass horn for Saturday alliance war. */
+function horn(when: number, freq: number, dur: number, peak = 0.11) {
+  if (!ctx || !music || muted || freq <= 0) return;
+  const g = ctx.createGain();
+  g.connect(music);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(peak, when + 0.05);
+  g.gain.setValueAtTime(peak * 0.75, when + dur * 0.55);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+
+  const o = ctx.createOscillator();
+  o.type = "sawtooth";
+  o.frequency.setValueAtTime(freq, when);
+  const o2 = ctx.createOscillator();
+  o2.type = "square";
+  o2.frequency.setValueAtTime(freq * 0.5, when);
+  const g2 = ctx.createGain();
+  g2.gain.value = 0.22;
+  const f = ctx.createBiquadFilter();
+  f.type = "lowpass";
+  f.frequency.setValueAtTime(900, when);
+  f.frequency.linearRampToValueAtTime(1400, when + dur * 0.4);
+  o.connect(f);
+  o2.connect(g2);
+  g2.connect(f);
+  f.connect(g);
+  o.start(when);
+  o2.start(when);
+  o.stop(when + dur + 0.02);
+  o2.stop(when + dur + 0.02);
+  o.onended = () => {
+    o.disconnect();
+    o2.disconnect();
+    f.disconnect();
+    g.disconnect();
+    g2.disconnect();
+  };
+}
+
+// D dorian, only mid/high flute — no continuous bass drone
 const VILLAGE_FLUTE = [
-  146.83, 0, 220.0, 0, 196.0, 220.0, 261.63, 0, 293.66, 0, 349.23, 329.63, 293.66, 0, 220.0, 0, 440.0, 392.0, 349.23,
-  329.63, 293.66, 0, 440.0, 392.0, 293.66, 220.0, 196.0, 0, 146.83, 0, 110.0, 0,
+  220.0, 0, 246.94, 261.63, 293.66, 0, 329.63, 293.66, 261.63, 246.94, 220.0, 0, 293.66, 349.23, 392.0, 0, 440.0, 392.0,
+  349.23, 329.63, 293.66, 0, 261.63, 246.94, 220.0, 196.0, 220.0, 0, 329.63, 293.66, 246.94, 220.0,
+];
+
+const VILLAGE_LUTE = [
+  146.83, 220.0, 293.66, 220.0, 174.61, 220.0, 261.63, 220.0, 146.83, 196.0, 246.94, 196.0, 174.61, 220.0, 293.66, 349.23,
+  146.83, 220.0, 261.63, 220.0, 196.0, 246.94, 293.66, 246.94, 146.83, 174.61, 220.0, 174.61, 130.81, 196.0, 246.94, 220.0,
 ];
 
 const BATTLE_FLUTE = [
-  146.83, 174.61, 196.0, 0, 220.0, 196.0, 174.61, 146.83, 293.66, 0, 261.63, 220.0, 196.0, 0, 146.83, 110.0, 329.63,
-  293.66, 0, 246.94, 220.0, 0, 196.0, 146.83, 110.0, 146.83, 174.61, 196.0, 220.0, 0, 146.83, 0,
+  293.66, 349.23, 392.0, 440.0, 466.16, 440.0, 392.0, 349.23, 293.66, 349.23, 440.0, 0, 523.25, 466.16, 392.0, 349.23,
+  440.0, 466.16, 523.25, 587.33, 523.25, 466.16, 392.0, 0, 349.23, 392.0, 440.0, 349.23, 293.66, 233.08, 293.66, 349.23,
+  392.0, 440.0, 587.33, 523.25, 466.16, 440.0, 392.0, 349.23, 293.66, 0, 440.0, 392.0, 349.23, 293.66, 246.94, 293.66,
 ];
 
-function ensureDrone() {
-  if (!ctx || !music || drone) return;
-  const o = ctx.createOscillator();
-  o.type = "sine";
-  o.frequency.value = 73.4;
-  const o2 = ctx.createOscillator();
-  o2.type = "triangle";
-  o2.frequency.value = 110;
-  const g = ctx.createGain();
-  g.gain.value = 0.22;
-  o.connect(g);
-  o2.connect(g);
-  g.connect(music);
-  o.start();
-  o2.start();
-  drone = o;
-  droneGain = g;
-}
+const BATTLE_HARMONY = [
+  220.0, 261.63, 293.66, 329.63, 349.23, 329.63, 293.66, 261.63, 220.0, 261.63, 329.63, 0, 392.0, 349.23, 293.66, 261.63,
+  329.63, 349.23, 392.0, 440.0, 392.0, 349.23, 293.66, 0, 261.63, 293.66, 329.63, 261.63, 220.0, 174.61, 220.0, 261.63,
+  293.66, 329.63, 440.0, 392.0, 349.23, 329.63, 293.66, 261.63, 220.0, 0, 329.63, 293.66, 261.63, 220.0, 196.0, 220.0,
+];
+
+const WAR_HORN = [
+  146.83, 0, 174.61, 196.0, 220.0, 196.0, 174.61, 0, 146.83, 174.61, 220.0, 0, 293.66, 261.63, 220.0, 196.0, 174.61, 196.0,
+  220.0, 246.94, 220.0, 196.0, 174.61, 0, 146.83, 174.61, 196.0, 146.83, 130.81, 110.0, 146.83, 174.61,
+];
+
+const WAR_FIFTH = [
+  220.0, 0, 261.63, 293.66, 329.63, 293.66, 261.63, 0, 220.0, 261.63, 329.63, 0, 440.0, 392.0, 329.63, 293.66, 261.63,
+  293.66, 329.63, 349.23, 329.63, 293.66, 261.63, 0, 220.0, 261.63, 293.66, 220.0, 196.0, 164.81, 220.0, 261.63,
+];
 
 function schedule() {
   if (!ctx || musicMode === "off") return;
   const now = ctx.currentTime;
-  const bpm = musicMode === "battle" ? 116 : 74;
+  const battle = musicMode === "battle";
+  const war = musicMode === "war";
+  const bpm = war ? 108 : battle ? 128 : 72;
   const eighth = 60 / bpm / 2;
-  const melody = musicMode === "battle" ? BATTLE_FLUTE : VILLAGE_FLUTE;
-  while (nextBeat < now + 0.4) {
-    const i = beatN % melody.length;
-    const freq = melody[i]!;
-    if (freq > 0) {
-      const long = freq < 160 ? eighth * 1.8 : eighth * 1.35;
-      const peak = freq < 160 ? 0.13 : freq > 380 ? 0.09 : 0.11;
-      flute(nextBeat, freq, long, musicMode === "battle" ? peak * 0.75 : peak);
-    }
+  while (nextBeat < now + 0.45) {
     const step = beatN % 8;
-    if (step === 0 || step === 4) drum(nextBeat, "kick");
-    else if (step === 2 || step === 6) drum(nextBeat, "stick");
-    if (musicMode === "battle" && (step === 1 || step === 5)) drum(nextBeat, "snare");
+    if (war) {
+      const i = beatN % WAR_HORN.length;
+      const freq = WAR_HORN[i]!;
+      if (freq > 0) {
+        horn(nextBeat, freq, eighth * 1.55, freq < 160 ? 0.12 : 0.1);
+        const fifth = WAR_FIFTH[i] ?? 0;
+        if (fifth > 0) horn(nextBeat, fifth, eighth * 1.35, 0.045);
+      }
+      if (step === 0 || step === 4) drum(nextBeat, "kick");
+      if (step === 2 || step === 6) drum(nextBeat, "tom");
+      if (step === 4 || step === 7) drum(nextBeat, "snare");
+      if (step === 1 || step === 5) drum(nextBeat, "stick");
+    } else if (battle) {
+      const i = beatN % BATTLE_FLUTE.length;
+      const freq = BATTLE_FLUTE[i]!;
+      if (freq > 0) {
+        const long = eighth * 1.15;
+        const peak = freq > 480 ? 0.11 : 0.13;
+        flute(nextBeat, freq, long, peak);
+        const h = BATTLE_HARMONY[i] ?? 0;
+        if (h > 0) flute(nextBeat, h, long * 0.95, peak * 0.45);
+      }
+      if (step === 0 || step === 3) drum(nextBeat, "kick");
+      if (step === 4) drum(nextBeat, "tom");
+      if (step === 2 || step === 6) drum(nextBeat, "stick");
+      if (step === 4 || step === 7) drum(nextBeat, "snare");
+      if (step === 1) drum(nextBeat, "stick");
+    } else {
+      const i = beatN % VILLAGE_FLUTE.length;
+      const freq = VILLAGE_FLUTE[i]!;
+      if (freq > 0) {
+        const long = freq < 200 ? eighth * 1.7 : eighth * 1.4;
+        const peak = freq > 380 ? 0.1 : 0.13;
+        flute(nextBeat, freq, long, peak);
+      }
+      const luteFreq = VILLAGE_LUTE[i] ?? 0;
+      if (luteFreq > 0 && (step === 0 || step === 2 || step === 4 || step === 6)) {
+        lute(nextBeat, luteFreq, eighth * 1.8, 0.055);
+      }
+      if (step === 0) drum(nextBeat, "kick");
+      if (step === 4) drum(nextBeat, "stick");
+      if (step === 6 && beatN % 16 === 6) drum(nextBeat, "stick");
+    }
     nextBeat += eighth;
     beatN += 1;
   }
@@ -278,9 +404,10 @@ function pump() {
   if (musicMode === "off") return;
   schedule();
   timer = window.setTimeout(pump, 90);
+  if (bag.__condadoAudio) bag.__condadoAudio.timer = timer;
 }
 
-export function setMusicMode(mode: "off" | "village" | "battle") {
+export function setMusicMode(mode: MusicMode) {
   if (!ctx) unlockAudio();
   if (musicMode === mode) return;
   musicMode = mode;
@@ -289,15 +416,8 @@ export function setMusicMode(mode: "off" | "village" | "battle") {
     timer = null;
   }
   if (mode === "off") return;
-  ensureDrone();
-  if (drone && ctx) {
-    const f = mode === "battle" ? 98 : 73.4;
-    drone.frequency.setTargetAtTime(f, ctx.currentTime, 0.2);
-  }
-  if (droneGain && ctx) {
-    droneGain.gain.setTargetAtTime(mode === "battle" ? 0.32 : 0.2, ctx.currentTime, 0.2);
-  }
   nextBeat = ctx ? ctx.currentTime + 0.05 : 0;
+  beatN = 0;
   pump();
 }
 
@@ -305,7 +425,7 @@ export function startDrone() {
   setMusicMode("village");
 }
 
-export function startMusic(mode: "village" | "battle" = "village") {
+export function startMusic(mode: MusicMode = "village") {
   setMusicMode(mode);
 }
 

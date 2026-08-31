@@ -1,11 +1,13 @@
-import type { BuildingType, ResourceKind, TroopType } from "./constants";
+import type { BuildingType, ResourceKind, TroopType, WallDir } from "./constants";
 
 export type GameScreen =
   | "splash"
   | "village"
   | "raid"
+  | "march"
   | "prep"
   | "battle"
+  | "spectate"
   | "results";
 
 export interface BuildingInst {
@@ -15,6 +17,7 @@ export interface BuildingInst {
   gy: number;
   level: number;
   lastCollect?: number;
+  dir?: WallDir;
 }
 
 export interface ArmyCounts {
@@ -23,6 +26,16 @@ export interface ArmyCounts {
   cavalry: number;
   general: number;
   generaless: number;
+  defender: number;
+}
+
+export interface TroopLevels {
+  infantry: number;
+  archers: number;
+  cavalry: number;
+  general: number;
+  generaless: number;
+  defender: number;
 }
 
 export interface TrainingJob {
@@ -38,6 +51,7 @@ export interface ChatMsg {
   text: string;
   at: number;
   self?: boolean;
+  channel?: "global" | "alliance";
 }
 
 export interface RaidLog {
@@ -64,6 +78,7 @@ export interface Lord {
   rank: number;
   lootGold: number;
   lootBread: number;
+  allianceId?: string;
 }
 
 export interface PlayerProfile {
@@ -72,25 +87,74 @@ export interface PlayerProfile {
   createdAt: number;
 }
 
+export interface BattlePassState {
+  season: string;
+  purchased: boolean;
+  stars: number;
+  claimed: number[];
+}
+
+export interface AllianceState {
+  id: string;
+  name: string;
+  members: Array<{ id: string; nick: string }>;
+}
+
+export interface WarState {
+  week: string;
+  foeId: string | null;
+  foeName: string;
+  chest: number;
+  ourStars: number;
+  theirStars: number;
+  attacks: Record<string, number>;
+  sittingOut: boolean;
+  resolved: boolean;
+}
+
 export interface SaveState {
   version: number;
   player: PlayerProfile;
   gold: number;
   bread: number;
   niens: number;
+  troopCards: number;
+  generalCards: number;
+  countyLevel: number;
+  campLevel: number;
+  troopLevels: TroopLevels;
   buildings: BuildingInst[];
   army: ArmyCounts;
   training: TrainingJob[];
   lastTick: number;
   tutorial: boolean;
   chat: ChatMsg[];
+  allianceChat: ChatMsg[];
   raids: RaidLog[];
   stars: number;
   raidsWon: number;
   muted: boolean;
+  shieldUntil: number;
+  referredBy: string | null;
+  referralClaimed: boolean;
+  inviteCopied: boolean;
+  pass: BattlePassState;
+  alliance: AllianceState | null;
+  war: WarState | null;
 }
 
-export type SheetId = "build" | "army" | "attack" | "chat" | "market" | "info" | "profile" | null;
+export type SheetId =
+  | "build"
+  | "army"
+  | "attack"
+  | "chat"
+  | "market"
+  | "info"
+  | "profile"
+  | "pass"
+  | "alliance"
+  | "train"
+  | null;
 
 export interface SelectedCell {
   gx: number;
@@ -102,6 +166,7 @@ export interface PlaceGhost {
   gx: number;
   gy: number;
   valid: boolean;
+  dir?: WallDir;
 }
 
 export type TransferKind = ResourceKind;

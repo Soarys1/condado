@@ -9,6 +9,7 @@ import {
   troopAsset,
   type BuildingType,
   type TroopType,
+  type WallDir,
 } from "./constants";
 import { clampCam, diamond, iso, isEdgeTile, tileCenter, worldToGrid } from "./iso";
 import { getAsset, loadAssets } from "./assets";
@@ -32,8 +33,9 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
   const ctx = canvas.getContext("2d");
   if (!ctx) return { destroy() {} };
 
-  const cam: Cam = { x: 0, y: 0, z: 0.78 };
-  const castle = tileCenter(10, 10, 3);
+  const cam: Cam = { x: 0, y: 0, z: 0.72 };
+  const home = useGame.getState().buildings.find((b) => b.type === "castle");
+  const castle = tileCenter(home?.gx ?? 14, home?.gy ?? 14, 3);
   cam.x = castle.x;
   cam.y = castle.y;
 
@@ -88,13 +90,15 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
   function spriteScale(type: BuildingType): number {
     switch (type) {
       case "wall":
-        return 1.0;
+        return 1.08;
       case "watchtower":
-        return 1.42;
+        return 1.38;
       case "castle":
         return 0.84;
       case "catapult":
         return 0.88;
+      case "training":
+        return 0.82;
       default:
         return 0.78;
     }
@@ -120,7 +124,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
     if (s.screen === "village" || s.screen === "prep" || s.placing) drawGrid(s.screen === "prep");
     drawDecor();
 
-    const layout = battle && (s.screen === "prep" || s.screen === "battle" || s.screen === "results")
+    const layout = battle && (s.screen === "prep" || s.screen === "battle" || s.screen === "results" || s.screen === "spectate")
       ? battle.buildings.map((b) => ({
           id: b.id,
           type: b.type,
@@ -130,6 +134,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
           hp: b.hp,
           maxHp: b.maxHp,
           alive: b.alive,
+          dir: b.dir,
         }))
       : s.buildings.map((b) => ({
           id: b.id,
@@ -140,6 +145,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
           hp: buildingHp(b.type, b.level),
           maxHp: buildingHp(b.type, b.level),
           alive: true,
+          dir: b.dir,
         }));
 
     const sprites: DrawItem[] = [];
@@ -159,7 +165,11 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
     }
     sprites.sort((a, b) => a.y - b.y);
     for (const it of sprites) {
-      if (it.kind === "b" && it.b) drawBuilding(it.b, s.selectedId === it.b.id, s.screen !== "village");
+      if (it.kind === "b" && it.b) {
+        const selected = s.selectedId === it.b.id || s.selectedRow.includes(it.b.id);
+        const focused = !!battle && battle.focusId === it.b.id;
+        drawBuilding(it.b, selected, s.screen !== "village", focused);
+      }
       if (it.kind === "rubble" && it.b) drawRubble(it.b);
       if (it.kind === "t" && it.t) drawTroop(it.t);
     }
@@ -173,7 +183,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       }
     }
 
-    if (s.ghost && s.placing) drawGhost(s.ghost.type, s.ghost.gx, s.ghost.gy, s.ghost.valid);
+    if (s.ghost && s.placing) drawGhost(s.ghost.type, s.ghost.gx, s.ghost.gy, s.ghost.valid, s.ghost.dir);
 
     if (battle) {
       for (const p of battle.projectiles) drawProj(p);
@@ -212,6 +222,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       hp: number;
       maxHp: number;
       alive: boolean;
+      dir?: WallDir;
     };
     t?: { type: TroopType; x: number; y: number; hp: number; maxHp: number; facing: number };
   };
@@ -331,9 +342,11 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       hp: number;
       maxHp: number;
       alive: boolean;
+      dir?: WallDir;
     },
     selected: boolean,
     showHp: boolean,
+    focused = false,
   ) {
     const def = BUILDINGS[b.type];
     const c = tileCenter(b.gx, b.gy, def.size);
@@ -347,7 +360,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
     ctx!.ellipse(c.x, c.y + TILE_H * 0.12, footprint * 0.26, footprint * 0.1, 0, 0, Math.PI * 2);
     ctx!.fill();
 
-    if (selected) {
+    if (selected || focused) {
       const d = diamond(b.gx, b.gy, def.size);
       ctx!.beginPath();
       ctx!.moveTo(d.t.x, d.t.y);
@@ -355,22 +368,25 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       ctx!.lineTo(d.b.x, d.b.y);
       ctx!.lineTo(d.l.x, d.l.y);
       ctx!.closePath();
-      ctx!.fillStyle = "rgba(198, 162, 62, 0.22)";
+      ctx!.fillStyle = focused ? "rgba(180, 60, 40, 0.28)" : "rgba(198, 162, 62, 0.22)";
       ctx!.fill();
-      ctx!.strokeStyle = "#c9a227";
-      ctx!.lineWidth = 1.6;
+      ctx!.strokeStyle = focused ? "#c45a2a" : "#c9a227";
+      ctx!.lineWidth = focused ? 2.2 : 1.6;
       ctx!.stroke();
     }
 
-    const img = getAsset(b.type);
-    const plant = TILE_H * (b.type === "watchtower" ? 0.42 : 0.62);
+    const key = b.type === "wall" ? (b.dir === "v" ? "wall_v" : "wall_h") : b.type;
+    const img = getAsset(key);
+    const plant =
+      TILE_H *
+      (b.type === "watchtower" ? 0.36 : b.type === "wall" ? (b.dir === "v" ? 0.18 : 0.28) : 0.52);
     if (img) {
       const ratio = img.naturalHeight / img.naturalWidth;
-      const dw = footprint;
+      const dw = b.type === "wall" && b.dir === "v" ? footprint * 0.72 : footprint;
       const dh = dw * ratio;
       ctx!.drawImage(img, c.x - dw / 2, c.y - dh + plant, dw, dh);
     } else {
-      proceduralBuilding(b.type, c.x, c.y, def.size);
+      proceduralBuilding(b.type, c.x, c.y, def.size, b.dir);
     }
 
     if (showHp && b.alive) {
@@ -508,7 +524,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
     ctx!.restore();
   }
 
-  function drawGhost(type: BuildingType, gx: number, gy: number, valid: boolean) {
+  function drawGhost(type: BuildingType, gx: number, gy: number, valid: boolean, dir?: WallDir) {
     const def = BUILDINGS[type];
     const d = diamond(gx, gy, def.size);
     ctx!.beginPath();
@@ -523,14 +539,27 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
     ctx!.stroke();
     ctx!.globalAlpha = 0.55;
     drawBuilding(
-      { id: "ghost", type, gx, gy, level: 1, hp: 1, maxHp: 1, alive: true },
+      { id: "ghost", type, gx, gy, level: 1, hp: 1, maxHp: 1, alive: true, dir },
       false,
       false,
     );
     ctx!.globalAlpha = 1;
   }
 
-  function proceduralBuilding(type: BuildingType, x: number, y: number, size: number) {
+  function proceduralBuilding(type: BuildingType, x: number, y: number, size: number, dir?: WallDir) {
+    if (type === "wall") {
+      ctx!.fillStyle = "#6a5a48";
+      if (dir === "v") {
+        ctx!.fillRect(x - 6, y - 28, 12, 32);
+        ctx!.fillStyle = "#4a3e32";
+        ctx!.fillRect(x - 7, y - 30, 14, 4);
+      } else {
+        ctx!.fillRect(x - 18, y - 14, 36, 16);
+        ctx!.fillStyle = "#4a3e32";
+        ctx!.fillRect(x - 18, y - 16, 36, 3);
+      }
+      return;
+    }
     const w0 = size * 22;
     const h0 = size * 28;
     ctx!.fillStyle = type === "farm" ? "#6b5a3a" : type === "mine" ? "#4a4638" : "#3a3530";
@@ -563,9 +592,9 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       const s = useGame.getState();
       while (acc >= 1 / 60) {
         acc -= 1 / 60;
-        if (battle && (s.screen === "prep" || s.screen === "battle")) {
+        if (battle && (s.screen === "prep" || s.screen === "battle" || s.screen === "spectate")) {
           battle.tick(1 / 60);
-          if (battle.phase === "ended" && s.screen === "battle") {
+          if (battle.phase === "ended" && (s.screen === "battle" || s.screen === "spectate")) {
             useGame.getState().finishBattle();
           }
           if (battle.phase === "fight" && s.screen === "prep") {
@@ -653,6 +682,15 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       st.deploy(gx, gy);
       return;
     }
+    if (st.screen === "battle" && battle && !battle.spectator) {
+      const hit = battleHit(world.x, world.y);
+      if (hit && hit.type !== "wall") {
+        st.setFocus(hit.id);
+        st.setToast("Tropas próximas focam este alvo.");
+      }
+      return;
+    }
+    if (st.screen === "spectate") return;
     if (st.placing) {
       st.confirmPlace(g.gx, g.gy);
       return;
@@ -665,8 +703,25 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       return;
     }
     const hit = hitAt(st.buildings, world.x, world.y);
-    if (hit) st.selectBuilding(hit.id);
-    else st.selectBuilding(null);
+    if (hit) st.noteTap(hit.id);
+    else {
+      st.selectBuilding(null);
+      useGame.setState({ selectedRow: [] });
+    }
+  }
+
+  function battleHit(wx: number, wy: number): { id: string; type: BuildingType } | null {
+    if (!battle) return null;
+    const list = [...battle.buildings].sort((a, b) => b.cy - a.cy);
+    for (const b of list) {
+      if (!b.alive) continue;
+      const def = BUILDINGS[b.type];
+      const c = tileCenter(b.gx, b.gy, def.size);
+      const dw = def.size * TILE_W * 0.42;
+      const dh = def.size * TILE_H * 1.35;
+      if (wx > c.x - dw && wx < c.x + dw && wy > c.y - dh && wy < c.y + TILE_H * 0.35) return b;
+    }
+    return null;
   }
 
   function bubbleAt(buildings: BuildingInst[], wx: number, wy: number): BuildingInst | null {
@@ -705,11 +760,17 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
   }
 
   function onKey(e: KeyboardEvent) {
+    const st = useGame.getState();
     if (e.key === "Escape") {
-      const st = useGame.getState();
       st.cancelPlace();
+      st.cancelMove();
       st.setSheet(null);
       st.selectBuilding(null);
+      useGame.setState({ selectedRow: [] });
+    }
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "r" || e.key === "R") {
+      if (st.placing === "wall") st.flipPlacingDir();
+      else if (st.selectedId) st.rotateWall(st.selectedId);
     }
   }
 

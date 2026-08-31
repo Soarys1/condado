@@ -1,18 +1,45 @@
 import { create } from "zustand";
 import {
+  ALLIANCE_FOUND_GOLD,
   BUILDINGS,
+  COUNTY_MAX,
+  DEFENDER_COST,
+  GENERAL_MAX_LEVEL,
+  GENERAL_UNLOCK_COUNTY,
+  LOOT_CAP,
+  NIEN_COST_GOLD,
+  NIEN_SELL_GOLD,
+  PASS_LEVELS,
+  PASS_STARS_PER_LEVEL,
+  REFERRAL_GOLD,
+  SHIELD_MS,
+  SPEED_TRAIN_GOLD,
   TROOPS,
   armyCapacity,
+  campUpgradeGold,
+  countyUpgradeCost,
+  defenderCap,
+  generalCardsFor,
   isHero,
+  passCostNiens,
+  passReward,
+  passSeasonKey,
+  passWindow,
   productionPerSec,
   storageCap,
+  troopCardsFor,
+  troopUpgradeBread,
+  troopUpgradeGold,
   upgradeCost,
+  wallCap,
+  warWindow,
   type BuildingType,
   type ResourceKind,
   type TroopType,
+  type WallDir,
 } from "./constants";
 import { Battle } from "./battle";
-import { findLord, LORDS, marketBoard, randomChat } from "./bots";
+import { botArmy, findLord, findNick, LORDS, lordsOfAlliance, marketBoard, pairWar, randomChat, warChest } from "./bots";
 import { defaultSave, loadSave, persist, wipeSave } from "./save";
 import type {
   BuildingInst,
@@ -25,12 +52,13 @@ import type {
   SheetId,
   TrainingJob,
 } from "./types";
-import { canPlace, countType, generateBase, nid, snapPlace } from "./world";
-import { sfxBuild, sfxClick, sfxCoin, sfxError, sfxStar } from "./audio";
+import { canPlace, canPlaceWall, countType, generateBase, nid, snapPlace, wallRow } from "./world";
+import { sfxBuild, sfxClick, sfxCoin, sfxError, sfxHorn, sfxStar } from "./audio";
 
 export let battle: Battle | null = null;
 export let raidTarget: Lord | null = null;
 let lastPersist = 0;
+let lastIncomingAt = 0;
 
 function applyTraining(s: SaveState, dtMs: number) {
   const army = { ...s.army };
@@ -54,8 +82,13 @@ interface GameStore extends SaveState {
   toast: string | null;
   offers: MarketOffer[];
   nickDraft: string;
+  placingDir: WallDir;
+  movingId: string | null;
+  selectedRow: string[];
+  marchLord: Lord | null;
+  lookup: { id: string; nick: string } | null;
   hydrate: () => void;
-  startGame: (nick: string) => void;
+  startGame: (nick: string, referredBy?: string) => void;
   resetGame: () => void;
   tick: (now: number) => void;
   setSheet: (s: SheetId) => void;
@@ -80,18 +113,36 @@ interface GameStore extends SaveState {
   finishBattle: () => void;
   sendChat: (text: string) => void;
   buyOffer: (id: string) => boolean;
-  sellGold: () => boolean;
-  sellBread: () => boolean;
+  buyNien: () => boolean;
+  sellNien: () => boolean;
   transfer: (toId: string, amount: number, kind: ResourceKind) => boolean;
+  peekId: (id: string) => void;
   rename: (nick: string) => boolean;
   setToast: (t: string | null) => void;
   storedOf: (b: BuildingInst, now?: number) => number;
   returnVillage: () => void;
+  rotateWall: (id: string) => void;
+  selectWallRow: (id: string) => void;
+  noteTap: (id: string) => void;
+  cancelMove: () => void;
+  upgradeCounty: () => boolean;
+  upgradeTroop: (type: TroopType) => boolean;
+  upgradeCamp: () => boolean;
+  recruitDefender: () => boolean;
+  buyPass: () => boolean;
+  claimPass: (level: number) => boolean;
+  foundAlliance: (name: string) => boolean;
+  sendAllianceChat: (text: string) => void;
+  setFocus: (id: string | null) => void;
+  finishMarch: () => void;
+  copyInvite: () => void;
+  flipPlacingDir: () => void;
+  beginIncoming: (lord?: Lord) => void;
 }
 
 function armySize(s: SaveState): number {
   const a = s.army;
-  return a.infantry + a.archers + a.cavalry + a.general + a.generaless + s.training.length;
+  return a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender + s.training.length;
 }
 
 function producerKind(t: BuildingType): "gold" | "bread" | null {
@@ -119,20 +170,55 @@ export const useGame = create<GameStore>((set, get) => ({
   toast: null,
   offers: marketBoard(),
   nickDraft: "",
+  placingDir: "h",
+  movingId: null,
+  selectedRow: [],
+  marchLord: null,
+  lookup: null,
 
   hydrate: () => {
     const loaded = loadSave();
     if (loaded) {
       const now = Date.now();
       const training = applyTraining(loaded, Math.min(8 * 3600_000, Math.max(0, now - loaded.lastTick)));
+      let gold = loaded.gold;
+      let shieldUntil = loaded.shieldUntil;
+      let raids = loaded.raids;
+      if (
+        now - loaded.lastTick > 10 * 60_000 &&
+        now > (loaded.shieldUntil || 0) &&
+        now - loaded.player.createdAt > 90_000
+      ) {
+        const lost = Math.min(LOOT_CAP, Math.max(400, Math.floor(loaded.gold * 0.04)));
+        gold = Math.max(0, gold - lost);
+        shieldUntil = now + SHIELD_MS;
+        raids = [
+          {
+            id: nid("r"),
+            at: now,
+            attacker: LORDS[Math.floor(Math.random() * LORDS.length)]!.nick,
+            gold: lost,
+            bread: 0,
+            incoming: true,
+          },
+          ...raids,
+        ].slice(0, 12);
+      }
       set({
         ...loaded,
+        gold,
+        shieldUntil,
+        raids,
         army: training.army,
         training: training.jobs,
         lastTick: now,
         hydrated: true,
         screen: "village",
         nickDraft: loaded.player.nick,
+        placingDir: "h",
+        movingId: null,
+        selectedRow: [],
+        marchLord: null,
       });
       persist({ ...get() });
     } else {
@@ -140,8 +226,8 @@ export const useGame = create<GameStore>((set, get) => ({
     }
   },
 
-  startGame: (nick) => {
-    const s = defaultSave(nick);
+  startGame: (nick, referredBy) => {
+    const s = defaultSave(nick, referredBy?.trim().toUpperCase() || null);
     persist(s);
     set({ ...s, hydrated: true, screen: "village", sheet: null, nickDraft: s.player.nick });
     sfxClick();
@@ -165,16 +251,102 @@ export const useGame = create<GameStore>((set, get) => ({
     if (Math.random() < dt * 0.05) {
       chat = [...chat.slice(-39), randomChat(now)];
     }
+    const season = passSeasonKey(now).key;
+    let pass = s.pass;
+    if (pass.season !== season) pass = { season, purchased: false, stars: 0, claimed: [] };
+
+    let war = s.war;
+    const win = warWindow(now);
+    const week = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(now));
+    if (win.open && s.alliance) {
+      if (!war || war.week !== week) {
+        const pair = pairWar(s.alliance.id, week);
+        war = {
+          week,
+          foeId: pair.foeId,
+          foeName: pair.foeName,
+          chest: warChest(week + s.alliance.id),
+          ourStars: 0,
+          theirStars: Math.floor(Math.random() * 8),
+          attacks: {},
+          sittingOut: pair.sittingOut,
+          resolved: false,
+        };
+      } else if (!war.sittingOut && Math.random() < dt * 0.02) {
+        war = { ...war, theirStars: war.theirStars + (Math.random() < 0.55 ? 1 : 2) };
+      }
+    }
+
+    let gold = s.gold;
+    let toast: string | null = s.toast;
+    if (war && !win.open && !war.resolved) {
+      const won = !war.sittingOut && war.ourStars > war.theirStars;
+      const members = Math.max(1, s.alliance?.members.length ?? 1);
+      const share = won ? Math.floor(war.chest / members) : 0;
+      gold += share;
+      war = { ...war, resolved: true };
+      toast = won
+        ? `Guerra vencida. +${share.toLocaleString("pt")} ouro do cofre.`
+        : war.sittingOut
+          ? "Sábado ímpar: a aliança ficou de fora."
+          : "Guerra perdida. O cofre ficou com o rival.";
+      chat = [
+        ...chat,
+        {
+          id: nid("m"),
+          fromId: "CDN-HERALDO",
+          fromNick: "Heraldo",
+          text: toast,
+          at: now,
+        },
+      ];
+    }
+
+    let referralClaimed = s.referralClaimed;
+    if (s.inviteCopied && !referralClaimed && now - s.player.createdAt > 8 * 60_000) {
+      gold += REFERRAL_GOLD;
+      referralClaimed = true;
+      chat = [
+        ...chat,
+        {
+          id: nid("m"),
+          fromId: "CDN-HERALDO",
+          fromNick: "Heraldo",
+          text: `Um amigo teu chegou ao nível 3. +${REFERRAL_GOLD.toLocaleString("pt")} ouro (Indique e Ganhe).`,
+          at: now,
+        },
+      ];
+    }
 
     set({
       lastTick: now,
       army: trained.army,
       training: trained.jobs,
       chat,
+      pass,
+      war,
+      gold,
+      referralClaimed,
+      toast,
     });
     if (now - lastPersist > 5000) {
       lastPersist = now;
       persist({ ...get() });
+    }
+
+    if (
+      s.screen === "village" &&
+      !s.placing &&
+      !s.sheet &&
+      now > s.shieldUntil &&
+      now - s.player.createdAt > 90_000 &&
+      now - lastIncomingAt > 180_000 &&
+      Math.random() < dt * 0.004
+    ) {
+      lastIncomingAt = now;
+      const pool = s.war?.foeId ? lordsOfAlliance(s.war.foeId) : LORDS;
+      const lord = (pool.length ? pool : LORDS)[Math.floor(Math.random() * (pool.length || LORDS.length))]!;
+      get().beginIncoming(lord);
     }
   },
 
@@ -187,18 +359,20 @@ export const useGame = create<GameStore>((set, get) => ({
   },
   selectBuilding: (selectedId) =>
     set({ selectedId, sheet: selectedId ? "info" : get().sheet === "info" ? null : get().sheet }),
-  beginPlace: (type) => set({ placing: type, sheet: null, selectedId: null }),
-  cancelPlace: () => set({ placing: null, ghost: null }),
+  beginPlace: (type) => set({ placing: type, sheet: null, selectedId: null, movingId: null }),
+  cancelPlace: () => set({ placing: null, ghost: null, movingId: null }),
 
   hoverPlace: (gx, gy) => {
-    const type = get().placing;
+    const s = get();
+    const type = s.placing;
     if (!type) return;
-    const snapped = snapPlace(get().buildings, type, gx, gy);
+    const snapped = snapPlace(s.buildings, type, gx, gy, s.movingId ?? undefined);
+    const dir = type === "wall" ? s.placingDir : undefined;
     if (!snapped) {
-      set({ ghost: { type, gx: Math.round(gx), gy: Math.round(gy), valid: false } });
+      set({ ghost: { type, gx: Math.round(gx), gy: Math.round(gy), valid: false, dir } });
       return;
     }
-    set({ ghost: { type, gx: snapped.gx, gy: snapped.gy, valid: true } });
+    set({ ghost: { type, gx: snapped.gx, gy: snapped.gy, valid: true, dir } });
   },
 
   confirmPlace: (gx, gy) => {
@@ -206,15 +380,33 @@ export const useGame = create<GameStore>((set, get) => ({
     if (!type) return false;
     const def = BUILDINGS[type];
     const s = get();
+    const ignore = s.movingId ?? undefined;
+    const snapped = snapPlace(s.buildings, type, gx, gy, ignore);
+    if (!snapped || !canPlace(s.buildings, type, snapped.gx, snapped.gy, ignore)) {
+      sfxError();
+      set({ toast: "Não cabe aqui. Deixe espaço entre as construções." });
+      return false;
+    }
+    if (s.movingId) {
+      set({
+        buildings: s.buildings.map((b) => (b.id === s.movingId ? { ...b, gx: snapped.gx, gy: snapped.gy } : b)),
+        movingId: null,
+        placing: null,
+        ghost: null,
+        toast: "Estrutura movida.",
+      });
+      persist({ ...get() });
+      sfxBuild();
+      return true;
+    }
     if (s.gold < def.costGold) {
       sfxError();
       set({ toast: "Ouro insuficiente." });
       return false;
     }
-    const snapped = snapPlace(s.buildings, type, gx, gy);
-    if (!snapped || !canPlace(s.buildings, type, snapped.gx, snapped.gy)) {
+    if (type === "wall" && !canPlaceWall(s.buildings, s.countyLevel)) {
+      set({ toast: `Limite de muros: ${wallCap(s.countyLevel)}.` });
       sfxError();
-      set({ toast: "Não cabe aqui. Deixe espaço entre as construções." });
       return false;
     }
     const b: BuildingInst = {
@@ -224,6 +416,7 @@ export const useGame = create<GameStore>((set, get) => ({
       gy: snapped.gy,
       level: 1,
       lastCollect: Date.now(),
+      dir: type === "wall" ? s.placingDir : undefined,
     };
     const buildings = [...s.buildings, b];
     set({
@@ -291,9 +484,9 @@ export const useGame = create<GameStore>((set, get) => ({
   upgrade: (id) => {
     const s = get();
     const b = s.buildings.find((x) => x.id === id);
-    if (!b || (b.type === "castle" && b.level >= 8)) return false;
-    if (b.level >= 8) {
-      set({ toast: "Nível máximo." });
+    if (!b) return false;
+    if (b.level >= s.countyLevel) {
+      set({ toast: "Limite do condado. Maximize tudo e avance o nível." });
       return false;
     }
     const cost = upgradeCost(b.type, b.level);
@@ -340,6 +533,28 @@ export const useGame = create<GameStore>((set, get) => ({
       sfxError();
       return false;
     }
+    if (type === "defender") {
+      if (countType(s.buildings, "training") < 1) {
+        set({ toast: "Construa o Campo de Treino." });
+        return false;
+      }
+      if (s.army.defender + s.training.filter((t) => t.type === "defender").length >= defenderCap(s.campLevel)) {
+        set({ toast: "Capacidade de defensores no máximo. Melhore o campo." });
+        return false;
+      }
+      if (s.gold < DEFENDER_COST) {
+        set({ toast: "Ouro insuficiente." });
+        return false;
+      }
+      set({
+        gold: s.gold - DEFENDER_COST,
+        training: [...s.training, { id: nid("t"), type, remaining: def.trainMs }],
+        toast: "Recrutando defensor da guilda.",
+      });
+      persist({ ...get() });
+      sfxClick();
+      return true;
+    }
     const cap = armyCapacity(countType(s.buildings, "camp"));
     if (armySize(s) >= cap) {
       set({ toast: "Acampamento lotado. Construa outro." });
@@ -365,14 +580,14 @@ export const useGame = create<GameStore>((set, get) => ({
     const s = get();
     const job = s.training.find((t) => t.id === id);
     if (!job) return false;
-    if (s.niens < 1) {
-      set({ toast: "Precisa de 1 Nien para acelerar." });
+    if (s.gold < SPEED_TRAIN_GOLD) {
+      set({ toast: `Precisa de ${SPEED_TRAIN_GOLD} ouro para acelerar.` });
       return false;
     }
     const army = { ...s.army };
     army[job.type] += 1;
     set({
-      niens: s.niens - 1,
+      gold: s.gold - SPEED_TRAIN_GOLD,
       army,
       training: s.training.filter((t) => t.id !== id),
       toast: `${TROOPS[job.type].name} pronto.`,
@@ -386,31 +601,48 @@ export const useGame = create<GameStore>((set, get) => ({
 
   beginAttack: (lord) => {
     const s = get();
-    const armyN = s.army.infantry + s.army.archers + s.army.cavalry + s.army.general + s.army.generaless;
+    const armyN = armySize(s) - s.training.length;
     if (armyN <= 0) {
       set({ toast: "Sem tropas no acampamento." });
       sfxError();
       return;
     }
+    if (s.war && s.war.foeId && lord.allianceId === s.war.foeId) {
+      const used = s.war.attacks[lord.id] ?? 0;
+      if (used >= 2) {
+        set({ toast: "Anti-farm: no máximo 2 ataques por base nesta guerra." });
+        sfxError();
+        return;
+      }
+    }
+    raidTarget = lord;
+    set({ screen: "march", sheet: null, marchLord: lord });
+    sfxClick();
+  },
+
+  finishMarch: () => {
+    const s = get();
+    const lord = s.marchLord ?? raidTarget;
+    if (!lord) {
+      set({ screen: "village" });
+      return;
+    }
     raidTarget = lord;
     const layout = generateBase(lord.id, lord.rank);
-    battle = new Battle(layout, { ...s.army }, lord.lootGold, lord.lootBread);
+    battle = new Battle(layout, { ...s.army }, lord.lootGold, { levels: s.troopLevels, campLevel: s.campLevel });
     const deployType: TroopType =
       s.army.infantry > 0
         ? "infantry"
         : s.army.archers > 0
           ? "archers"
-          : s.army.cavalry > 0
-            ? "cavalry"
-            : s.army.general > 0
-              ? "general"
-              : "generaless";
-    set({
-      screen: "prep",
-      sheet: null,
-      deployType,
-    });
-    sfxClick();
+          : s.army.defender > 0
+            ? "defender"
+            : s.army.cavalry > 0
+              ? "cavalry"
+              : s.army.general > 0
+                ? "general"
+                : "generaless";
+    set({ screen: "prep", sheet: null, deployType, marchLord: lord });
   },
 
   setDeployType: (deployType) => set({ deployType }),
@@ -429,6 +661,10 @@ export const useGame = create<GameStore>((set, get) => ({
 
   skipPrep: () => {
     if (!battle) return;
+    if (battle.spectator) {
+      set({ screen: "spectate" });
+      return;
+    }
     if (battle.troops.length === 0) {
       set({ toast: "Posicione ao menos uma tropa nas bordas." });
       sfxError();
@@ -455,45 +691,50 @@ export const useGame = create<GameStore>((set, get) => ({
     const r = battle.result;
     const s = get();
     const army = { ...s.army };
-    army.infantry += r.survivors.infantry;
-    army.archers += r.survivors.archers;
-    army.cavalry += r.survivors.cavalry;
-    army.general += r.survivors.general;
-    army.generaless += r.survivors.generaless;
-    const incoming =
-      Math.random() < 0.35
-        ? {
-            id: nid("r"),
-            at: Date.now(),
-            attacker: raidTarget.nick,
-            gold: Math.floor(s.gold * 0.04),
-            bread: Math.floor(s.bread * 0.03),
-            incoming: true as const,
-          }
-        : null;
+    if (!battle.spectator) {
+      army.infantry += r.survivors.infantry;
+      army.archers += r.survivors.archers;
+      army.cavalry += r.survivors.cavalry;
+      army.general += r.survivors.general;
+      army.generaless += r.survivors.generaless;
+      army.defender += r.survivors.defender;
+    }
+    const pass = s.pass.purchased ? { ...s.pass, stars: s.pass.stars + (battle.spectator ? 0 : r.stars) } : s.pass;
+    let war = s.war;
+    if (!battle.spectator && war && raidTarget.allianceId && raidTarget.allianceId === war.foeId && !war.sittingOut) {
+      const used = (war.attacks[raidTarget.id] ?? 0) + 1;
+      war = {
+        ...war,
+        ourStars: war.ourStars + r.stars,
+        attacks: { ...war.attacks, [raidTarget.id]: used },
+      };
+    }
+    const stolen = battle.spectator ? r.gold : 0;
     set({
       army,
-      gold: Math.max(0, s.gold + r.gold - (incoming?.gold ?? 0)),
-      bread: Math.max(0, s.bread + r.bread - (incoming?.bread ?? 0)),
-      niens: s.niens + r.niens,
-      stars: s.stars + r.stars,
-      raidsWon: s.raidsWon + (r.stars > 0 ? 1 : 0),
+      gold: Math.max(0, s.gold + (battle.spectator ? 0 : r.gold) - stolen),
+      bread: s.bread,
+      niens: s.niens,
+      stars: s.stars + (battle.spectator ? 0 : r.stars),
+      raidsWon: s.raidsWon + (r.stars > 0 && !battle.spectator ? 1 : 0),
+      shieldUntil: battle.spectator ? Date.now() + SHIELD_MS : s.shieldUntil,
+      pass,
+      war,
       raids: [
         {
           id: nid("r"),
           at: Date.now(),
-          attacker: s.player.nick,
+          attacker: battle.spectator ? raidTarget.nick : s.player.nick,
           gold: r.gold,
-          bread: r.bread,
-          incoming: false,
+          bread: 0,
+          incoming: !!battle.spectator,
         },
-        ...(incoming ? [incoming] : []),
         ...s.raids,
       ].slice(0, 12),
       screen: "results",
     });
     persist({ ...get() });
-    if (r.stars > 0) sfxStar();
+    if (r.stars > 0 && !battle.spectator) sfxStar();
   },
 
   sendChat: (text) => {
@@ -555,25 +796,31 @@ export const useGame = create<GameStore>((set, get) => ({
     return true;
   },
 
-  sellGold: () => {
+  buyNien: () => {
     const s = get();
-    if (s.gold < 1000) {
-      set({ toast: "Precisa de 1000 ouro." });
+    if (s.gold < NIEN_COST_GOLD) {
+      set({ toast: `Precisa de ${NIEN_COST_GOLD.toLocaleString("pt")} ouro.` });
+      sfxError();
       return false;
     }
-    set({ gold: s.gold - 1000, niens: s.niens + 1, toast: "+1 Nien" });
+    set({ gold: s.gold - NIEN_COST_GOLD, niens: s.niens + 1, toast: "+1 Nien. Gema selada." });
     persist({ ...get() });
     sfxCoin();
     return true;
   },
 
-  sellBread: () => {
+  sellNien: () => {
     const s = get();
-    if (s.bread < 1000) {
-      set({ toast: "Precisa de 1000 pão." });
+    if (s.niens < 1) {
+      set({ toast: "Sem Niens para vender." });
+      sfxError();
       return false;
     }
-    set({ bread: s.bread - 1000, niens: s.niens + 1, toast: "+1 Nien" });
+    set({
+      niens: s.niens - 1,
+      gold: s.gold + NIEN_SELL_GOLD,
+      toast: `+${NIEN_SELL_GOLD.toLocaleString("pt")} ouro.`,
+    });
     persist({ ...get() });
     sfxCoin();
     return true;
@@ -582,7 +829,16 @@ export const useGame = create<GameStore>((set, get) => ({
   transfer: (toId, amount, kind) => {
     const s = get();
     const n = Math.floor(amount);
-    const pool = kind === "niens" ? s.niens : kind === "gold" ? s.gold : s.bread;
+    const pool =
+      kind === "niens"
+        ? s.niens
+        : kind === "gold"
+          ? s.gold
+          : kind === "bread"
+            ? s.bread
+            : kind === "troopCards"
+              ? s.troopCards
+              : s.generalCards;
     if (n <= 0 || n > pool) {
       set({ toast: "Quantia inválida." });
       sfxError();
@@ -592,20 +848,35 @@ export const useGame = create<GameStore>((set, get) => ({
       set({ toast: "Não envie para si mesmo." });
       return false;
     }
+    const nick = findNick(toId) ?? findLord(toId)?.nick;
+    if (!nick) {
+      set({ toast: "ID não encontrado. Cole e confira o nick." });
+      sfxError();
+      return false;
+    }
     const lord = findLord(toId);
-    const label = kind === "niens" ? "Niens" : kind === "gold" ? "ouro" : "pão";
+    const label =
+      kind === "niens" ? "Niens" : kind === "gold" ? "ouro" : kind === "bread" ? "pão" : kind === "troopCards" ? "cartas de tropa" : "cartas de general";
     const patch =
-      kind === "niens" ? { niens: s.niens - n } : kind === "gold" ? { gold: s.gold - n } : { bread: s.bread - n };
+      kind === "niens"
+        ? { niens: s.niens - n }
+        : kind === "gold"
+          ? { gold: s.gold - n }
+          : kind === "bread"
+            ? { bread: s.bread - n }
+            : kind === "troopCards"
+              ? { troopCards: s.troopCards - n }
+              : { generalCards: s.generalCards - n };
     set({
       ...patch,
-      toast: lord ? `${n} ${label} enviados a ${lord.nick}.` : `${n} ${label} enviados a ${toId.toUpperCase()}.`,
+      toast: `${n} ${label} enviados a ${nick}.`,
       chat: [
         ...s.chat,
         {
           id: nid("m"),
           fromId: s.player.id,
           fromNick: s.player.nick,
-          text: `Transferiu ${n} ${label} para ${toId.toUpperCase()}.`,
+          text: `Transferiu ${n} ${label} para ${toId.toUpperCase()} (${nick}).`,
           at: Date.now(),
           self: true,
         },
@@ -625,6 +896,302 @@ export const useGame = create<GameStore>((set, get) => ({
     persist({ ...get() });
     sfxCoin();
     return true;
+  },
+
+  peekId: (id) => {
+    const nick = findNick(id);
+    set({ lookup: nick ? { id: id.trim().toUpperCase(), nick } : null, toast: nick ? `Senhor: ${nick}` : "ID desconhecido." });
+  },
+
+  rotateWall: (id) => {
+    const s = get();
+    const b = s.buildings.find((x) => x.id === id);
+    if (!b || b.type !== "wall") {
+      const dir: WallDir = s.placingDir === "v" ? "h" : "v";
+      set({ placingDir: dir, toast: dir === "v" ? "Muro em pé (I)." : "Muro deitado (—)." });
+      return;
+    }
+    const ids = new Set(s.selectedRow.includes(id) && s.selectedRow.length > 1 ? s.selectedRow : [id]);
+    const dir: WallDir = b.dir === "v" ? "h" : "v";
+    set({
+      buildings: s.buildings.map((x) => (ids.has(x.id) ? { ...x, dir } : x)),
+      placingDir: dir,
+      toast: dir === "v" ? "Muro em pé (I)." : "Muro deitado (—).",
+    });
+    persist({ ...get() });
+  },
+
+  selectWallRow: (id) => {
+    const s = get();
+    const b = s.buildings.find((x) => x.id === id);
+    if (!b) return;
+    const row = wallRow(s.buildings, b);
+    set({ selectedRow: row.map((x) => x.id), selectedId: id, sheet: "info", toast: `${row.length} muros na fileira.` });
+  },
+
+  noteTap: (id) => {
+    const s = get();
+    const b = s.buildings.find((x) => x.id === id);
+    if (!b) return;
+    const prev = (get() as { _tap?: { id: string; n: number; at: number } })._tap;
+    const now = Date.now();
+    const n = prev && prev.id === id && now - prev.at < 750 ? prev.n + 1 : 1;
+    (get() as { _tap?: { id: string; n: number; at: number } })._tap = { id, n, at: now };
+    if (n >= 3) {
+      set({ movingId: id, placing: b.type, sheet: null, toast: "Toque o chão para plantar de novo." });
+    } else if (b.type === "wall") {
+      get().selectWallRow(id);
+    } else {
+      get().selectBuilding(id);
+    }
+  },
+
+  cancelMove: () => set({ movingId: null, placing: null, ghost: null }),
+
+  upgradeCounty: () => {
+    const s = get();
+    if (s.countyLevel >= COUNTY_MAX) {
+      set({ toast: "Condado no nível máximo." });
+      return false;
+    }
+    const need = s.buildings.filter((b) => b.type !== "wall" && b.level < s.countyLevel);
+    if (need.length) {
+      set({ toast: "Full construção: maximize todas as estruturas atuais." });
+      return false;
+    }
+    const cost = countyUpgradeCost(s.countyLevel);
+    if (s.gold < cost.gold || s.niens < cost.niens) {
+      set({ toast: cost.niens ? `Precisa de ${cost.niens} Niens.` : `Precisa de ${cost.gold.toLocaleString("pt")} ouro.` });
+      sfxError();
+      return false;
+    }
+    const next = s.countyLevel + 1;
+    set({
+      countyLevel: next,
+      gold: s.gold - cost.gold,
+      niens: s.niens - cost.niens,
+      toast: `Condado nível ${next}.`,
+    });
+    persist({ ...get() });
+    sfxStar();
+    return true;
+  },
+
+  upgradeTroop: (type) => {
+    const s = get();
+    if (countType(s.buildings, "training") < 1) {
+      set({ toast: "Construa o Campo de Treino." });
+      return false;
+    }
+    const cur = s.troopLevels[type];
+    if (isHero(type)) {
+      if (s.countyLevel < GENERAL_UNLOCK_COUNTY) {
+        set({ toast: `Generais só evoluem no condado ${GENERAL_UNLOCK_COUNTY}.` });
+        return false;
+      }
+      if (cur >= GENERAL_MAX_LEVEL) {
+        set({ toast: "General no nível 7." });
+        return false;
+      }
+      const cards = generalCardsFor(cur + 1);
+      if (s.generalCards < cards) {
+        set({ toast: `Precisa de ${cards} cartas de general.` });
+        return false;
+      }
+      set({
+        generalCards: s.generalCards - cards,
+        troopLevels: { ...s.troopLevels, [type]: cur + 1 },
+        toast: `${TROOPS[type].name} nível ${cur + 1}.`,
+      });
+      persist({ ...get() });
+      sfxBuild();
+      return true;
+    }
+    if (cur >= 15) {
+      set({ toast: "Tropa no nível 15." });
+      return false;
+    }
+    const cards = troopCardsFor(cur + 1);
+    const g = troopUpgradeGold(cur + 1);
+    const br = troopUpgradeBread(cur + 1);
+    if (s.troopCards < cards || s.gold < g || s.bread < br) {
+      set({ toast: `Precisa ${cards} cartas, ${g} ouro, ${br} pão.` });
+      return false;
+    }
+    set({
+      troopCards: s.troopCards - cards,
+      gold: s.gold - g,
+      bread: s.bread - br,
+      troopLevels: { ...s.troopLevels, [type]: cur + 1 },
+      toast: `${TROOPS[type].name} nível ${cur + 1}.`,
+    });
+    persist({ ...get() });
+    sfxBuild();
+    return true;
+  },
+
+  upgradeCamp: () => {
+    const s = get();
+    if (countType(s.buildings, "training") < 1) {
+      set({ toast: "Construa o Campo de Treino." });
+      return false;
+    }
+    if (s.campLevel >= s.countyLevel) {
+      set({ toast: "Campo no limite do condado." });
+      return false;
+    }
+    const cost = campUpgradeGold(s.campLevel);
+    if (s.gold < cost) {
+      set({ toast: `Precisa de ${cost.toLocaleString("pt")} ouro.` });
+      return false;
+    }
+    set({ gold: s.gold - cost, campLevel: s.campLevel + 1, toast: `Campo de treino nível ${s.campLevel + 1}.` });
+    persist({ ...get() });
+    sfxBuild();
+    return true;
+  },
+
+  recruitDefender: () => get().train("defender"),
+
+  buyPass: () => {
+    const s = get();
+    const win = passWindow();
+    if (!win.active) {
+      set({ toast: "O passe abre no dia 1. Fevereiro dura 27 dias." });
+      return false;
+    }
+    if (s.pass.purchased) {
+      set({ toast: "Passe já selado nesta temporada." });
+      return false;
+    }
+    const cost = passCostNiens(s.pass.season);
+    if (s.niens < cost) {
+      set({ toast: `Precisa de ${cost} Niens.` });
+      return false;
+    }
+    set({ niens: s.niens - cost, pass: { ...s.pass, purchased: true }, toast: "Passe de Batalha selado." });
+    persist({ ...get() });
+    sfxCoin();
+    return true;
+  },
+
+  claimPass: (level) => {
+    const s = get();
+    if (!s.pass.purchased) {
+      set({ toast: "Compre o passe primeiro." });
+      return false;
+    }
+    const reached = Math.min(PASS_LEVELS, Math.floor(s.pass.stars / PASS_STARS_PER_LEVEL));
+    if (level > reached || s.pass.claimed.includes(level)) return false;
+    const r = passReward(level);
+    set({
+      gold: s.gold + r.gold,
+      bread: s.bread + r.bread,
+      niens: s.niens + r.niens,
+      troopCards: s.troopCards + r.troopCards,
+      generalCards: s.generalCards + r.generalCards,
+      pass: { ...s.pass, claimed: [...s.pass.claimed, level] },
+      toast: `Nível ${level}: ${r.label}`,
+    });
+    persist({ ...get() });
+    sfxStar();
+    return true;
+  },
+
+  foundAlliance: (name) => {
+    const s = get();
+    if (s.alliance) {
+      set({ toast: "Já tens aliança." });
+      return false;
+    }
+    if (s.gold < ALLIANCE_FOUND_GOLD) {
+      set({ toast: "Precisa de 5.000.000 de ouro." });
+      sfxError();
+      return false;
+    }
+    const id = `AL-${s.player.id.slice(4, 8)}`;
+    set({
+      gold: s.gold - ALLIANCE_FOUND_GOLD,
+      alliance: {
+        id,
+        name: name.trim().slice(0, 22) || "Aliança do Condado",
+        members: [{ id: s.player.id, nick: s.player.nick }, { id: "CDN-ALDRIC", nick: "Sir Aldric" }, { id: "CDN-ISOLDE", nick: "Dama Isolde" }],
+      },
+      toast: "Aliança fundada. Chat liberado.",
+    });
+    persist({ ...get() });
+    sfxStar();
+    return true;
+  },
+
+  sendAllianceChat: (text) => {
+    const t = text.trim();
+    const s = get();
+    if (!t || !s.alliance) return;
+    const msg: ChatMsg = {
+      id: nid("m"),
+      fromId: s.player.id,
+      fromNick: s.player.nick,
+      text: t.slice(0, 160),
+      at: Date.now(),
+      self: true,
+      channel: "alliance",
+    };
+    const reply: ChatMsg = {
+      id: nid("m"),
+      fromId: "CDN-ALDRIC",
+      fromNick: "Sir Aldric",
+      text: "Ouvido no pavilhão. As estrelas da guerra contam.",
+      at: Date.now() + 300,
+      channel: "alliance",
+    };
+    set({ allianceChat: [...s.allianceChat, msg, reply].slice(-40) });
+    persist({ ...get() });
+  },
+
+  setFocus: (id) => {
+    battle?.setFocus(id);
+  },
+
+  copyInvite: () => {
+    const id = get().player.id;
+    try {
+      void navigator.clipboard.writeText(id);
+    } catch {
+      /* ignore */
+    }
+    set({ inviteCopied: true, toast: "ID copiado. Amigo no nível 3 rende 100 mil ouro." });
+  },
+
+  flipPlacingDir: () => {
+    const s = get();
+    const dir: WallDir = s.placingDir === "h" ? "v" : "h";
+    set({
+      placingDir: dir,
+      ghost: s.ghost ? { ...s.ghost, dir } : s.ghost,
+      toast: dir === "v" ? "Muro em pé (I)." : "Muro deitado (—).",
+    });
+  },
+
+  beginIncoming: (lord) => {
+    const s = get();
+    if (s.screen !== "village") return;
+    const attacker = lord ?? LORDS[Math.floor(Math.random() * LORDS.length)]!;
+    raidTarget = attacker;
+    battle = new Battle(s.buildings, botArmy(attacker.rank), LOOT_CAP, {
+      spectator: true,
+      levels: s.troopLevels,
+      campLevel: s.campLevel,
+    });
+    lastIncomingAt = Date.now();
+    set({
+      screen: "spectate",
+      sheet: null,
+      placing: null,
+      ghost: null,
+      toast: `${attacker.nick} ataca o teu condado. Só podes assistir.`,
+    });
+    sfxHorn();
   },
 
   rename: (nick) => {

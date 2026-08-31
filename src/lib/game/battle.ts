@@ -2,18 +2,23 @@ import {
   BATTLE_MS,
   BUILDINGS,
   GRID,
+  LOOT_BANDS,
+  LOOT_CAP,
   PREP_MS,
   REAL_BUILDINGS,
   TROOPS,
+  buildingDamage,
   buildingHp,
   isHero,
+  scaledTroop,
   type BuildingType,
   type TroopType,
+  type WallDir,
 } from "./constants";
 import { isEdgeTile } from "./iso";
 import { approachCells, findPath, makeBlocked, pathCost } from "./pathfinding";
 import { sfxArrow, sfxBoom, sfxHit, sfxHorn } from "./audio";
-import type { ArmyCounts, BuildingInst } from "./types";
+import type { ArmyCounts, BuildingInst, TroopLevels } from "./types";
 
 export type BattlePhase = "prep" | "fight" | "ended";
 
@@ -31,6 +36,7 @@ export interface BattleBuilding {
   alive: boolean;
   cooldown: number;
   archerCd: [number, number];
+  dir?: WallDir;
 }
 
 export interface BattleTroop {
@@ -86,12 +92,6 @@ export interface BattleResult {
   retreated: boolean;
 }
 
-export interface Deployed {
-  type: TroopType;
-  gx: number;
-  gy: number;
-}
-
 let uid = 1;
 const nid = () => `e${uid++}`;
 
@@ -114,28 +114,43 @@ export class Battle {
     color: string;
   }> = [];
   shake = 0;
-  niensEarned = 0;
   goldLoot = 0;
-  breadLoot = 0;
   result: BattleResult | null = null;
+  spectator = false;
+  focusId: string | null = null;
   private blocked: boolean[][] = [];
   private occupied: Set<string> = new Set();
-  private lootGoldPool: number;
-  private lootBreadPool: number;
   private armyLeft: ArmyCounts;
   private heroesUsed = new Set<TroopType>();
   private lastBand = 0;
   private sfxGate = 0;
+  private stats: Record<TroopType, { hp: number; dps: number; speed: number }>;
 
   constructor(
     layout: BuildingInst[],
     army: ArmyCounts,
-    lootGold: number,
-    lootBread: number,
+    _lootGold: number,
+    opts?: { spectator?: boolean; levels?: TroopLevels; campLevel?: number },
   ) {
-    this.armyLeft = { ...army };
-    this.lootGoldPool = lootGold;
-    this.lootBreadPool = lootBread;
+    this.armyLeft = {
+      infantry: army.infantry || 0,
+      archers: army.archers || 0,
+      cavalry: army.cavalry || 0,
+      general: army.general || 0,
+      generaless: army.generaless || 0,
+      defender: army.defender || 0,
+    };
+    this.spectator = !!opts?.spectator;
+    const lv = opts?.levels;
+    const camp = opts?.campLevel ?? 1;
+    this.stats = {
+      infantry: scaledTroop("infantry", lv?.infantry ?? 1),
+      archers: scaledTroop("archers", lv?.archers ?? 1),
+      cavalry: scaledTroop("cavalry", lv?.cavalry ?? 1),
+      general: scaledTroop("general", lv?.general ?? 1),
+      generaless: scaledTroop("generaless", lv?.generaless ?? 1),
+      defender: scaledTroop("defender", 1, camp),
+    };
     this.buildings = layout.map((b) => {
       const def = BUILDINGS[b.type];
       const hp = buildingHp(b.type, b.level);
@@ -152,10 +167,16 @@ export class Battle {
         cy: b.gy + def.size / 2,
         alive: true,
         cooldown: 0,
-        archerCd: [0, 0.25],
+        archerCd: [0, 0.25] as [number, number],
+        dir: b.dir,
       };
     });
     this.rebuildBlocked();
+    if (this.spectator) this.autoDeploy();
+  }
+
+  setFocus(id: string | null) {
+    this.focusId = id;
   }
 
   private rebuildBlocked() {
@@ -193,16 +214,14 @@ export class Battle {
 
   deploy(type: TroopType, gx: number, gy: number): boolean {
     if (!this.canDeploy(type, gx, gy)) return false;
-    const def = TROOPS[type];
-    this.armyLeft[type] -= 1;
-    if (isHero(type)) this.heroesUsed.add(type);
+    const st = this.stats[type];
     this.troops.push({
       id: nid(),
       type,
       x: gx + 0.5,
       y: gy + 0.5,
-      hp: def.hp,
-      maxHp: def.hp,
+      hp: st.hp,
+      maxHp: st.hp,
       goalId: null,
       targetId: null,
       path: [],
@@ -212,7 +231,22 @@ export class Battle {
       alive: true,
       repath: 0,
     });
+    this.armyLeft[type] = Math.max(0, this.armyLeft[type] - 1);
+    if (isHero(type)) this.heroesUsed.add(type);
     return true;
+  }
+
+  autoDeploy() {
+    const order: TroopType[] = ["infantry", "archers", "defender", "cavalry", "general", "generaless"];
+    for (const type of order) {
+      let guard = 80;
+      while (this.armyLeft[type] > 0 && guard-- > 0) {
+        const gx = Math.random() < 0.5 ? (Math.random() < 0.5 ? 1 : GRID - 2) : 2 + Math.floor(Math.random() * (GRID - 4));
+        const gy = gx <= 2 || gx >= GRID - 3 ? 2 + Math.floor(Math.random() * (GRID - 4)) : Math.random() < 0.5 ? 1 : GRID - 2;
+        if (!this.deploy(type, gx, gy)) continue;
+      }
+    }
+    this.startFight();
   }
 
   startFight() {
@@ -277,20 +311,28 @@ export class Battle {
   }
 
   private grantBands() {
-    const band = Math.min(4, Math.floor(this.destruction / 0.25));
-    while (this.lastBand < band) {
+    while (this.lastBand < LOOT_BANDS.length) {
+      const band = LOOT_BANDS[this.lastBand]!;
+      if (this.destruction < band.at - 1e-6) break;
       this.lastBand += 1;
-      const bonus = Math.round(this.lootGoldPool * 0.12);
-      if (bonus <= 0) continue;
-      this.goldLoot += bonus;
+      this.goldLoot = Math.min(LOOT_CAP, this.goldLoot + band.gold);
       const castle = this.buildings.find((b) => b.type === "castle");
-      this.float(castle?.cx ?? 12, (castle?.cy ?? 12) - 1.2, `+${bonus} ouro (${this.lastBand * 25}%)`, "#e4c15a");
+      const sign = this.spectator ? "−" : "+";
+      this.float(castle?.cx ?? 14, (castle?.cy ?? 14) - 1.2, `${sign}${band.gold} ouro (${Math.round(band.at * 100)}%)`, "#e4c15a");
     }
   }
 
   private tickTroop(t: BattleTroop, dt: number) {
     const def = TROOPS[t.type];
+    const st = this.stats[t.type];
     t.repath -= dt;
+
+    if (this.focusId && !this.spectator) {
+      const focused = this.buildings.find((b) => b.id === this.focusId && b.alive && b.type !== "wall");
+      if (focused && Math.hypot(focused.cx - t.x, focused.cy - t.y) <= 7.5) {
+        t.goalId = focused.id;
+      }
+    }
 
     let goal = this.buildings.find((b) => b.id === t.goalId && b.alive && b.type !== "wall") ?? null;
     if (!goal) {
@@ -309,7 +351,7 @@ export class Battle {
     }
 
     if (def.ignoreWalls) {
-      this.steer(t, goal.cx, goal.cy, def.speed, dt);
+      this.steer(t, goal.cx, goal.cy, st.speed, dt);
       if (this.inRange(t, goal, def.range)) this.strike(t, goal, dt);
       return;
     }
@@ -341,10 +383,10 @@ export class Battle {
 
     const step = t.path[t.pathI];
     if (!step) {
-      this.steer(t, goal.cx, goal.cy, def.speed, dt);
+      this.steer(t, goal.cx, goal.cy, st.speed, dt);
       return;
     }
-    const reached = this.steer(t, step[0] + 0.5, step[1] + 0.5, def.speed, dt);
+    const reached = this.steer(t, step[0] + 0.5, step[1] + 0.5, st.speed, dt);
     if (reached) t.pathI += 1;
   }
 
@@ -441,6 +483,7 @@ export class Battle {
 
   private strike(t: BattleTroop, target: BattleBuilding, dt: number) {
     const def = TROOPS[t.type];
+    const st = this.stats[t.type];
     t.facing = Math.atan2(target.cy - t.y, target.cx - t.x);
     t.cooldown -= dt;
     if (t.cooldown > 0) return;
@@ -454,7 +497,7 @@ export class Battle {
         tx: target.cx,
         ty: target.cy,
         speed: 10,
-        dmg: def.dps * 0.4,
+        dmg: st.dps * 0.4,
         aoe: 0,
         fromDefense: false,
       });
@@ -464,7 +507,7 @@ export class Battle {
         this.sfxGate = 0.12;
       }
     } else {
-      this.hurtBuilding(target, def.dps * dt, t.x, t.y);
+      this.hurtBuilding(target, st.dps * dt, t.x, t.y);
       t.cooldown = 0;
       if (this.sfxGate <= 0) {
         sfxHit();
@@ -527,6 +570,7 @@ export class Battle {
   private tickDefense(b: BattleBuilding, dt: number) {
     const def = BUILDINGS[b.type];
     if (def.damage <= 0) return;
+    const dmg = buildingDamage(b.type, b.level);
     const tgt = this.closestTroop(b.cx, b.cy, def.range);
     if (!tgt) return;
     if (b.type === "watchtower") {
@@ -543,7 +587,7 @@ export class Battle {
           tx: tgt.x + (Math.random() - 0.5) * 0.12,
           ty: tgt.y + (Math.random() - 0.5) * 0.12,
           speed: 13,
-          dmg: def.damage * 0.5,
+          dmg: dmg * 0.5,
           aoe: 0,
           fromDefense: true,
         });
@@ -565,7 +609,7 @@ export class Battle {
           tx: tgt.x,
           ty: tgt.y,
           speed: 5.5,
-          dmg: def.damage,
+          dmg: dmg,
           aoe: def.aoe,
           fromDefense: true,
         });
@@ -648,17 +692,8 @@ export class Battle {
     if (b.hp <= 0) {
       b.hp = 0;
       b.alive = false;
-      const reward = BUILDINGS[b.type].niensReward;
-      this.niensEarned += reward;
-      if (b.type === "mine") this.goldLoot += Math.round(this.lootGoldPool * 0.18);
-      if (b.type === "farm") this.breadLoot += Math.round(this.lootBreadPool * 0.18);
-      if (b.type === "castle") {
-        this.goldLoot += Math.round(this.lootGoldPool * 0.45);
-        this.breadLoot += Math.round(this.lootBreadPool * 0.45);
-        this.shake = 1;
-      } else {
-        this.shake = Math.min(1, this.shake + 0.22);
-      }
+      if (b.type === "castle") this.shake = 1;
+      else this.shake = Math.min(1, this.shake + 0.22);
       this.burst(b.cx, b.cy, "#6a5340", 18);
       this.rebuildBlocked();
       for (const t of this.troops) {
@@ -669,7 +704,7 @@ export class Battle {
           t.pathI = 0;
         }
       }
-      if (reward > 0) this.float(b.cx, b.cy - 0.8, `+${reward} Niens`, "#e4c15a");
+      if (b.type === "castle") this.float(b.cx, b.cy - 0.8, "Castelo caiu", "#e4c15a");
       sfxBoom();
     }
     void hx;
@@ -721,18 +756,16 @@ export class Battle {
     if (castleDown) stars += 1;
     if (destruction >= 0.999) stars = 3;
     if (retreated) stars = Math.min(stars, 2);
-    const survivors: ArmyCounts = { infantry: 0, archers: 0, cavalry: 0, general: 0, generaless: 0 };
+    const survivors: ArmyCounts = { infantry: 0, archers: 0, cavalry: 0, general: 0, generaless: 0, defender: 0 };
     for (const t of this.troops) {
       if (t.alive) survivors[t.type] += 1;
     }
-    this.goldLoot = Math.min(this.lootGoldPool, this.goldLoot);
-    this.breadLoot = Math.min(this.lootBreadPool, this.breadLoot);
     this.result = {
       stars,
       destruction,
-      niens: this.niensEarned,
-      gold: this.goldLoot,
-      bread: this.breadLoot,
+      niens: 0,
+      gold: Math.min(LOOT_CAP, this.goldLoot),
+      bread: 0,
       castleDown,
       survivors,
       elapsed: (BATTLE_MS - this.fightLeft) / 1000,
