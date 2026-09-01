@@ -289,9 +289,15 @@ export const useGame = create<GameStore>((set, get) => ({
 
   startCloud: async (nick, referredBy) => {
     try {
-      const { save } = await createProfile({
+      const result = await createProfile({
         data: { nick, referredBy: referredBy?.trim().toUpperCase() || null },
       });
+      if (!result?.save) {
+        throw new Error(
+          "O servidor não retornou o perfil do condado. Verifique FIREBASE_SERVICE_ACCOUNT_JSON no Vercel e tente novamente.",
+        );
+      }
+      const { save } = result;
       const now = Date.now();
       const win = rankingWindow(now);
       set({

@@ -1,7 +1,7 @@
-import { onAuthStateChanged, type User } from "firebase/auth";
+import { onIdTokenChanged, type User } from "firebase/auth";
 import { useEffect, useState } from "react";
 import { auth } from "../firebase";
-import { authEnabled } from "./client";
+import { authEnabled, setBearerToken } from "./client";
 
 export type AppUser = {
   id: string;
@@ -40,9 +40,13 @@ export function useCurrentUserState(): CurrentUserState {
 
   useEffect(() => {
     if (!authEnabled) return;
-    return onAuthStateChanged(auth, (nextUser) => {
-      setUser(nextUser ? normalizeUser(nextUser) : null);
-      setIsPending(false);
+    return onIdTokenChanged(auth, async (nextUser) => {
+      try {
+        setBearerToken(nextUser ? await nextUser.getIdToken() : null);
+      } finally {
+        setUser(nextUser ? normalizeUser(nextUser) : null);
+        setIsPending(false);
+      }
     });
   }, []);
 
