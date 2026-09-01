@@ -31,6 +31,18 @@ export default defineConfig(({ command, isPreview }) => ({
           nitro({
             preset: "vercel",
             serverDir: "./server",
+            // Firebase Admin/Google Cloud Firestore use CommonJS internals
+            // such as __dirname; keep them external for Vercel's Node runtime.
+            rollupConfig: {
+              external: [
+                "firebase-admin",
+                "@google-cloud/firestore",
+                "@google-cloud/*",
+                "google-gax",
+                "protobufjs",
+                "grpc-js",
+              ],
+            },
           }),
         ]
       : []),
