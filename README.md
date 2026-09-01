@@ -62,3 +62,9 @@ public/game/           sprites e texturas
 ## Stack
 
 TanStack Start + React + Canvas 2D + Zustand. Persistência em `localStorage`.
+
+## Persistência Firebase/Firestore
+
+A persistência do jogo usa o Firebase Admin SDK no servidor. Os documentos ficam nas coleções `condado_profiles`, `condado_player_index`, `condado_nick_index`, `condado_transfers` e `condado_week_claims`; o cliente não acessa diretamente os dados do jogo. As operações de saldo, transferência e recompensa usam transações do Firestore para evitar perda de recursos durante autosaves concorrentes.
+
+Configure as variáveis `VITE_FIREBASE_*` com a configuração do Firebase Web no frontend e `FIREBASE_SERVICE_ACCOUNT_JSON` somente no ambiente do servidor. Nunca envie o JSON de conta de serviço para o GitHub nem o coloque em `public/`, no bundle do navegador ou em uma variável `VITE_*`. Depois de configurar o projeto, aplique `firebase.json`, `firestore.rules` e `firestore.indexes.json` com a Firebase CLI. A regra inicial bloqueia o acesso direto do cliente; as funções do servidor usam o Admin SDK e continuam protegidas pelo middleware de autenticação.

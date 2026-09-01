@@ -40,7 +40,17 @@ import {
   type WallDir,
 } from "./constants";
 import { Battle } from "./battle";
-import { botArmy, findLord, findNick, LORDS, lordsOfAlliance, marketBoard, pairWar, randomChat, warChest } from "./bots";
+import {
+  botArmy,
+  findLord,
+  findNick,
+  LORDS,
+  lordsOfAlliance,
+  marketBoard,
+  pairWar,
+  randomChat,
+  warChest,
+} from "./bots";
 import { defaultSave, persist, setCloudSync, wipeSave } from "./save";
 import type {
   BuildingInst,
@@ -56,7 +66,16 @@ import type {
 } from "./types";
 import { canPlace, canPlaceWall, countType, generateBase, nid, snapPlace, wallRow } from "./world";
 import { sfxBuild, sfxClick, sfxCoin, sfxError, sfxHorn, sfxStar } from "./audio";
-import { cloudTransfer, createProfile, creditReferral, listTransfers, peekPlayer, pullCloud, pushCloud, renameCounty } from "./cloud";
+import {
+  cloudTransfer,
+  createProfile,
+  creditReferral,
+  listTransfers,
+  peekPlayer,
+  pullCloud,
+  pushCloud,
+  renameCounty,
+} from "./cloud";
 
 export let battle: Battle | null = null;
 export let raidTarget: Lord | null = null;
@@ -151,7 +170,9 @@ interface GameStore extends SaveState {
 
 function armySize(s: SaveState): number {
   const a = s.army;
-  return a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender + s.training.length;
+  return (
+    a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender + s.training.length
+  );
 }
 
 function producerKind(t: BuildingType): "gold" | "bread" | null {
@@ -226,7 +247,10 @@ export const useGame = create<GameStore>((set, get) => ({
       const now = Date.now();
       const win = rankingWindow(now);
       const weekStars = save.weekKey === win.key ? save.weekStars : 0;
-      const training = applyTraining(save, Math.min(8 * 3600_000, Math.max(0, now - save.lastTick)));
+      const training = applyTraining(
+        save,
+        Math.min(8 * 3600_000, Math.max(0, now - save.lastTick)),
+      );
       set({
         ...save,
         weekStars,
@@ -265,7 +289,9 @@ export const useGame = create<GameStore>((set, get) => ({
 
   startCloud: async (nick, referredBy) => {
     try {
-      const { save } = await createProfile({ data: { nick, referredBy: referredBy?.trim().toUpperCase() || null } });
+      const { save } = await createProfile({
+        data: { nick, referredBy: referredBy?.trim().toUpperCase() || null },
+      });
       const now = Date.now();
       const win = rankingWindow(now);
       set({
@@ -311,7 +337,12 @@ export const useGame = create<GameStore>((set, get) => ({
 
     let war = s.war;
     const win = warWindow(now);
-    const week = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(now));
+    const week = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(now));
     if (win.open && s.alliance) {
       if (!war || war.week !== week) {
         const pair = pairWar(s.alliance.id, week);
@@ -356,7 +387,7 @@ export const useGame = create<GameStore>((set, get) => ({
       ];
     }
 
-    let referralClaimed = s.referralClaimed;
+    const referralClaimed = s.referralClaimed;
 
     set({
       lastTick: now,
@@ -385,7 +416,9 @@ export const useGame = create<GameStore>((set, get) => ({
     ) {
       lastIncomingAt = now;
       const pool = s.war?.foeId ? lordsOfAlliance(s.war.foeId) : LORDS;
-      const lord = (pool.length ? pool : LORDS)[Math.floor(Math.random() * (pool.length || LORDS.length))]!;
+      const lord = (pool.length ? pool : LORDS)[
+        Math.floor(Math.random() * (pool.length || LORDS.length))
+      ]!;
       get().beginIncoming(lord);
     }
   },
@@ -429,7 +462,9 @@ export const useGame = create<GameStore>((set, get) => ({
     }
     if (s.movingId) {
       set({
-        buildings: s.buildings.map((b) => (b.id === s.movingId ? { ...b, gx: snapped.gx, gy: snapped.gy } : b)),
+        buildings: s.buildings.map((b) =>
+          b.id === s.movingId ? { ...b, gx: snapped.gx, gy: snapped.gy } : b,
+        ),
         movingId: null,
         placing: null,
         ghost: null,
@@ -569,7 +604,9 @@ export const useGame = create<GameStore>((set, get) => ({
     }
     const def = TROOPS[type];
     if (isHero(type) && s.army[type] + s.training.filter((t) => t.type === type).length >= 1) {
-      set({ toast: `Só um${type === "generaless" ? "a" : ""} ${def.name.toLowerCase()} por condado.` });
+      set({
+        toast: `Só um${type === "generaless" ? "a" : ""} ${def.name.toLowerCase()} por condado.`,
+      });
       sfxError();
       return false;
     }
@@ -578,7 +615,10 @@ export const useGame = create<GameStore>((set, get) => ({
         set({ toast: "Construa o Campo de Treino." });
         return false;
       }
-      if (s.army.defender + s.training.filter((t) => t.type === "defender").length >= defenderCap(s.campLevel)) {
+      if (
+        s.army.defender + s.training.filter((t) => t.type === "defender").length >=
+        defenderCap(s.campLevel)
+      ) {
         set({ toast: "Capacidade de defensores no máximo. Melhore o campo." });
         return false;
       }
@@ -669,7 +709,10 @@ export const useGame = create<GameStore>((set, get) => ({
     }
     raidTarget = lord;
     const layout = generateBase(lord.id, lord.rank);
-    battle = new Battle(layout, { ...s.army }, lord.lootGold, { levels: s.troopLevels, campLevel: s.campLevel });
+    battle = new Battle(layout, { ...s.army }, lord.lootGold, {
+      levels: s.troopLevels,
+      campLevel: s.campLevel,
+    });
     const deployType: TroopType =
       s.army.infantry > 0
         ? "infantry"
@@ -739,9 +782,17 @@ export const useGame = create<GameStore>((set, get) => ({
       army.generaless += r.survivors.generaless;
       army.defender += r.survivors.defender;
     }
-    const pass = s.pass.purchased ? { ...s.pass, stars: s.pass.stars + (battle.spectator ? 0 : r.stars) } : s.pass;
+    const pass = s.pass.purchased
+      ? { ...s.pass, stars: s.pass.stars + (battle.spectator ? 0 : r.stars) }
+      : s.pass;
     let war = s.war;
-    if (!battle.spectator && war && raidTarget.allianceId && raidTarget.allianceId === war.foeId && !war.sittingOut) {
+    if (
+      !battle.spectator &&
+      war &&
+      raidTarget.allianceId &&
+      raidTarget.allianceId === war.foeId &&
+      !war.sittingOut
+    ) {
       const used = (war.attacks[raidTarget.id] ?? 0) + 1;
       war = {
         ...war,
@@ -882,7 +933,15 @@ export const useGame = create<GameStore>((set, get) => ({
     try {
       const r = await cloudTransfer({ data: { toId, amount: n, kind } });
       const label =
-        kind === "niens" ? "Niens" : kind === "gold" ? "ouro" : kind === "bread" ? "pão" : kind === "troopCards" ? "cartas de tropa" : "cartas de general";
+        kind === "niens"
+          ? "Niens"
+          : kind === "gold"
+            ? "ouro"
+            : kind === "bread"
+              ? "pão"
+              : kind === "troopCards"
+                ? "cartas de tropa"
+                : "cartas de general";
       const rec: TransferRecord = {
         id: r.id,
         at: Date.now(),
@@ -916,11 +975,17 @@ export const useGame = create<GameStore>((set, get) => ({
   peekId: (id) => {
     void peekPlayer({ data: id })
       .then((r) => {
-        set({ lookup: r.nick ? { id: r.id, nick: r.nick } : null, toast: r.nick ? `Senhor: ${r.nick}` : "ID desconhecido." });
+        set({
+          lookup: r.nick ? { id: r.id, nick: r.nick } : null,
+          toast: r.nick ? `Senhor: ${r.nick}` : "ID desconhecido.",
+        });
       })
       .catch(() => {
         const nick = findNick(id);
-        set({ lookup: nick ? { id: id.trim().toUpperCase(), nick } : null, toast: nick ? `Senhor: ${nick}` : "ID desconhecido." });
+        set({
+          lookup: nick ? { id: id.trim().toUpperCase(), nick } : null,
+          toast: nick ? `Senhor: ${nick}` : "ID desconhecido.",
+        });
       });
   },
 
@@ -932,7 +997,9 @@ export const useGame = create<GameStore>((set, get) => ({
       set({ placingDir: dir, toast: dir === "v" ? "Muro em pé (I)." : "Muro deitado (—)." });
       return;
     }
-    const ids = new Set(s.selectedRow.includes(id) && s.selectedRow.length > 1 ? s.selectedRow : [id]);
+    const ids = new Set(
+      s.selectedRow.includes(id) && s.selectedRow.length > 1 ? s.selectedRow : [id],
+    );
     const dir: WallDir = b.dir === "v" ? "h" : "v";
     set({
       buildings: s.buildings.map((x) => (ids.has(x.id) ? { ...x, dir } : x)),
@@ -947,7 +1014,12 @@ export const useGame = create<GameStore>((set, get) => ({
     const b = s.buildings.find((x) => x.id === id);
     if (!b) return;
     const row = wallRow(s.buildings, b);
-    set({ selectedRow: row.map((x) => x.id), selectedId: id, sheet: "info", toast: `${row.length} muros na fileira.` });
+    set({
+      selectedRow: row.map((x) => x.id),
+      selectedId: id,
+      sheet: "info",
+      toast: `${row.length} muros na fileira.`,
+    });
   },
 
   noteTap: (id) => {
@@ -959,7 +1031,12 @@ export const useGame = create<GameStore>((set, get) => ({
     const n = prev && prev.id === id && now - prev.at < 750 ? prev.n + 1 : 1;
     (get() as { _tap?: { id: string; n: number; at: number } })._tap = { id, n, at: now };
     if (n >= 3) {
-      set({ movingId: id, placing: b.type, sheet: null, toast: "Toque o chão para plantar de novo." });
+      set({
+        movingId: id,
+        placing: b.type,
+        sheet: null,
+        toast: "Toque o chão para plantar de novo.",
+      });
     } else if (b.type === "wall") {
       get().selectWallRow(id);
     } else {
@@ -982,7 +1059,11 @@ export const useGame = create<GameStore>((set, get) => ({
     }
     const cost = countyUpgradeCost(s.countyLevel);
     if (s.gold < cost.gold || s.niens < cost.niens) {
-      set({ toast: cost.niens ? `Precisa de ${cost.niens} Niens.` : `Precisa de ${cost.gold.toLocaleString("pt")} ouro.` });
+      set({
+        toast: cost.niens
+          ? `Precisa de ${cost.niens} Niens.`
+          : `Precisa de ${cost.gold.toLocaleString("pt")} ouro.`,
+      });
       sfxError();
       return false;
     }
@@ -1094,7 +1175,11 @@ export const useGame = create<GameStore>((set, get) => ({
       set({ toast: `Precisa de ${cost.toLocaleString("pt")} ouro.` });
       return false;
     }
-    set({ gold: s.gold - cost, campLevel: s.campLevel + 1, toast: `Campo de treino nível ${s.campLevel + 1}.` });
+    set({
+      gold: s.gold - cost,
+      campLevel: s.campLevel + 1,
+      toast: `Campo de treino nível ${s.campLevel + 1}.`,
+    });
     persist({ ...get() });
     sfxBuild();
     return true;
@@ -1118,7 +1203,11 @@ export const useGame = create<GameStore>((set, get) => ({
       set({ toast: `Precisa de ${cost} Niens.` });
       return false;
     }
-    set({ niens: s.niens - cost, pass: { ...s.pass, purchased: true }, toast: "Passe de Batalha selado." });
+    set({
+      niens: s.niens - cost,
+      pass: { ...s.pass, purchased: true },
+      toast: "Passe de Batalha selado.",
+    });
     persist({ ...get() });
     sfxCoin();
     return true;
@@ -1164,7 +1253,11 @@ export const useGame = create<GameStore>((set, get) => ({
       alliance: {
         id,
         name: name.trim().slice(0, 22) || "Aliança do Condado",
-        members: [{ id: s.player.id, nick: s.player.nick }, { id: "CDN-ALDRIC", nick: "Sir Aldric" }, { id: "CDN-ISOLDE", nick: "Dama Isolde" }],
+        members: [
+          { id: s.player.id, nick: s.player.nick },
+          { id: "CDN-ALDRIC", nick: "Sir Aldric" },
+          { id: "CDN-ISOLDE", nick: "Dama Isolde" },
+        ],
       },
       toast: "Aliança fundada. Chat liberado.",
     });
@@ -1209,7 +1302,10 @@ export const useGame = create<GameStore>((set, get) => ({
     } catch {
       /* ignore */
     }
-    set({ inviteCopied: true, toast: "ID copiado. Quando o amigo chegar ao Condado 3, ambos ganham 300.000 ouro." });
+    set({
+      inviteCopied: true,
+      toast: "ID copiado. Quando o amigo chegar ao Condado 3, ambos ganham 300.000 ouro.",
+    });
   },
 
   flipPlacingDir: () => {

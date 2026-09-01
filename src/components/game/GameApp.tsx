@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link } from "@tanstack/react-router";
 import {
   Castle,
   Coins,
@@ -69,7 +68,14 @@ import { battle, raidTarget, useGame } from "@/lib/game/store";
 import { persist } from "@/lib/game/save";
 import { createRuntime } from "@/lib/game/render";
 import { formatRes, formatTime, countType } from "@/lib/game/world";
-import { setMuted as audioMute, unlockAudio, startMusic, setMusicMode, resumeAudio, sfxClick } from "@/lib/game/audio";
+import {
+  setMuted as audioMute,
+  unlockAudio,
+  startMusic,
+  setMusicMode,
+  resumeAudio,
+  sfxClick,
+} from "@/lib/game/audio";
 import { loadAssets } from "@/lib/game/assets";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { UserButton } from "@/lib/auth/gates";
@@ -116,17 +122,25 @@ export function GameApp() {
     if (screen === "splash") return;
     const win = warWindow();
     const warOn = !!(war && win.open && !war.sittingOut);
-    if ((screen === "battle" || screen === "prep" || screen === "march") && warOn) setMusicMode("war");
-    else if (screen === "battle" || screen === "prep" || screen === "spectate") setMusicMode("battle");
+    if ((screen === "battle" || screen === "prep" || screen === "march") && warOn)
+      setMusicMode("war");
+    else if (screen === "battle" || screen === "prep" || screen === "spectate")
+      setMusicMode("battle");
     else setMusicMode("village");
   }, [screen, war]);
 
   if (isPending || !hydrated) {
     return (
       <div className="relative flex h-dvh w-full items-end bg-ink">
-        <img src="/game/splash.jpg" alt="" className="absolute inset-0 h-full w-full object-cover" />
+        <img
+          src="/game/splash.jpg"
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover"
+        />
         <div className="absolute inset-0 bg-ink/50" />
-        <p className="relative z-10 mb-16 w-full text-center font-display text-parchment">A abrir o condado…</p>
+        <p className="relative z-10 mb-16 w-full text-center font-display text-parchment">
+          A abrir o condado…
+        </p>
       </div>
     );
   }
@@ -164,21 +178,30 @@ function Splash({ signedIn }: { signedIn: boolean }) {
   if (!signedIn) {
     return (
       <div className="relative flex h-full w-full items-end justify-center">
-        <img src="/game/splash.jpg" alt="" className="absolute inset-0 h-full w-full object-cover" />
+        <img
+          src="/game/splash.jpg"
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover"
+        />
         <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/55 to-ink/20" />
         <div className="relative z-10 mb-[max(2rem,env(safe-area-inset-bottom))] w-full max-w-md px-5 pb-6">
-          <p className="font-display text-[0.7rem] uppercase tracking-[0.35em] text-parchment-dim">Senhores da guerra</p>
-          <h1 className="mt-2 font-display text-5xl font-semibold tracking-wide text-parchment">Condado</h1>
-          <p className="mt-3 max-w-sm text-[0.95rem] leading-relaxed text-parchment-dim">
-            Conta com e-mail. Nome de condado único. Ouro, Niens e cartas ficam no servidor — nada some do telemóvel.
+          <p className="font-display text-[0.7rem] uppercase tracking-[0.35em] text-parchment-dim">
+            Senhores da guerra
           </p>
-          <Link
-            to="/login"
+          <h1 className="mt-2 font-display text-5xl font-semibold tracking-wide text-parchment">
+            Condado
+          </h1>
+          <p className="mt-3 max-w-sm text-[0.95rem] leading-relaxed text-parchment-dim">
+            Conta com e-mail. Nome de condado único. Ouro, Niens e cartas ficam no servidor — nada
+            some do telemóvel.
+          </p>
+          <a
+            href="/login"
             className="mt-6 flex h-12 w-full items-center justify-center rounded-md bg-parchment font-display text-sm font-semibold text-ink"
             onClick={() => unlockAudio()}
           >
             Entrar ou criar conta
-          </Link>
+          </a>
           <a
             href={WHATSAPP_GROUP}
             target="_blank"
@@ -198,12 +221,18 @@ function Splash({ signedIn }: { signedIn: boolean }) {
       <img src="/game/splash.jpg" alt="" className="absolute inset-0 h-full w-full object-cover" />
       <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/55 to-ink/20" />
       <div className="relative z-10 mb-[max(2rem,env(safe-area-inset-bottom))] w-full max-w-md px-5 pb-6">
-        <p className="font-display text-[0.7rem] uppercase tracking-[0.35em] text-parchment-dim">Senhores da guerra</p>
-        <h1 className="mt-2 font-display text-5xl font-semibold tracking-wide text-parchment">Condado</h1>
+        <p className="font-display text-[0.7rem] uppercase tracking-[0.35em] text-parchment-dim">
+          Senhores da guerra
+        </p>
+        <h1 className="mt-2 font-display text-5xl font-semibold tracking-wide text-parchment">
+          Condado
+        </h1>
         <p className="mt-3 max-w-sm text-[0.95rem] leading-relaxed text-parchment-dim">
           Escolhe um nome que ninguém mais use. Ele identifica o teu condado no reino.
         </p>
-        <label className="mt-6 block text-xs uppercase tracking-[0.18em] text-parchment-dim">Nome do condado</label>
+        <label className="mt-6 block text-xs uppercase tracking-[0.18em] text-parchment-dim">
+          Nome do condado
+        </label>
         <input
           value={nick}
           onChange={(e) => setNick(e.target.value)}
@@ -211,7 +240,9 @@ function Splash({ signedIn }: { signedIn: boolean }) {
           placeholder="ex. Teresa da Serra"
           className="mt-2 h-12 w-full rounded-md border border-line-strong bg-ink-2/80 px-3 text-base text-parchment outline-none placeholder:text-parchment-dim/60 focus:border-niens"
         />
-        <label className="mt-3 block text-xs uppercase tracking-[0.18em] text-parchment-dim">Código de convite (opcional)</label>
+        <label className="mt-3 block text-xs uppercase tracking-[0.18em] text-parchment-dim">
+          Código de convite (opcional)
+        </label>
         <input
           value={ref}
           onChange={(e) => setRef(e.target.value)}
@@ -348,7 +379,12 @@ function HUD() {
                 : `Toque o mapa para erguer ${placing ? BUILDINGS[placing].name : ""}`}
           </span>
           {placing === "wall" && (
-            <button type="button" className="rounded-sm border border-line p-1" onClick={flipPlacingDir} aria-label="Girar muro">
+            <button
+              type="button"
+              className="rounded-sm border border-line p-1"
+              onClick={flipPlacingDir}
+              aria-label="Girar muro"
+            >
               <RotateCw className="size-4" />
             </button>
           )}
@@ -366,12 +402,42 @@ function HUD() {
       {screen === "village" && (
         <nav className="absolute inset-x-0 bottom-0 z-20 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
           <div className="mx-auto flex max-w-lg justify-between gap-1 px-3">
-            <NavBtn icon={<Castle className="size-5" />} label="Erguer" on={() => setSheet(sheet === "build" ? null : "build")} active={sheet === "build"} />
-            <NavBtn icon={<Swords className="size-5" />} label="Tropas" on={() => setSheet(sheet === "army" ? null : "army")} active={sheet === "army"} />
-            <NavBtn icon={<Crosshair className="size-5" />} label="Atacar" on={() => useGame.getState().openRaid()} active={false} />
-            <NavBtn icon={<MessageSquare className="size-5" />} label="Chat" on={() => setSheet(sheet === "chat" ? null : "chat")} active={sheet === "chat"} />
-            <NavBtn icon={<Scale className="size-5" />} label="Mercado" on={() => setSheet(sheet === "market" ? null : "market")} active={sheet === "market"} />
-            <NavBtn icon={<UserRound className="size-5" />} label="Perfil" on={() => setSheet(sheet === "profile" ? null : "profile")} active={sheet === "profile"} />
+            <NavBtn
+              icon={<Castle className="size-5" />}
+              label="Erguer"
+              on={() => setSheet(sheet === "build" ? null : "build")}
+              active={sheet === "build"}
+            />
+            <NavBtn
+              icon={<Swords className="size-5" />}
+              label="Tropas"
+              on={() => setSheet(sheet === "army" ? null : "army")}
+              active={sheet === "army"}
+            />
+            <NavBtn
+              icon={<Crosshair className="size-5" />}
+              label="Atacar"
+              on={() => useGame.getState().openRaid()}
+              active={false}
+            />
+            <NavBtn
+              icon={<MessageSquare className="size-5" />}
+              label="Chat"
+              on={() => setSheet(sheet === "chat" ? null : "chat")}
+              active={sheet === "chat"}
+            />
+            <NavBtn
+              icon={<Scale className="size-5" />}
+              label="Mercado"
+              on={() => setSheet(sheet === "market" ? null : "market")}
+              active={sheet === "market"}
+            />
+            <NavBtn
+              icon={<UserRound className="size-5" />}
+              label="Perfil"
+              on={() => setSheet(sheet === "profile" ? null : "profile")}
+              active={sheet === "profile"}
+            />
           </div>
         </nav>
       )}
@@ -416,7 +482,9 @@ function NavBtn({
         on();
       }}
       className={`flex min-h-12 min-w-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border px-1 py-1.5 text-[0.65rem] tracking-wide ${
-        active ? "border-niens/50 bg-panel-2 text-parchment" : "border-line bg-panel/90 text-parchment-dim"
+        active
+          ? "border-niens/50 bg-panel-2 text-parchment"
+          : "border-line bg-panel/90 text-parchment-dim"
       }`}
     >
       {icon}
@@ -444,11 +512,21 @@ function Sheets() {
   };
   return (
     <div className="absolute inset-0 z-30 flex items-end justify-center bg-ink/40 md:items-stretch md:justify-end">
-      <button type="button" className="absolute inset-0" aria-label="Fechar" onClick={() => setSheet(null)} />
+      <button
+        type="button"
+        className="absolute inset-0"
+        aria-label="Fechar"
+        onClick={() => setSheet(null)}
+      />
       <div className="panel relative z-10 max-h-[78dvh] w-full overflow-y-auto rounded-t-xl p-4 md:h-full md:max-h-none md:w-[380px] md:rounded-none md:rounded-l-xl md:pt-[max(1.2rem,env(safe-area-inset-top))]">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="font-display text-lg tracking-wide">{title[sheet]}</h2>
-          <button type="button" onClick={() => setSheet(null)} className="size-10 rounded-md border border-line" aria-label="Fechar">
+          <button
+            type="button"
+            onClick={() => setSheet(null)}
+            className="size-10 rounded-md border border-line"
+            aria-label="Fechar"
+          >
             <X className="mx-auto size-4" />
           </button>
         </div>
@@ -490,7 +568,11 @@ function BuildSheet() {
             onClick={() => beginPlace(type)}
             className="flex items-center gap-3 rounded-md border border-line bg-ink-2/50 p-3 text-left disabled:opacity-40"
           >
-            <img src={`/game/${type === "wall" ? "wall_h" : type}.png`} alt="" className="size-12 object-contain" />
+            <img
+              src={`/game/${type === "wall" ? "wall_h" : type}.png`}
+              alt=""
+              className="size-12 object-contain"
+            />
             <div className="min-w-0 flex-1">
               <p className="font-display text-sm">{d.name}</p>
               <p className="text-xs leading-snug text-parchment-dim">{d.desc}</p>
@@ -515,7 +597,14 @@ function ArmySheet() {
   const campLevel = useGame((s) => s.campLevel);
   const troopLevels = useGame((s) => s.troopLevels);
   const cap = armyCapacity(countType(buildings, "camp"));
-  const used = army.infantry + army.archers + army.cavalry + army.general + army.generaless + army.defender + training.length;
+  const used =
+    army.infantry +
+    army.archers +
+    army.cavalry +
+    army.general +
+    army.generaless +
+    army.defender +
+    training.length;
   const hasCamp = countType(buildings, "training") > 0;
   return (
     <div className="space-y-3">
@@ -534,10 +623,14 @@ function ArmySheet() {
       {TROOP_ORDER.map((type) => {
         const d = TROOPS[type];
         const st = scaledTroop(type, troopLevels[type], campLevel);
-        const costLabel = type === "defender" ? `${formatRes(DEFENDER_COST)} ouro` : `${d.costBread} pão`;
+        const costLabel =
+          type === "defender" ? `${formatRes(DEFENDER_COST)} ouro` : `${d.costBread} pão`;
         const can = type === "defender" ? gold >= DEFENDER_COST : bread >= d.costBread;
         return (
-          <div key={type} className="flex items-center gap-3 rounded-md border border-line bg-ink-2/50 p-3">
+          <div
+            key={type}
+            className="flex items-center gap-3 rounded-md border border-line bg-ink-2/50 p-3"
+          >
             <img src={`/game/${troopAsset(type)}.png`} alt="" className="size-12 object-contain" />
             <div className="min-w-0 flex-1">
               <p className="font-display text-sm">
@@ -562,7 +655,10 @@ function ArmySheet() {
         <div className="space-y-2">
           <p className="font-display text-sm">Fila</p>
           {training.map((j) => (
-            <div key={j.id} className="flex items-center justify-between rounded-md border border-line px-3 py-2 text-sm">
+            <div
+              key={j.id}
+              className="flex items-center justify-between rounded-md border border-line px-3 py-2 text-sm"
+            >
               <span>
                 {TROOPS[j.type].name} · {formatTime(j.remaining)}
               </span>
@@ -589,7 +685,10 @@ function ChatSheet() {
     <div className="flex h-[52dvh] flex-col md:h-[calc(100dvh-8rem)]">
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
         {chat.map((m) => (
-          <div key={m.id} className={`rounded-md px-3 py-2 ${m.self ? "bg-moss/20 ml-6" : "bg-ink-2 mr-4"}`}>
+          <div
+            key={m.id}
+            className={`rounded-md px-3 py-2 ${m.self ? "bg-moss/20 ml-6" : "bg-ink-2 mr-4"}`}
+          >
             <p className="font-display text-[0.7rem] text-niens">{m.fromNick}</p>
             <p className="text-sm leading-snug">{m.text}</p>
           </div>
@@ -610,7 +709,10 @@ function ChatSheet() {
           className="h-11 flex-1 rounded-md border border-line bg-ink px-3 text-sm outline-none"
           placeholder="Fale com os senhores"
         />
-        <button type="submit" className="h-11 rounded-md bg-parchment px-4 font-display text-sm text-ink">
+        <button
+          type="submit"
+          className="h-11 rounded-md bg-parchment px-4 font-display text-sm text-ink"
+        >
           Enviar
         </button>
       </form>
@@ -648,17 +750,26 @@ function MarketSheet() {
   return (
     <div className="space-y-4">
       <p className="text-sm text-parchment-dim">
-        Niens custam {formatRes(NIEN_COST_GOLD)} e vendem por {formatRes(NIEN_SELL_GOLD)}. O spread força o comércio entre senhores.
-        Seu ID <span className="font-display text-niens">{player.id}</span>.
+        Niens custam {formatRes(NIEN_COST_GOLD)} e vendem por {formatRes(NIEN_SELL_GOLD)}. O spread
+        força o comércio entre senhores. Seu ID{" "}
+        <span className="font-display text-niens">{player.id}</span>.
       </p>
       <div className="grid grid-cols-2 gap-2">
-        <button type="button" onClick={buyNien} className="rounded-md border border-line bg-ink-2 px-3 py-3 text-left text-sm">
+        <button
+          type="button"
+          onClick={buyNien}
+          className="rounded-md border border-line bg-ink-2 px-3 py-3 text-left text-sm"
+        >
           <span className="block font-display text-niens">Comprar 1 Nien</span>
           <span className="text-xs text-parchment-dim">
             {formatRes(NIEN_COST_GOLD)} ouro{gold < NIEN_COST_GOLD ? " · falta ouro" : ""}
           </span>
         </button>
-        <button type="button" onClick={sellNien} className="rounded-md border border-line bg-ink-2 px-3 py-3 text-left text-sm">
+        <button
+          type="button"
+          onClick={sellNien}
+          className="rounded-md border border-line bg-ink-2 px-3 py-3 text-left text-sm"
+        >
           <span className="block font-display text-gold">Vender 1 Nien</span>
           <span className="text-xs text-parchment-dim">
             {formatRes(NIEN_SELL_GOLD)} ouro{niens < 1 ? " · sem gemas" : ""}
@@ -669,7 +780,10 @@ function MarketSheet() {
         <p className="mb-2 font-display text-sm">Ofertas dos senhores</p>
         <div className="space-y-2">
           {offers.map((o) => (
-            <div key={o.id} className="flex items-center justify-between rounded-md border border-line px-3 py-2">
+            <div
+              key={o.id}
+              className="flex items-center justify-between rounded-md border border-line px-3 py-2"
+            >
               <div>
                 <p className="text-sm">{o.sellerNick}</p>
                 <p className="text-xs text-parchment-dim">
@@ -681,7 +795,9 @@ function MarketSheet() {
               </button>
             </div>
           ))}
-          {offers.length === 0 && <p className="text-sm text-parchment-dim">O tabuleiro está vazio.</p>}
+          {offers.length === 0 && (
+            <p className="text-sm text-parchment-dim">O tabuleiro está vazio.</p>
+          )}
         </div>
       </div>
       <form
@@ -722,7 +838,10 @@ function MarketSheet() {
             min={1}
             className="h-11 w-24 rounded-md border border-line bg-ink px-3 text-sm"
           />
-          <button type="submit" className="h-11 flex-1 rounded-md bg-parchment font-display text-sm text-ink">
+          <button
+            type="submit"
+            className="h-11 flex-1 rounded-md bg-parchment font-display text-sm text-ink"
+          >
             Enviar
           </button>
         </div>
@@ -734,7 +853,15 @@ function MarketSheet() {
             {ledger.slice(0, 16).map((t) => (
               <p key={t.id} className="text-xs text-parchment-dim">
                 {t.incoming ? "Recebeste" : "Enviaste"} {t.amount}{" "}
-                {t.kind === "gold" ? "ouro" : t.kind === "bread" ? "pão" : t.kind === "niens" ? "Niens" : t.kind === "troopCards" ? "cartas tropa" : "cartas general"}{" "}
+                {t.kind === "gold"
+                  ? "ouro"
+                  : t.kind === "bread"
+                    ? "pão"
+                    : t.kind === "niens"
+                      ? "Niens"
+                      : t.kind === "troopCards"
+                        ? "cartas tropa"
+                        : "cartas general"}{" "}
                 {t.incoming ? `de ${t.fromNick}` : `a ${t.toNick}`}
               </p>
             ))}
@@ -771,12 +898,19 @@ function InfoSheet() {
   const hp = buildingHp(b.type, b.level);
   const sameType = buildings.filter((x) => x.type === b.type && x.level < countyLevel);
   const typeCost = sameType.reduce((n, x) => n + upgradeCost(x.type, x.level), 0);
-  const row = b.type === "wall" ? buildings.filter((x) => selectedRow.includes(x.id) && x.level < countyLevel) : [];
+  const row =
+    b.type === "wall"
+      ? buildings.filter((x) => selectedRow.includes(x.id) && x.level < countyLevel)
+      : [];
   const rowCost = row.reduce((n, x) => n + upgradeCost("wall", x.level), 0);
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
-        <img src={`/game/${b.type === "wall" ? (b.dir === "v" ? "wall_v" : "wall_h") : b.type}.png`} alt="" className="size-16 object-contain" />
+        <img
+          src={`/game/${b.type === "wall" ? (b.dir === "v" ? "wall_v" : "wall_h") : b.type}.png`}
+          alt=""
+          className="size-16 object-contain"
+        />
         <div>
           <p className="font-display text-lg">{d.name}</p>
           <p className="text-sm text-parchment-dim">
@@ -785,7 +919,9 @@ function InfoSheet() {
         </div>
       </div>
       <p className="text-sm leading-relaxed text-parchment-dim">{d.desc}</p>
-      <p className="text-xs text-parchment-dim">Toque 3 vezes seguidas para mover. A estrutura fica no chão.</p>
+      <p className="text-xs text-parchment-dim">
+        Toque 3 vezes seguidas para mover. A estrutura fica no chão.
+      </p>
       {(b.type === "mine" || b.type === "farm") && (
         <button
           type="button"
@@ -802,26 +938,47 @@ function InfoSheet() {
       )}
       {b.type === "wall" && (
         <div className="grid grid-cols-2 gap-2">
-          <button type="button" onClick={() => rotateWall(b.id)} className="h-11 rounded-md border border-line bg-ink-2 text-sm">
+          <button
+            type="button"
+            onClick={() => rotateWall(b.id)}
+            className="h-11 rounded-md border border-line bg-ink-2 text-sm"
+          >
             Girar {b.dir === "v" ? "I → —" : "— → I"}
           </button>
-          <button type="button" onClick={() => selectWallRow(b.id)} className="h-11 rounded-md border border-line bg-ink-2 text-sm">
+          <button
+            type="button"
+            onClick={() => selectWallRow(b.id)}
+            className="h-11 rounded-md border border-line bg-ink-2 text-sm"
+          >
             Fileira · {selectedRow.length || 1}
           </button>
         </div>
       )}
       {b.type === "wall" && row.length > 0 && (
-        <button type="button" onClick={() => upgradeWallRow(b.id)} className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm">
-          Melhorar fileira ({row.length}) · {formatRes(rowCost)} ouro{gold < rowCost ? " · falta" : ""}
+        <button
+          type="button"
+          onClick={() => upgradeWallRow(b.id)}
+          className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm"
+        >
+          Melhorar fileira ({row.length}) · {formatRes(rowCost)} ouro
+          {gold < rowCost ? " · falta" : ""}
         </button>
       )}
       {b.type === "training" && (
-        <button type="button" onClick={() => setSheet("train")} className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink">
+        <button
+          type="button"
+          onClick={() => setSheet("train")}
+          className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink"
+        >
           Evoluir tropas
         </button>
       )}
       {b.type === "castle" && (
-        <button type="button" onClick={upgradeCounty} className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 font-display text-sm">
+        <button
+          type="button"
+          onClick={upgradeCounty}
+          className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 font-display text-sm"
+        >
           {countyLevel >= COUNTY_MAX
             ? "Condado no máximo"
             : countyCost.niens
@@ -838,13 +995,21 @@ function InfoSheet() {
           >
             Melhorar · {cost} ouro
           </button>
-          <button type="button" onClick={() => demolish(b.id)} className="h-11 rounded-md border border-iron/40 text-sm text-iron">
+          <button
+            type="button"
+            onClick={() => demolish(b.id)}
+            className="h-11 rounded-md border border-iron/40 text-sm text-iron"
+          >
             Demolir
           </button>
         </div>
       )}
       {b.type !== "castle" && sameType.length > 1 && (
-        <button type="button" onClick={() => upgradeType(b.type)} className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm">
+        <button
+          type="button"
+          onClick={() => upgradeType(b.type)}
+          className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm"
+        >
           Melhorar todas as {d.name} ({sameType.length}) · {formatRes(typeCost)} ouro
           {gold < typeCost ? " · falta" : ""}
         </button>
@@ -871,7 +1036,8 @@ function ProfileSheet() {
   const referredBy = useGame((s) => s.referredBy);
   const shieldUntil = useGame((s) => s.shieldUntil);
   const [name, setName] = useState(nickDraft || player.nick);
-  const troops = army.infantry + army.archers + army.cavalry + army.general + army.generaless + army.defender;
+  const troops =
+    army.infantry + army.archers + army.cavalry + army.general + army.generaless + army.defender;
   const shieldLeft = Math.max(0, shieldUntil - Date.now());
   return (
     <div className="space-y-4">
@@ -884,7 +1050,11 @@ function ProfileSheet() {
             maxLength={18}
             className="h-11 flex-1 rounded-md border border-line bg-ink px-3 text-sm outline-none"
           />
-          <button type="button" onClick={() => rename(name)} className="h-11 rounded-md bg-parchment px-3 font-display text-sm text-ink">
+          <button
+            type="button"
+            onClick={() => rename(name)}
+            className="h-11 rounded-md bg-parchment px-3 font-display text-sm text-ink"
+          >
             Guardar
           </button>
         </div>
@@ -907,14 +1077,26 @@ function ProfileSheet() {
         </p>
       </div>
       <ul className="space-y-1 text-sm">
-        <li>Condado nível {countyLevel}/{COUNTY_MAX}</li>
-        <li>Ouro {formatRes(gold)} · Pão {formatRes(bread)} · Niens {formatRes(niens)}</li>
-        <li>Cartas tropa {troopCards} · Cartas general {generalCards}</li>
-        <li>Estrelas {stars} · Incursões {raidsWon}</li>
-        <li>Tropas {troops} · Estruturas {buildings.length}</li>
+        <li>
+          Condado nível {countyLevel}/{COUNTY_MAX}
+        </li>
+        <li>
+          Ouro {formatRes(gold)} · Pão {formatRes(bread)} · Niens {formatRes(niens)}
+        </li>
+        <li>
+          Cartas tropa {troopCards} · Cartas general {generalCards}
+        </li>
+        <li>
+          Estrelas {stars} · Incursões {raidsWon}
+        </li>
+        <li>
+          Tropas {troops} · Estruturas {buildings.length}
+        </li>
         {shieldLeft > 0 && <li>Escudo {formatTime(shieldLeft)}</li>}
         {referredBy && <li className="text-parchment-dim">Convidado por {referredBy}</li>}
-        <li className="text-parchment-dim">Fundado em {new Date(player.createdAt).toLocaleDateString("pt")}</li>
+        <li className="text-parchment-dim">
+          Fundado em {new Date(player.createdAt).toLocaleDateString("pt")}
+        </li>
       </ul>
       <a
         href={WHATSAPP_GROUP}
@@ -946,8 +1128,14 @@ function TrainSheet() {
       <p className="text-sm text-parchment-dim">
         Cartas tropa {troopCards} · Cartas general {generalCards}. Campo Nv.{campLevel}.
       </p>
-      <button type="button" onClick={upgradeCamp} className="h-11 w-full rounded-md border border-line bg-ink-2 text-sm">
-        {campLevel >= countyLevel ? "Campo no limite do condado" : `Melhorar campo · ${formatRes(campCost)} ouro`}
+      <button
+        type="button"
+        onClick={upgradeCamp}
+        className="h-11 w-full rounded-md border border-line bg-ink-2 text-sm"
+      >
+        {campLevel >= countyLevel
+          ? "Campo no limite do condado"
+          : `Melhorar campo · ${formatRes(campCost)} ouro`}
       </button>
       {TROOP_ORDER.filter((t) => t !== "defender").map((type: TroopType) => {
         const lv = troopLevels[type];
@@ -956,25 +1144,37 @@ function TrainSheet() {
         const g = hero ? 0 : troopUpgradeGold(lv + 1);
         const br = hero ? 0 : troopUpgradeBread(lv + 1);
         return (
-          <div key={type} className="flex items-center gap-3 rounded-md border border-line bg-ink-2/50 p-3">
+          <div
+            key={type}
+            className="flex items-center gap-3 rounded-md border border-line bg-ink-2/50 p-3"
+          >
             <img src={`/game/${troopAsset(type)}.png`} alt="" className="size-12 object-contain" />
             <div className="min-w-0 flex-1">
               <p className="font-display text-sm">
                 {TROOPS[type].name} Nv.{lv}
               </p>
               <p className="text-xs text-parchment-dim">
-                {scaledTroop(type, lv, campLevel).hp} HP · {scaledTroop(type, lv, campLevel).dps} dano/s
+                {scaledTroop(type, lv, campLevel).hp} HP · {scaledTroop(type, lv, campLevel).dps}{" "}
+                dano/s
                 {" · "}
-                {hero ? `${cards} cartas de general` : `${cards} cartas · ${formatRes(g)} ouro · ${br} pão`}
+                {hero
+                  ? `${cards} cartas de general`
+                  : `${cards} cartas · ${formatRes(g)} ouro · ${br} pão`}
               </p>
             </div>
-            <button type="button" onClick={() => upgradeTroop(type)} className="rounded-md bg-parchment px-3 py-2 font-display text-xs text-ink">
+            <button
+              type="button"
+              onClick={() => upgradeTroop(type)}
+              className="rounded-md bg-parchment px-3 py-2 font-display text-xs text-ink"
+            >
               Evoluir
             </button>
           </div>
         );
       })}
-      <p className="text-xs text-parchment-dim">Ouro em estoque {formatRes(gold)} · Pão {formatRes(bread)}</p>
+      <p className="text-xs text-parchment-dim">
+        Ouro em estoque {formatRes(gold)} · Pão {formatRes(bread)}
+      </p>
     </div>
   );
 }
@@ -992,11 +1192,16 @@ function PassSheet() {
   return (
     <div className="space-y-3">
       <p className="text-sm text-parchment-dim">
-        Temporada {pass.season}. O primeiro passe é setembro. Dia 1, 30 dias (fevereiro 27). 50 níveis, 6 estrelas cada.
+        Temporada {pass.season}. O primeiro passe é setembro. Dia 1, 30 dias (fevereiro 27). 50
+        níveis, 6 estrelas cada.
       </p>
       {!win.active && <p className="text-sm text-iron">Passe em espera até 1º do mês.</p>}
       {!pass.purchased ? (
-        <button type="button" onClick={buyPass} className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink">
+        <button
+          type="button"
+          onClick={buyPass}
+          className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink"
+        >
           Selar passe · {cost} Niens {niens < cost ? "(faltam gemas)" : ""}
         </button>
       ) : (
@@ -1004,7 +1209,12 @@ function PassSheet() {
           <p className="text-sm text-niens">
             Estrelas {pass.stars} · Nível {reached}/{PASS_LEVELS}
           </p>
-          <button type="button" onClick={skipPass} disabled={!win.active} className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm disabled:opacity-40">
+          <button
+            type="button"
+            onClick={skipPass}
+            disabled={!win.active}
+            className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm disabled:opacity-40"
+          >
             Pular 1 nível · 1 Nien {niens < 1 ? "(faltam gemas)" : "e recebe o prêmio"}
           </button>
         </>
@@ -1015,14 +1225,22 @@ function PassSheet() {
           const claimed = pass.claimed.includes(lv);
           const ready = pass.purchased && lv <= reached && !claimed;
           return (
-            <div key={lv} className="flex items-center justify-between rounded-md border border-line px-3 py-2 text-sm">
+            <div
+              key={lv}
+              className="flex items-center justify-between rounded-md border border-line px-3 py-2 text-sm"
+            >
               <span>
                 Nv.{lv} · {r.label}
               </span>
               {claimed ? (
                 <span className="text-xs text-parchment-dim">feito</span>
               ) : (
-                <button type="button" disabled={!ready} onClick={() => claimPass(lv)} className="text-xs text-niens disabled:opacity-30">
+                <button
+                  type="button"
+                  disabled={!ready}
+                  onClick={() => claimPass(lv)}
+                  className="text-xs text-niens disabled:opacity-30"
+                >
                   Receber
                 </button>
               )}
@@ -1048,7 +1266,8 @@ function AllianceSheet() {
     return (
       <div className="space-y-3">
         <p className="text-sm text-parchment-dim">
-          Fundar custa {formatRes(ALLIANCE_FOUND_GOLD)} ouro e libera o chat. Guerra: sábados 8h–23h de Brasília. Pares de alianças; ímpar fica de fora.
+          Fundar custa {formatRes(ALLIANCE_FOUND_GOLD)} ouro e libera o chat. Guerra: sábados 8h–23h
+          de Brasília. Pares de alianças; ímpar fica de fora.
         </p>
         <input
           value={name}
@@ -1056,17 +1275,26 @@ function AllianceSheet() {
           placeholder="Nome da aliança"
           className="h-11 w-full rounded-md border border-line bg-ink px-3 text-sm"
         />
-        <button type="button" onClick={() => foundAlliance(name)} className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink">
-          Fundar · {formatRes(ALLIANCE_FOUND_GOLD)} {gold < ALLIANCE_FOUND_GOLD ? "(falta ouro)" : ""}
+        <button
+          type="button"
+          onClick={() => foundAlliance(name)}
+          className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink"
+        >
+          Fundar · {formatRes(ALLIANCE_FOUND_GOLD)}{" "}
+          {gold < ALLIANCE_FOUND_GOLD ? "(falta ouro)" : ""}
         </button>
-        <p className="text-xs text-parchment-dim">Alianças do reino: {ALLIANCES.map((a) => a.name).join(", ")}</p>
+        <p className="text-xs text-parchment-dim">
+          Alianças do reino: {ALLIANCES.map((a) => a.name).join(", ")}
+        </p>
       </div>
     );
   }
   return (
     <div className="space-y-3">
       <p className="font-display">{alliance.name}</p>
-      <p className="text-xs text-parchment-dim">{alliance.members.map((m) => m.nick).join(" · ")}</p>
+      <p className="text-xs text-parchment-dim">
+        {alliance.members.map((m) => m.nick).join(" · ")}
+      </p>
       {war && (
         <div className="rounded-md border border-line bg-ink-2 p-3 text-sm">
           {war.sittingOut ? (
@@ -1107,7 +1335,10 @@ function AllianceSheet() {
           className="h-11 flex-1 rounded-md border border-line bg-ink px-3 text-sm"
           placeholder="Chat da aliança"
         />
-        <button type="submit" className="h-11 rounded-md bg-parchment px-3 font-display text-sm text-ink">
+        <button
+          type="submit"
+          className="h-11 rounded-md bg-parchment px-3 font-display text-sm text-ink"
+        >
           Enviar
         </button>
       </form>
@@ -1133,12 +1364,19 @@ function RaidSelect() {
               {Date.now() < shieldUntil ? " · escudo ativo (não te atacam)" : ""}
             </p>
           </div>
-          <button type="button" onClick={returnVillage} className="size-10 rounded-md border border-line" aria-label="Voltar">
+          <button
+            type="button"
+            onClick={returnVillage}
+            className="size-10 rounded-md border border-line"
+            aria-label="Voltar"
+          >
             <X className="mx-auto size-4" />
           </button>
         </div>
         {foes.length > 0 && (
-          <p className="mb-2 text-xs text-niens">Guerra: {war?.foeName}. Máx. 2 ataques por base.</p>
+          <p className="mb-2 text-xs text-niens">
+            Guerra: {war?.foeName}. Máx. 2 ataques por base.
+          </p>
         )}
         <div className="space-y-2">
           {LORDS.map((l) => {
@@ -1177,10 +1415,15 @@ function MarchOverlay() {
     const t = window.setTimeout(() => finishMarch(), MARCH_MS);
     return () => window.clearTimeout(t);
   }, [finishMarch]);
-  const n = army.infantry + army.archers + army.cavalry + army.defender + army.general + army.generaless;
+  const n =
+    army.infantry + army.archers + army.cavalry + army.defender + army.general + army.generaless;
   return (
     <div className="absolute inset-0 z-40 flex flex-col items-center justify-end bg-ink/80">
-      <img src="/game/splash.jpg" alt="" className="absolute inset-0 h-full w-full object-cover opacity-40" />
+      <img
+        src="/game/splash.jpg"
+        alt=""
+        className="absolute inset-0 h-full w-full object-cover opacity-40"
+      />
       <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/70 to-ink/30" />
       <div className="relative z-10 mb-24 w-full overflow-hidden">
         <div className="flex animate-[march_3.2s_linear_forwards] gap-3 px-8">
@@ -1196,10 +1439,18 @@ function MarchOverlay() {
         </div>
       </div>
       <div className="relative z-10 mb-[max(2rem,env(safe-area-inset-bottom))] px-6 text-center">
-        <p className="font-display text-xs uppercase tracking-[0.28em] text-parchment-dim">Marcha</p>
-        <h2 className="mt-2 font-display text-2xl">Sobre {marchLord?.nick ?? "o condado inimigo"}</h2>
+        <p className="font-display text-xs uppercase tracking-[0.28em] text-parchment-dim">
+          Marcha
+        </p>
+        <h2 className="mt-2 font-display text-2xl">
+          Sobre {marchLord?.nick ?? "o condado inimigo"}
+        </h2>
         <p className="mt-2 text-sm text-parchment-dim">{n} soldados avançam pelas colinas.</p>
-        <button type="button" onClick={finishMarch} className="mt-4 h-11 rounded-md border border-line bg-panel px-5 font-display text-sm">
+        <button
+          type="button"
+          onClick={finishMarch}
+          className="mt-4 h-11 rounded-md border border-line bg-panel px-5 font-display text-sm"
+        >
           Saltar
         </button>
       </div>
@@ -1224,7 +1475,8 @@ function SpectateHUD() {
       </div>
       <div className="pointer-events-auto absolute inset-x-0 bottom-0 pb-[max(0.8rem,env(safe-area-inset-bottom))]">
         <p className="mx-auto w-[min(92%,22rem)] rounded-md border border-line bg-panel/90 px-4 py-3 text-center text-sm shadow-panel">
-          Estás a ser atacado por {raidTarget?.nick ?? "um senhor"}. Só podes assistir. Pão e Niens estão a salvo. Escudo de 1 hora após o combate.
+          Estás a ser atacado por {raidTarget?.nick ?? "um senhor"}. Só podes assistir. Pão e Niens
+          estão a salvo. Escudo de 1 hora após o combate.
         </p>
       </div>
     </div>
@@ -1257,7 +1509,9 @@ function BattleHUD() {
       <div className="pointer-events-auto absolute left-1/2 top-[max(4.5rem,calc(env(safe-area-inset-top)+3.2rem))] flex -translate-x-1/2 items-center gap-3 rounded-md border border-line bg-panel/90 px-3 py-1.5">
         <span className="font-display tabular text-sm">{formatTime(left)}</span>
         <span className="text-xs text-parchment-dim">{pct}% destruído</span>
-        {raidTarget && <span className="hidden text-xs text-parchment-dim sm:inline">{raidTarget.nick}</span>}
+        {raidTarget && (
+          <span className="hidden text-xs text-parchment-dim sm:inline">{raidTarget.nick}</span>
+        )}
       </div>
 
       {screen === "prep" && (
@@ -1277,7 +1531,9 @@ function BattleHUD() {
               >
                 <span>{TROOPS[t].name}</span>
                 <span className="tabular">{battle?.remainingOf(t) ?? army[t]}</span>
-                <span className="tabular text-[0.6rem] text-parchment-dim">{scaledTroop(t, troopLevels[t], campLevel).dps} dano/s</span>
+                <span className="tabular text-[0.6rem] text-parchment-dim">
+                  {scaledTroop(t, troopLevels[t], campLevel).dps} dano/s
+                </span>
               </button>
             ))}
           </div>
@@ -1293,12 +1549,18 @@ function BattleHUD() {
 
       {screen === "battle" && (
         <div className="pointer-events-auto absolute inset-x-0 bottom-0 pb-[max(0.6rem,env(safe-area-inset-bottom))]">
-          <p className="mb-2 text-center text-xs text-parchment-dim">Toque uma construção: tropas próximas focam nela.</p>
+          <p className="mb-2 text-center text-xs text-parchment-dim">
+            Toque uma construção: tropas próximas focam nela.
+          </p>
           {confirm ? (
             <div className="mx-auto mb-2 w-[min(92%,22rem)] rounded-md border border-line bg-panel p-3 shadow-panel">
               <p className="text-sm">Recuar agora? Os soldados vivos voltam. Os mortos não.</p>
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => setConfirm(false)} className="h-11 rounded-md border border-line bg-ink-2 text-sm">
+                <button
+                  type="button"
+                  onClick={() => setConfirm(false)}
+                  className="h-11 rounded-md border border-line bg-ink-2 text-sm"
+                >
                   Continuar
                 </button>
                 <button
@@ -1336,14 +1598,23 @@ function Results() {
   if (!r) {
     return (
       <div className="absolute inset-0 z-40 flex items-center justify-center bg-ink/70">
-        <button type="button" onClick={returnVillage} className="rounded-md bg-parchment px-4 py-3 text-ink">
+        <button
+          type="button"
+          onClick={returnVillage}
+          className="rounded-md bg-parchment px-4 py-3 text-ink"
+        >
           Voltar
         </button>
       </div>
     );
   }
   const alive =
-    r.survivors.infantry + r.survivors.archers + r.survivors.cavalry + r.survivors.general + r.survivors.generaless + r.survivors.defender;
+    r.survivors.infantry +
+    r.survivors.archers +
+    r.survivors.cavalry +
+    r.survivors.general +
+    r.survivors.generaless +
+    r.survivors.defender;
   return (
     <div className="absolute inset-0 z-40 flex items-end justify-center bg-ink/70 md:items-center">
       <div className="panel w-full max-w-md rounded-t-xl p-5 md:rounded-xl">
@@ -1366,13 +1637,20 @@ function Results() {
         {!spectator && (
           <div className="mt-2 flex gap-1 text-niens">
             {[0, 1, 2].map((i) => (
-              <Star key={i} className="size-6" fill={i < r.stars ? "currentColor" : "none"} strokeWidth={1.5} />
+              <Star
+                key={i}
+                className="size-6"
+                fill={i < r.stars ? "currentColor" : "none"}
+                strokeWidth={1.5}
+              />
             ))}
           </div>
         )}
         <ul className="mt-4 space-y-1 text-sm">
           <li>Destruição: {Math.round(r.destruction * 100)}%</li>
-          <li>{spectator ? "Ouro perdido" : "Ouro saqueado"}: {r.gold} (máx. 8.400)</li>
+          <li>
+            {spectator ? "Ouro perdido" : "Ouro saqueado"}: {r.gold} (máx. 8.400)
+          </li>
           {!spectator && <li>Vivos: {alive} voltaram ao acampamento.</li>}
           {spectator && <li>Escudo de 1 hora ativado. Pão e Niens intactos.</li>}
         </ul>
@@ -1448,15 +1726,23 @@ function RankSheet() {
   return (
     <div className="space-y-3">
       <p className="text-sm text-parchment-dim">
-        Segunda 8h às domingo 23h de Brasília. Quem mais ganhar estrelas entra no top 20.
-        20º–8º ouro (50 mil a 300 mil). 7º–4º: 3 cartas tropa. Top 3: 4 cartas tropa + 2 general.
+        Segunda 8h às domingo 23h de Brasília. Quem mais ganhar estrelas entra no top 20. 20º–8º
+        ouro (50 mil a 300 mil). 7º–4º: 3 cartas tropa. Top 3: 4 cartas tropa + 2 general.
       </p>
       <p className="text-xs text-parchment-dim">
-        {win.open ? "Semana aberta." : win.claim ? "Semana fechada — recolhe o prêmio." : "À espera da segunda 8h."}
+        {win.open
+          ? "Semana aberta."
+          : win.claim
+            ? "Semana fechada — recolhe o prêmio."
+            : "À espera da segunda 8h."}
         {rank > 0 ? ` Tu estás em #${rank}.` : ""}
       </p>
       {claim && !claimed && rank > 0 && rank <= 20 && (
-        <button type="button" onClick={() => void onClaim()} className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink">
+        <button
+          type="button"
+          onClick={() => void onClaim()}
+          className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink"
+        >
           Receber prêmio · {weeklyPrize(rank)?.label}
         </button>
       )}
