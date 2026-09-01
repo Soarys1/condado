@@ -756,6 +756,7 @@ export class Battle {
     if (castleDown) stars += 1;
     if (destruction >= 0.999) stars = 3;
     if (retreated) stars = Math.min(stars, 2);
+    if (destruction >= 0.99) this.goldLoot = LOOT_CAP;
     const survivors: ArmyCounts = { infantry: 0, archers: 0, cavalry: 0, general: 0, generaless: 0, defender: 0 };
     for (const t of this.troops) {
       if (t.alive) survivors[t.type] += 1;

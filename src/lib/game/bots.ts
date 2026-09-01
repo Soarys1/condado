@@ -112,3 +112,13 @@ export function botArmy(rank: number): ArmyCounts {
     defender: 0,
   };
 }
+
+export function botWeekBoard(weekKey: string): Array<{ playerId: string; nick: string; stars: number; bot: true }> {
+  return LORDS.map((l, i) => {
+    let h = 2166136261;
+    const seed = weekKey + l.id;
+    for (let c = 0; c < seed.length; c++) h = Math.imul(h ^ seed.charCodeAt(c), 16777619);
+    const stars = 12 + ((h >>> 0) % 90) + i * 3;
+    return { playerId: l.id, nick: l.nick, stars, bot: true as const };
+  });
+}

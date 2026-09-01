@@ -63,6 +63,18 @@ export interface RaidLog {
   incoming: boolean;
 }
 
+export interface TransferRecord {
+  id: string;
+  at: number;
+  fromId: string;
+  fromNick: string;
+  toId: string;
+  toNick: string;
+  kind: ResourceKind;
+  amount: number;
+  incoming: boolean;
+}
+
 export interface MarketOffer {
   id: string;
   sellerId: string;
@@ -141,6 +153,10 @@ export interface SaveState {
   pass: BattlePassState;
   alliance: AllianceState | null;
   war: WarState | null;
+  weekStars: number;
+  weekKey: string;
+  weekClaimed: string | null;
+  ledger: TransferRecord[];
 }
 
 export type SheetId =
@@ -154,6 +170,7 @@ export type SheetId =
   | "pass"
   | "alliance"
   | "train"
+  | "rank"
   | null;
 
 export interface SelectedCell {

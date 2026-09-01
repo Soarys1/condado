@@ -13,3 +13,5 @@ dist/
 AGENTS.md
 .DS_Store
 *.log
+*firebase*adminsdk*
+**/serviceAccount*.json

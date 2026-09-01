@@ -44,6 +44,10 @@ export function defaultSave(nick = "Senhor", referredBy: string | null = null): 
     pass: { season, purchased: false, stars: 0, claimed: [] },
     alliance: null,
     war: null,
+    weekStars: 0,
+    weekKey: "",
+    weekClaimed: null,
+    ledger: [],
   };
 }
 
@@ -91,7 +95,22 @@ function migrate(s: SaveState): SaveState {
     pass,
     alliance: s.alliance ?? null,
     war: s.war ?? null,
+    weekStars: s.weekStars ?? 0,
+    weekKey: s.weekKey ?? "",
+    weekClaimed: s.weekClaimed ?? null,
+    ledger: Array.isArray(s.ledger) ? s.ledger.slice(0, 40) : [],
   };
+}
+
+let cloudSync: ((s: SaveState) => Promise<void>) | null = null;
+let cloudTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function setCloudSync(fn: ((s: SaveState) => Promise<void>) | null) {
+  cloudSync = fn;
+}
+
+export function migrateCloud(s: SaveState): SaveState {
+  return migrate(s);
 }
 
 export function persist(state: SaveState) {
@@ -103,9 +122,16 @@ export function persist(state: SaveState) {
       chat: state.chat.slice(-40),
       allianceChat: state.allianceChat.slice(-40),
       raids: state.raids.slice(-12),
+      ledger: state.ledger.slice(0, 40),
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(blob));
     localStorage.setItem(SAVE_KEY + ".bak", JSON.stringify(blob));
+    if (cloudSync) {
+      if (cloudTimer) clearTimeout(cloudTimer);
+      cloudTimer = setTimeout(() => {
+        void cloudSync?.(blob);
+      }, 1400);
+    }
   } catch {
     /* quota */
   }

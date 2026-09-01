@@ -1,5 +1,5 @@
 export const SAVE_KEY = "condado.save.v3";
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 
 export const GRID = 32;
 export const TILE_W = 68;
@@ -21,12 +21,12 @@ export const SPEED_TRAIN_GOLD = 2_500;
 export const LOOT_BANDS = [
   { at: 0.33, gold: 2700 },
   { at: 0.66, gold: 2700 },
-  { at: 1, gold: 3000 },
+  { at: 0.99, gold: 3000 },
 ] as const;
 export const LOOT_CAP = 8400;
 
 export const SHIELD_MS = 60 * 60 * 1000;
-export const REFERRAL_GOLD = 100_000;
+export const REFERRAL_GOLD = 300_000;
 export const ALLIANCE_FOUND_GOLD = 5_000_000;
 export const DEFENDER_COST = 5_000;
 export const PASS_LEVELS = 50;
@@ -39,6 +39,7 @@ export const GENERAL_MAX_LEVEL = 7;
 export const GENERAL_UNLOCK_COUNTY = 8;
 export const BUILDING_MAX = 15;
 export const MARCH_MS = 3400;
+export const WHATSAPP_GROUP = "https://chat.whatsapp.com/H5SSZINqtk0HOMPBjhTrqk?s=cl&p=a&mlu=0";
 
 export type BuildingType =
   | "castle"
@@ -119,7 +120,7 @@ export const BUILDINGS: Record<BuildingType, BuildingDef> = {
     costGold: 500,
     hp: 1100,
     size: 1,
-    damage: 80,
+    damage: 84,
     range: 5.4,
     aoe: 0,
     goldReward: 0,
@@ -132,7 +133,7 @@ export const BUILDINGS: Record<BuildingType, BuildingDef> = {
     costGold: 1500,
     hp: 900,
     size: 2,
-    damage: 65,
+    damage: 68,
     range: 8.2,
     aoe: 1.8,
     goldReward: 0,
@@ -420,20 +421,22 @@ export function passSeasonKey(now = Date.now()): { year: number; month: number; 
 
 export function passWindow(now = Date.now()): { active: boolean; endsAt: number; startsAt: number; wait: boolean } {
   const { year, month } = passSeasonKey(now);
-  const tz = "America/Sao_Paulo";
+  if (year < 2026 || (year === 2026 && month < 9)) {
+    const start = new Date("2026-09-01T00:00:00-03:00").getTime();
+    return { active: false, endsAt: start, startsAt: start, wait: true };
+  }
   const start = new Date(`${year}-${String(month).padStart(2, "0")}-01T00:00:00-03:00`).getTime();
   const durationDays = month === 2 ? 27 : 30;
   const end = start + durationDays * 24 * 3600_000;
   const nextMonth = month === 12 ? 1 : month + 1;
   const nextYear = month === 12 ? year + 1 : year;
   const nextStart = new Date(`${nextYear}-${String(nextMonth).padStart(2, "0")}-01T00:00:00-03:00`).getTime();
-  void tz;
   return { active: now >= start && now < end, endsAt: end, startsAt: start, wait: now >= end && now < nextStart };
 }
 
 export function passCostNiens(seasonKey: string): number {
   const [y, m] = seasonKey.split("-").map(Number);
-  const idx = (y! - 2026) * 12 + (m! - 1);
+  const idx = (y! - 2026) * 12 + (m! - 9);
   return PASS_BASE_NIENS + Math.max(0, idx);
 }
 
@@ -464,4 +467,64 @@ export function warWindow(now = Date.now()): { open: boolean; start: number; end
   const start = new Date(`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}T08:00:00-03:00`).getTime();
   const end = new Date(`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}T23:00:00-03:00`).getTime();
   return { open, start, end };
+}
+
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function brtParts(now: number) {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return Object.fromEntries(fmt.formatToParts(new Date(now)).map((p) => [p.type, p.value]));
+}
+
+/** Segunda 8h → domingo 23h, horário de Brasília. */
+export function rankingWindow(now = Date.now()): { key: string; open: boolean; claim: boolean; start: number; end: number } {
+  const parts = brtParts(now);
+  const wd = parts.weekday ?? "Mon";
+  const y = Number(parts.year);
+  const m = Number(parts.month);
+  const d = Number(parts.day);
+  const idx = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[wd] ?? 1;
+  const midnight = new Date(`${y}-${pad2(m)}-${pad2(d)}T00:00:00-03:00`).getTime();
+  const mondayOffset = idx === 0 ? -6 : 1 - idx;
+  let monday = midnight + mondayOffset * 24 * 3600_000;
+  let mondayParts = brtParts(monday + 12 * 3600_000);
+  let key = `${mondayParts.year}-${mondayParts.month}-${mondayParts.day}`;
+  let start = new Date(`${key}T08:00:00-03:00`).getTime();
+  if (now < start) {
+    monday -= 7 * 24 * 3600_000;
+    mondayParts = brtParts(monday + 12 * 3600_000);
+    key = `${mondayParts.year}-${mondayParts.month}-${mondayParts.day}`;
+    start = new Date(`${key}T08:00:00-03:00`).getTime();
+  }
+  const sunday = monday + 6 * 24 * 3600_000;
+  const sunParts = brtParts(sunday + 12 * 3600_000);
+  const end = new Date(`${sunParts.year}-${sunParts.month}-${sunParts.day}T23:00:00-03:00`).getTime();
+  const nextStart = start + 7 * 24 * 3600_000;
+  return {
+    key,
+    open: now >= start && now < end,
+    claim: now >= end && now < nextStart,
+    start,
+    end,
+  };
+}
+
+export function weeklyPrize(rank: number): { gold: number; troopCards: number; generalCards: number; label: string } | null {
+  if (rank < 1 || rank > 20) return null;
+  if (rank <= 3) return { gold: 0, troopCards: 4, generalCards: 2, label: "4 cartas tropa + 2 general" };
+  if (rank <= 7) return { gold: 0, troopCards: 3, generalCards: 0, label: "3 cartas tropa" };
+  const t = (20 - rank) / 12;
+  const gold = Math.round((50_000 + t * 250_000) / 1000) * 1000;
+  return { gold, troopCards: 0, generalCards: 0, label: `${gold.toLocaleString("pt")} ouro` };
 }
