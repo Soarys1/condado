@@ -239,7 +239,8 @@ export const useGame = create<GameStore>((set, get) => ({
   hydrateFromCloud: async () => {
     wireCloudSync();
     try {
-      const { save } = await pullCloud();
+      const cloudResult = await pullCloud();
+      const save = cloudResult?.save;
       if (!save) {
         set({ hydrated: true, screen: "splash" });
         return false;
@@ -1087,7 +1088,8 @@ export const useGame = create<GameStore>((set, get) => ({
         .then(async (r) => {
           if (!r.granted) return;
           try {
-            const { save } = await pullCloud();
+            const cloudResult = await pullCloud();
+            const save = cloudResult?.save;
             set({
               gold: save?.gold ?? get().gold + r.gold,
               bread: save?.bread ?? get().bread,

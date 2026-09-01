@@ -1694,7 +1694,8 @@ function RankSheet() {
       setClaimed(true);
       setMsg(`#${r.rank}: ${r.prize.label}`);
       try {
-        const { save } = await pullCloud();
+        const cloudResult = await pullCloud();
+        const save = cloudResult?.save;
         if (save) {
           useGame.setState({
             gold: save.gold,
