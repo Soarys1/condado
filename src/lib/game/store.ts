@@ -239,7 +239,8 @@ export const useGame = create<GameStore>((set, get) => ({
   hydrateFromCloud: async () => {
     wireCloudSync();
     try {
-      const { save } = await pullCloud();
+      const cloudResult = await pullCloud();
+      const save = cloudResult?.save;
       if (!save) {
         set({ hydrated: true, screen: "splash" });
         return false;
@@ -289,9 +290,15 @@ export const useGame = create<GameStore>((set, get) => ({
 
   startCloud: async (nick, referredBy) => {
     try {
-      const { save } = await createProfile({
+      const result = await createProfile({
         data: { nick, referredBy: referredBy?.trim().toUpperCase() || null },
       });
+      if (!result?.save) {
+        throw new Error(
+          "O servidor não retornou o perfil do condado. Verifique FIREBASE_SERVICE_ACCOUNT_JSON no Vercel e tente novamente.",
+        );
+      }
+      const { save } = result;
       const now = Date.now();
       const win = rankingWindow(now);
       set({
@@ -1081,7 +1088,8 @@ export const useGame = create<GameStore>((set, get) => ({
         .then(async (r) => {
           if (!r.granted) return;
           try {
-            const { save } = await pullCloud();
+            const cloudResult = await pullCloud();
+            const save = cloudResult?.save;
             set({
               gold: save?.gold ?? get().gold + r.gold,
               bread: save?.bread ?? get().bread,
