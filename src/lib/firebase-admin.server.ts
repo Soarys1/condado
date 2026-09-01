@@ -1,4 +1,5 @@
 import { getApps, initializeApp, cert, type App } from "firebase-admin/app";
+import { getAuth, type Auth } from "firebase-admin/auth";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
 
 let app: App | undefined;
@@ -31,9 +32,17 @@ function getServiceAccount() {
   return { projectId, clientEmail, privateKey: privateKey.replace(/\\n/g, "\n") };
 }
 
-export function getAdminFirestore(): Firestore {
+function getAdminApp(): App {
   if (!app) {
     app = getApps()[0] ?? initializeApp({ credential: cert(getServiceAccount()) });
   }
-  return getFirestore(app);
+  return app;
+}
+
+export function getAdminFirestore(): Firestore {
+  return getFirestore(getAdminApp());
+}
+
+export function getAdminAuth(): Auth {
+  return getAuth(getAdminApp());
 }
