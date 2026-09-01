@@ -1,157 +1,108 @@
-import { useState, type FormEvent } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { GROK_PROVIDERS, authClient, authEnabled, signIn } from "@/lib/auth/client";
-import { createProfile } from "@/lib/game/cloud";
-import { WHATSAPP_GROUP } from "@/lib/game/constants";
+"use client";
 
-export const Route = createFileRoute("/login")({ component: Login });
+import { useState } from "react";
+import { auth, db } from "@/lib/firebase"; 
+import { 
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword,
+  GoogleAuthProvider,
+  signInWithPopup
+} from "firebase/auth";
+import { doc, setDoc } from "firebase/firestore";
 
-function Login() {
-  const [mode, setMode] = useState<"in" | "up">("in");
+export default function AuthForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [nomeCondado, setNomeCondado] = useState("");
+  const [erro, setErro] = useState("");
+  const [isLogin, setIsLogin] = useState(true);
 
-  async function onEmail(e: FormEvent) {
+  const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
-    setErr(null);
-    setBusy(true);
+    setErro("");
+
     try {
-      if (mode === "up") {
-        const nick = name.trim();
-        if (nick.length < 3) throw new Error("O nome do condado precisa de ao menos 3 letras.");
-        const { error } = await authClient.signUp.email({
-          email: email.trim(),
-          password,
-          name: nick,
-        });
-        if (error) throw new Error(error.message ?? "Não foi possível criar a conta.");
-        try {
-          await createProfile({ data: { nick } });
-        } catch {
-          /* splash pede outro nome se este já estiver tomado */
-        }
+      if (isLogin) {
+        await signInWithEmailAndPassword(auth, email, password);
+        alert("Bem-vindo de volta ao Condado!");
       } else {
-        const { error } = await authClient.signIn.email({
-          email: email.trim(),
-          password,
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
+
+        await setDoc(doc(db, "usuarios", user.uid), {
+          email: user.email,
+          condado: nomeCondado,
+          createdAt: new Date()
         });
-        if (error) throw new Error(error.message ?? "E-mail ou senha inválidos.");
+        alert("Condado fundado com sucesso!");
       }
-      window.location.href = "/";
-    } catch (ex) {
-      const msg = ex instanceof Error ? ex.message : "Falha no acesso.";
-      if (/invalid origin/i.test(msg)) {
-        setErr("Este endereço não está autorizado no login. Abre o link https de produção e tenta de novo — não uses uma pré-visualização antiga.");
-      } else if (/unique|already|exists|duplicate/i.test(msg)) {
-        setErr("Este e-mail já tem um condado.");
-      } else {
-        setErr(msg);
-      }
-      setBusy(false);
+    } catch (error: any) {
+      console.error(error);
+      setErro("Erro na autenticação. Verifique os dados.");
     }
-  }
+  };
+
+  const handleGoogleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+      alert("Acesso liberado pelo Google!");
+    } catch (error) {
+      setErro("Erro ao conectar com o Google.");
+    }
+  };
 
   return (
-    <main className="relative flex min-h-dvh items-end justify-center bg-ink text-parchment md:items-center">
-      <img src="/game/splash.jpg" alt="" className="absolute inset-0 h-full w-full object-cover" />
-      <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/70 to-ink/30" />
-      <div className="panel relative z-10 mb-[max(1.5rem,env(safe-area-inset-bottom))] w-full max-w-md rounded-t-xl p-5 md:mb-0 md:rounded-xl">
-        <p className="font-display text-[0.7rem] uppercase tracking-[0.3em] text-parchment-dim">Senhores da guerra</p>
-        <h1 className="mt-1 font-display text-3xl">Entrar no Condado</h1>
-        <p className="mt-2 text-sm text-parchment-dim">
-          E-mail e senha ficam no servidor. Ninguém vê chave, senha ou o nome do banco no jogo.
-        </p>
-
-        {authEnabled ? (
-          <>
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                className={`h-10 rounded-md border text-sm ${mode === "in" ? "border-niens bg-panel-2" : "border-line bg-ink-2"}`}
-                onClick={() => setMode("in")}
-              >
-                Entrar
-              </button>
-              <button
-                type="button"
-                className={`h-10 rounded-md border text-sm ${mode === "up" ? "border-niens bg-panel-2" : "border-line bg-ink-2"}`}
-                onClick={() => setMode("up")}
-              >
-                Criar conta
-              </button>
-            </div>
-            <form className="mt-3 space-y-2" onSubmit={(e) => void onEmail(e)}>
-              {mode === "up" && (
-                <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  maxLength={18}
-                  placeholder="Nome único do condado"
-                  className="h-12 w-full rounded-md border border-line bg-ink px-3 text-sm outline-none"
-                  required
-                />
-              )}
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="E-mail"
-                autoComplete="email"
-                className="h-12 w-full rounded-md border border-line bg-ink px-3 text-sm outline-none"
-                required
-              />
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Senha"
-                autoComplete={mode === "up" ? "new-password" : "current-password"}
-                minLength={8}
-                className="h-12 w-full rounded-md border border-line bg-ink px-3 text-sm outline-none"
-                required
-              />
-              {err && <p className="text-sm text-iron">{err}</p>}
-              <button
-                type="submit"
-                disabled={busy}
-                className="flex h-12 w-full items-center justify-center rounded-md bg-parchment font-display text-sm text-ink disabled:opacity-50"
-              >
-                {busy ? "A selar…" : mode === "up" ? "Fundar condado" : "Entrar"}
-              </button>
-            </form>
-            <p className="mt-4 text-center text-xs text-parchment-dim">ou continue com</p>
-            <div className="mt-2 space-y-2">
-              {GROK_PROVIDERS.map((p) => (
-                <button
-                  key={p.providerId}
-                  type="button"
-                  className="h-11 w-full rounded-md border border-line bg-ink-2 text-sm"
-                  onClick={() => void signIn(p.providerId, { callbackURL: "/" })}
-                >
-                  Continuar com {p.label}
-                </button>
-              ))}
-            </div>
-          </>
-        ) : (
-          <p className="mt-4 text-sm text-parchment-dim">O acesso está desligado neste reino.</p>
-        )}
-
-        <Link to="/" className="mt-4 block text-center text-xs text-parchment-dim">
-          Voltar
-        </Link>
-        <a
-          href={WHATSAPP_GROUP}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-3 flex h-11 w-full items-center justify-center rounded-md border border-line bg-ink-2 text-sm"
-        >
-          Grupo no WhatsApp
-        </a>
+    <div style={{ padding: "20px", maxWidth: "400px", margin: "0 auto", backgroundColor: "#1e1e1e", color: "#d4af37", fontFamily: "serif" }}>
+      <h1 style={{ textAlign: "center", fontSize: "24px" }}>ENTRAR NO CONDADO</h1>
+      
+      <div style={{ display: "flex", gap: "10px", marginBottom: "20px" }}>
+        <button onClick={() => setIsLogin(true)} style={{ flex: 1, padding: "10px", background: isLogin ? "#333" : "transparent", color: "#d4af37", border: "1px solid #d4af37" }}>Entrar</button>
+        <button onClick={() => setIsLogin(false)} style={{ flex: 1, padding: "10px", background: !isLogin ? "#333" : "transparent", color: "#d4af37", border: "1px solid #d4af37" }}>Criar conta</button>
       </div>
-    </main>
+
+      <form onSubmit={handleAuth} style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
+        {!isLogin && (
+          <input 
+            type="text" 
+            placeholder="Nome do Condado (ex: Macedônia)" 
+            value={nomeCondado} 
+            onChange={(e) => setNomeCondado(e.target.value)}
+            style={{ padding: "10px", borderRadius: "5px", border: "none" }}
+            required
+          />
+        )}
+        <input 
+          type="email" 
+          placeholder="Seu e-mail"
+          value={email} 
+          onChange={(e) => setEmail(e.target.value)}
+          style={{ padding: "10px", borderRadius: "5px", border: "none" }}
+          required
+        />
+        <input 
+          type="password" 
+          placeholder="Sua senha"
+          value={password} 
+          onChange={(e) => setPassword(e.target.value)}
+          style={{ padding: "10px", borderRadius: "5px", border: "none" }}
+          required
+        />
+        
+        {erro && <p style={{ color: "#ff4d4d", fontSize: "14px" }}>{erro}</p>}
+
+        <button type="submit" style={{ padding: "12px", backgroundColor: "#d4af37", color: "#000", border: "none", fontWeight: "bold", cursor: "pointer" }}>
+          {isLogin ? "ENTRAR" : "FUNDAR CONDADO"}
+        </button>
+      </form>
+
+      <div style={{ textAlign: "center", marginTop: "20px" }}>
+        <p style={{ fontSize: "12px" }}>ou continue com</p>
+        <button onClick={handleGoogleLogin} style={{ width: "100%", padding: "10px", backgroundColor: "transparent", color: "#d4af37", border: "1px solid #d4af37", cursor: "pointer", marginTop: "10px" }}>
+          Continuar com Google
+        </button>
+      </div>
+    </div>
   );
 }
+
