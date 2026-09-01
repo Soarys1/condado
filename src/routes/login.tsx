@@ -43,8 +43,13 @@ function Login() {
       window.location.href = "/";
     } catch (ex) {
       const msg = ex instanceof Error ? ex.message : "Falha no acesso.";
-      if (/unique|already|exists|duplicate/i.test(msg)) setErr("Este e-mail já tem um condado.");
-      else setErr(msg);
+      if (/invalid origin/i.test(msg)) {
+        setErr("Este endereço não está autorizado no login. Abre o link https de produção e tenta de novo — não uses uma pré-visualização antiga.");
+      } else if (/unique|already|exists|duplicate/i.test(msg)) {
+        setErr("Este e-mail já tem um condado.");
+      } else {
+        setErr(msg);
+      }
       setBusy(false);
     }
   }
