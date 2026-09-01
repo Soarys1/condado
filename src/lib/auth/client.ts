@@ -1,7 +1,7 @@
 import {
   GoogleAuthProvider,
   onIdTokenChanged,
-  signInWithPopup,
+  signInWithRedirect,
   signOut as firebaseSignOut,
 } from "firebase/auth";
 import { auth } from "../firebase";
@@ -21,7 +21,7 @@ export function getBearerToken(): string | null {
   }
 }
 
-function setBearerToken(token: string | null): void {
+export function setBearerToken(token: string | null): void {
   if (typeof window === "undefined") return;
   try {
     if (token) window.sessionStorage.setItem(BEARER_KEY, token);
@@ -48,7 +48,7 @@ export async function signIn(
   if (providerId !== "google") {
     throw new Error(`Provedor Firebase não configurado: ${providerId}`);
   }
-  await signInWithPopup(auth, new GoogleAuthProvider());
+  await signInWithRedirect(auth, new GoogleAuthProvider());
   if (opts.callbackURL && typeof window !== "undefined") {
     window.location.assign(opts.callbackURL);
   }
