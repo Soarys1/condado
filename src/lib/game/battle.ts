@@ -181,11 +181,13 @@ export class Battle {
 
   private rebuildBlocked() {
     this.blocked = makeBlocked(
-      this.buildings.filter((b) => b.alive).map((b) => ({
-        gx: b.gx,
-        gy: b.gy,
-        size: b.size,
-      })),
+      this.buildings
+        .filter((b) => b.alive)
+        .map((b) => ({
+          gx: b.gx,
+          gy: b.gy,
+          size: b.size,
+        })),
     );
     this.occupied = new Set();
     for (const b of this.buildings) {
@@ -237,12 +239,29 @@ export class Battle {
   }
 
   autoDeploy() {
-    const order: TroopType[] = ["infantry", "archers", "defender", "cavalry", "general", "generaless"];
+    const order: TroopType[] = [
+      "infantry",
+      "archers",
+      "defender",
+      "cavalry",
+      "general",
+      "generaless",
+    ];
     for (const type of order) {
       let guard = 80;
       while (this.armyLeft[type] > 0 && guard-- > 0) {
-        const gx = Math.random() < 0.5 ? (Math.random() < 0.5 ? 1 : GRID - 2) : 2 + Math.floor(Math.random() * (GRID - 4));
-        const gy = gx <= 2 || gx >= GRID - 3 ? 2 + Math.floor(Math.random() * (GRID - 4)) : Math.random() < 0.5 ? 1 : GRID - 2;
+        const gx =
+          Math.random() < 0.5
+            ? Math.random() < 0.5
+              ? 1
+              : GRID - 2
+            : 2 + Math.floor(Math.random() * (GRID - 4));
+        const gy =
+          gx <= 2 || gx >= GRID - 3
+            ? 2 + Math.floor(Math.random() * (GRID - 4))
+            : Math.random() < 0.5
+              ? 1
+              : GRID - 2;
         if (!this.deploy(type, gx, gy)) continue;
       }
     }
@@ -318,7 +337,12 @@ export class Battle {
       this.goldLoot = Math.min(LOOT_CAP, this.goldLoot + band.gold);
       const castle = this.buildings.find((b) => b.type === "castle");
       const sign = this.spectator ? "−" : "+";
-      this.float(castle?.cx ?? 14, (castle?.cy ?? 14) - 1.2, `${sign}${band.gold} ouro (${Math.round(band.at * 100)}%)`, "#e4c15a");
+      this.float(
+        castle?.cx ?? 14,
+        (castle?.cy ?? 14) - 1.2,
+        `${sign}${band.gold} ouro (${Math.round(band.at * 100)}%)`,
+        "#e4c15a",
+      );
     }
   }
 
@@ -328,13 +352,16 @@ export class Battle {
     t.repath -= dt;
 
     if (this.focusId && !this.spectator) {
-      const focused = this.buildings.find((b) => b.id === this.focusId && b.alive && b.type !== "wall");
+      const focused = this.buildings.find(
+        (b) => b.id === this.focusId && b.alive && b.type !== "wall",
+      );
       if (focused && Math.hypot(focused.cx - t.x, focused.cy - t.y) <= 7.5) {
         t.goalId = focused.id;
       }
     }
 
-    let goal = this.buildings.find((b) => b.id === t.goalId && b.alive && b.type !== "wall") ?? null;
+    let goal =
+      this.buildings.find((b) => b.id === t.goalId && b.alive && b.type !== "wall") ?? null;
     if (!goal) {
       goal = this.pickGoal(t);
       t.goalId = goal?.id ?? null;
@@ -356,7 +383,8 @@ export class Battle {
       return;
     }
 
-    let breach = this.buildings.find((b) => b.id === t.targetId && b.alive && b.type === "wall") ?? null;
+    let breach =
+      this.buildings.find((b) => b.id === t.targetId && b.alive && b.type === "wall") ?? null;
     if (breach && this.inRange(t, breach, Math.max(def.range, 0.85))) {
       this.strike(t, breach, dt);
       return;
@@ -423,14 +451,26 @@ export class Battle {
     return { path: best, breach: null };
   }
 
-  private approachSpots(t: BattleTroop, goal: BattleBuilding, range: number): Array<[number, number]> {
+  private approachSpots(
+    t: BattleTroop,
+    goal: BattleBuilding,
+    range: number,
+  ): Array<[number, number]> {
     const cells = approachCells(goal.gx, goal.gy, goal.size);
     const open = cells.filter(([x, y]) => !this.blocked[y]?.[x]);
     const ranged: Array<[number, number]> = [];
     if (range > 1.4) {
       const r = Math.ceil(range);
-      for (let y = Math.max(0, Math.floor(goal.cy) - r); y <= Math.min(GRID - 1, Math.floor(goal.cy) + r); y++) {
-        for (let x = Math.max(0, Math.floor(goal.cx) - r); x <= Math.min(GRID - 1, Math.floor(goal.cx) + r); x++) {
+      for (
+        let y = Math.max(0, Math.floor(goal.cy) - r);
+        y <= Math.min(GRID - 1, Math.floor(goal.cy) + r);
+        y++
+      ) {
+        for (
+          let x = Math.max(0, Math.floor(goal.cx) - r);
+          x <= Math.min(GRID - 1, Math.floor(goal.cx) + r);
+          x++
+        ) {
           if (this.blocked[y]?.[x]) continue;
           const d = Math.hypot(x + 0.5 - goal.cx, y + 0.5 - goal.cy);
           if (d <= range + goal.size * 0.35 && d > 0.6) ranged.push([x, y]);
@@ -517,8 +557,8 @@ export class Battle {
   }
 
   private steer(t: BattleTroop, tx: number, ty: number, speed: number, dt: number): boolean {
-    let dx = tx - t.x;
-    let dy = ty - t.y;
+    const dx = tx - t.x;
+    const dy = ty - t.y;
     const dist = Math.hypot(dx, dy);
     let sx = 0;
     let sy = 0;
@@ -654,7 +694,8 @@ export class Battle {
         p.y += (dy / dist) * step;
         const t = Math.min(1, step / dist);
         p.z += (p.tz - p.z) * t;
-        if (p.kind === "boulder") p.z += Math.sin(Math.min(1, 1 - dist / 8) * Math.PI) * 0.4 * dt * 8;
+        if (p.kind === "boulder")
+          p.z += Math.sin(Math.min(1, 1 - dist / 8) * Math.PI) * 0.4 * dt * 8;
       }
     }
     this.projectiles = this.projectiles.filter((p) => !p.dead);
@@ -757,7 +798,14 @@ export class Battle {
     if (destruction >= 0.999) stars = 3;
     if (retreated) stars = Math.min(stars, 2);
     if (destruction >= 0.99) this.goldLoot = LOOT_CAP;
-    const survivors: ArmyCounts = { infantry: 0, archers: 0, cavalry: 0, general: 0, generaless: 0, defender: 0 };
+    const survivors: ArmyCounts = {
+      infantry: 0,
+      archers: 0,
+      cavalry: 0,
+      general: 0,
+      generaless: 0,
+      defender: 0,
+    };
     for (const t of this.troops) {
       if (t.alive) survivors[t.type] += 1;
     }

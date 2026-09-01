@@ -1,0 +1,29 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "condado_profiles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "weekKey", "order": "ASCENDING" },
+        { "fieldPath": "weekStars", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "condado_transfers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "fromPlayerId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "condado_transfers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "toPlayerId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
