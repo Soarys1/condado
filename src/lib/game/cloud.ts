@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { getAdminFirestore } from "@/lib/firebase-admin.server";
+import { getAdminAuth, getAdminFirestore } from "@/lib/firebase-admin.server";
 import { REFERRAL_GOLD, rankingWindow, weeklyPrize, type ResourceKind } from "./constants";
 import { defaultSave, migrateCloud } from "./save";
 import type { SaveState } from "./types";
@@ -137,6 +137,19 @@ function withoutMeta(p: Profile): SaveState {
   } = p;
   return save;
 }
+
+export const syncAccountEmail = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const authUser = await getAdminAuth().getUser(context.userId);
+    const email = authUser.email?.trim().toLowerCase();
+    if (!email) throw new Error("Nenhum e-mail está vinculado a esta conta.");
+    const ref = profiles().doc(context.userId);
+    const snap = await ref.get();
+    if (!snap.exists) throw new Error("Crie o condado antes de vincular o e-mail.");
+    await ref.set({ accountEmail: email, updatedAt: new Date().toISOString() }, { merge: true });
+    return { email };
+  });
 
 export const pullCloud = createServerFn({ method: "GET" })
   .middleware([authMiddleware])

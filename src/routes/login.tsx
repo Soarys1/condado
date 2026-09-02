@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
-  createUserWithEmailAndPassword,
   getRedirectResult,
   signInWithEmailAndPassword,
   signInWithRedirect,
@@ -11,7 +10,6 @@ import {
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { setBearerToken } from "@/lib/auth/client";
-import { createProfile } from "@/lib/game/cloud";
 
 export const Route = createFileRoute("/login")({ component: AuthForm });
 
@@ -26,6 +24,8 @@ function firebaseErrorMessage(error: unknown): string {
     "auth/invalid-email": "Digite um e-mail válido.",
     "auth/operation-not-allowed":
       "O login por e-mail ainda não foi habilitado no Firebase Console.",
+    "auth/admin-restricted-operation":
+      "Ative o provedor Anônimo no Firebase Console para fundar um condado.",
     "auth/popup-blocked": "O navegador bloqueou a janela de login. Tente novamente.",
     "auth/unauthorized-domain":
       "Este domínio ainda não foi adicionado aos domínios autorizados do Firebase.",
@@ -40,9 +40,7 @@ function firebaseErrorMessage(error: unknown): string {
 export default function AuthForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [nomeCondado, setNomeCondado] = useState("");
   const [erro, setErro] = useState("");
-  const [isLogin, setIsLogin] = useState(true);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -66,16 +64,8 @@ export default function AuthForm() {
     setErro("");
     setBusy(true);
     try {
-      if (isLogin) {
-        const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
-        setBearerToken(await credential.user.getIdToken());
-        window.location.assign("/");
-        return;
-      }
-
-      const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-      setBearerToken(await credential.user.getIdToken());
-      await createProfile({ data: { nick: nomeCondado.trim() } });
+      const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
+      setBearerToken(await credential.user.getIdToken(true));
       window.location.assign("/");
     } catch (error) {
       console.error("Firebase Auth error", error);
@@ -109,55 +99,11 @@ export default function AuthForm() {
       }}
     >
       <h1 style={{ textAlign: "center", fontSize: "24px" }}>ENTRAR NO CONDADO</h1>
-      <div style={{ display: "flex", gap: "10px", marginBottom: "20px" }}>
-        <button
-          type="button"
-          onClick={() => {
-            setIsLogin(true);
-            setErro("");
-          }}
-          disabled={busy}
-          style={{
-            flex: 1,
-            padding: "10px",
-            background: isLogin ? "#333" : "transparent",
-            color: "#d4af37",
-            border: "1px solid #d4af37",
-          }}
-        >
-          Entrar
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setIsLogin(false);
-            setErro("");
-          }}
-          disabled={busy}
-          style={{
-            flex: 1,
-            padding: "10px",
-            background: !isLogin ? "#333" : "transparent",
-            color: "#d4af37",
-            border: "1px solid #d4af37",
-          }}
-        >
-          Criar conta
-        </button>
-      </div>
+      <p style={{ color: "#b8a878", fontSize: "14px", lineHeight: 1.5 }}>
+        Entre em um condado que já foi protegido com e-mail e senha. Para fundar um novo condado,
+        volte ao início e escolha o nome no botão <strong>Fundar condado</strong>.
+      </p>
       <form onSubmit={handleAuth} style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
-        {!isLogin && (
-          <input
-            type="text"
-            placeholder="Nome do Condado (ex: Macedônia)"
-            value={nomeCondado}
-            onChange={(e) => setNomeCondado(e.target.value)}
-            style={{ padding: "10px", borderRadius: "5px", border: "none" }}
-            required
-            minLength={3}
-            maxLength={18}
-          />
-        )}
         <input
           type="email"
           placeholder="Seu e-mail"
@@ -192,11 +138,11 @@ export default function AuthForm() {
             cursor: busy ? "wait" : "pointer",
           }}
         >
-          {busy ? "AGUARDE..." : isLogin ? "ENTRAR" : "FUNDAR CONDADO"}
+          {busy ? "AGUARDE..." : "ENTRAR NO CONDADO"}
         </button>
       </form>
       <div style={{ textAlign: "center", marginTop: "20px" }}>
-        <p style={{ fontSize: "12px" }}>ou continue com</p>
+        <p style={{ fontSize: "12px" }}>ou entre com</p>
         <button
           type="button"
           onClick={handleGoogleLogin}
