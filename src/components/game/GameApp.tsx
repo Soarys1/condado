@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { EmailAuthProvider, linkWithCredential } from "firebase/auth";
 import {
   Castle,
   Coins,
@@ -78,8 +79,16 @@ import {
 } from "@/lib/game/audio";
 import { loadAssets } from "@/lib/game/assets";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
+import { auth } from "@/lib/firebase";
+import { setBearerToken } from "@/lib/auth/client";
 import { UserButton } from "@/lib/auth/gates";
-import { claimWeekly, pullCloud, weeklyBoard, type RankRow } from "@/lib/game/cloud";
+import {
+  claimWeekly,
+  pullCloud,
+  syncAccountEmail,
+  weeklyBoard,
+  type RankRow,
+} from "@/lib/game/cloud";
 
 export function GameApp() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1020,6 +1029,7 @@ function InfoSheet() {
 
 function ProfileSheet() {
   const player = useGame((s) => s.player);
+  const currentUser = useCurrentUserState().user;
   const gold = useGame((s) => s.gold);
   const bread = useGame((s) => s.bread);
   const niens = useGame((s) => s.niens);
@@ -1036,6 +1046,10 @@ function ProfileSheet() {
   const referredBy = useGame((s) => s.referredBy);
   const shieldUntil = useGame((s) => s.shieldUntil);
   const [name, setName] = useState(nickDraft || player.nick);
+  const [accountEmail, setAccountEmail] = useState("");
+  const [accountPassword, setAccountPassword] = useState("");
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountMessage, setAccountMessage] = useState<string | null>(null);
   const troops =
     army.infantry + army.archers + army.cavalry + army.general + army.generaless + army.defender;
   const shieldLeft = Math.max(0, shieldUntil - Date.now());
@@ -1058,6 +1072,84 @@ function ProfileSheet() {
             Guardar
           </button>
         </div>
+      </div>
+      <div className="rounded-md border border-line bg-ink-2/70 p-3">
+        <p className="text-xs uppercase tracking-[0.18em] text-parchment-dim">
+          {currentUser?.isAnonymous ? "Proteger este condado" : "Conta associada"}
+        </p>
+        {currentUser?.isAnonymous ? (
+          <form
+            className="mt-2 space-y-2"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const firebaseUser = auth.currentUser;
+              if (!firebaseUser) return;
+              setAccountBusy(true);
+              setAccountMessage(null);
+              try {
+                const credential = EmailAuthProvider.credential(
+                  accountEmail.trim(),
+                  accountPassword,
+                );
+                const linked = await linkWithCredential(firebaseUser, credential);
+                setBearerToken(await linked.user.getIdToken(true));
+                await syncAccountEmail();
+                setAccountPassword("");
+                setAccountMessage("E-mail associado. Use-o para entrar neste condado.");
+              } catch (error) {
+                const code =
+                  typeof error === "object" && error && "code" in error ? String(error.code) : "";
+                const messages: Record<string, string> = {
+                  "auth/email-already-in-use": "Este e-mail já está associado a outra conta.",
+                  "auth/invalid-email": "Digite um e-mail válido.",
+                  "auth/weak-password": "A senha precisa ter pelo menos 6 caracteres.",
+                  "auth/requires-recent-login": "Entre novamente e tente associar o e-mail.",
+                };
+                setAccountMessage(
+                  messages[code] ??
+                    (error instanceof Error
+                      ? error.message
+                      : "Não foi possível associar o e-mail."),
+                );
+              } finally {
+                setAccountBusy(false);
+              }
+            }}
+          >
+            <input
+              type="email"
+              required
+              value={accountEmail}
+              onChange={(event) => setAccountEmail(event.target.value)}
+              placeholder="E-mail para recuperar o condado"
+              className="h-10 w-full rounded-md border border-line bg-ink px-3 text-sm outline-none"
+            />
+            <input
+              type="password"
+              required
+              minLength={6}
+              value={accountPassword}
+              onChange={(event) => setAccountPassword(event.target.value)}
+              placeholder="Senha (mínimo de 6 caracteres)"
+              className="h-10 w-full rounded-md border border-line bg-ink px-3 text-sm outline-none"
+            />
+            <button
+              type="submit"
+              disabled={accountBusy}
+              className="h-10 w-full rounded-md bg-parchment px-3 font-display text-sm text-ink disabled:opacity-50"
+            >
+              {accountBusy ? "Associando…" : "Associar e-mail e senha"}
+            </button>
+            <p className="text-xs leading-relaxed text-parchment-dim">
+              A senha é protegida pelo Firebase Auth e não é salva no banco do jogo.
+            </p>
+          </form>
+        ) : (
+          <p className="mt-2 text-sm text-parchment-dim">
+            {currentUser?.primaryEmail ?? "Conta externa associada"}
+          </p>
+        )}
+        {accountMessage && <p className="mt-2 text-xs text-niens">{accountMessage}</p>}
       </div>
       <div>
         <p className="text-xs uppercase tracking-[0.18em] text-parchment-dim">ID único</p>

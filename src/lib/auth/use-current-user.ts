@@ -1,4 +1,4 @@
-import { onIdTokenChanged, type User } from "firebase/auth";
+import { onIdTokenChanged, signInAnonymously, type User } from "firebase/auth";
 import { useEffect, useState } from "react";
 import { auth } from "../firebase";
 import { authEnabled, setBearerToken } from "./client";
@@ -9,6 +9,7 @@ export type AppUser = {
   primaryEmail: string | null;
   profileImageUrl: string | null;
   isDevFallback: boolean;
+  isAnonymous: boolean;
 };
 
 export type CurrentUserState = {
@@ -22,6 +23,7 @@ export const DEV_USER: AppUser = {
   primaryEmail: "dev@example.com",
   profileImageUrl: null,
   isDevFallback: true,
+  isAnonymous: false,
 };
 
 function normalizeUser(user: User): AppUser {
@@ -31,6 +33,7 @@ function normalizeUser(user: User): AppUser {
     primaryEmail: user.email,
     profileImageUrl: user.photoURL,
     isDevFallback: false,
+    isAnonymous: user.isAnonymous,
   };
 }
 
@@ -40,7 +43,19 @@ export function useCurrentUserState(): CurrentUserState {
 
   useEffect(() => {
     if (!authEnabled) return;
+    let creatingAnonymous = false;
     return onIdTokenChanged(auth, async (nextUser) => {
+      if (!nextUser && !creatingAnonymous) {
+        creatingAnonymous = true;
+        try {
+          await signInAnonymously(auth);
+          return;
+        } catch (error) {
+          console.error("Firebase anonymous auth error", error);
+        } finally {
+          creatingAnonymous = false;
+        }
+      }
       try {
         setBearerToken(nextUser ? await nextUser.getIdToken() : null);
       } finally {
