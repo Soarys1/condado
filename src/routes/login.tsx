@@ -37,7 +37,7 @@ function firebaseErrorMessage(error: unknown): string {
   return messages[code] ?? (error instanceof Error ? error.message : "Não foi possível autenticar.");
 }
 
-export default function AuthForm() {
+function AuthForm() {
   const [mode, setMode] = useState<"entrar" | "criar">("criar");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
