@@ -1,13 +1,14 @@
 import {
   GoogleAuthProvider,
   onIdTokenChanged,
+  signInWithPopup,
   signInWithRedirect,
   signOut as firebaseSignOut,
 } from "firebase/auth";
-import { auth } from "../firebase";
+import { auth, firebaseConfigured } from "../firebase";
 import { GROK_PROVIDERS } from "./providers";
 
-export const authEnabled = import.meta.env.VITE_AUTH_ENABLED !== "false";
+export const authEnabled = firebaseConfigured;
 export { GROK_PROVIDERS };
 
 const BEARER_KEY = "firebase-auth.id-token";
@@ -27,7 +28,7 @@ export function setBearerToken(token: string | null): void {
     if (token) window.sessionStorage.setItem(BEARER_KEY, token);
     else window.sessionStorage.removeItem(BEARER_KEY);
   } catch {
-    // Storage may be unavailable in private browsing or embedded previews.
+    /* storage may be unavailable */
   }
 }
 
@@ -41,17 +42,28 @@ if (typeof window !== "undefined") {
   });
 }
 
-export async function signIn(
-  providerId: string,
-  opts: { callbackURL?: string } = {},
-): Promise<void> {
-  if (providerId !== "google") {
-    throw new Error(`Provedor Firebase não configurado: ${providerId}`);
+export async function signInGoogle(): Promise<void> {
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  try {
+    const result = await signInWithPopup(auth, provider);
+    setBearerToken(await result.user.getIdToken(true));
+  } catch (error) {
+    const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
+    if (code === "auth/popup-blocked" || code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+      await signInWithRedirect(auth, provider);
+      return;
+    }
+    throw error;
   }
-  await signInWithRedirect(auth, new GoogleAuthProvider());
-  if (opts.callbackURL && typeof window !== "undefined") {
-    window.location.assign(opts.callbackURL);
+}
+
+export async function signIn(providerId: string): Promise<void> {
+  if (providerId === "google" || providerId === "grok-google") {
+    await signInGoogle();
+    return;
   }
+  throw new Error("Provedor Firebase não configurado.");
 }
 
 export async function signOut(redirectTo = "/"): Promise<void> {

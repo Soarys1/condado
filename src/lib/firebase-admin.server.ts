@@ -1,48 +1,13 @@
-import { getApps, initializeApp, cert, type App } from "firebase-admin/app";
-import { getAuth, type Auth } from "firebase-admin/auth";
-import { getFirestore, type Firestore } from "firebase-admin/firestore";
-
-let app: App | undefined;
-
-function getServiceAccount() {
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
-  if (raw) {
-    const parsed = JSON.parse(raw) as {
-      project_id?: string;
-      client_email?: string;
-      private_key?: string;
-    };
-    if (!parsed.project_id || !parsed.client_email || !parsed.private_key) {
-      throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON está incompleto.");
-    }
-    return {
-      projectId: parsed.project_id,
-      clientEmail: parsed.client_email,
-      privateKey: parsed.private_key.replace(/\\n/g, "\n"),
-    };
-  }
-  const projectId = process.env.FIREBASE_PROJECT_ID ?? process.env.VITE_FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
-  if (!projectId || !clientEmail || !privateKey) {
-    throw new Error(
-      "Configure FIREBASE_SERVICE_ACCOUNT_JSON ou FIREBASE_PROJECT_ID/FIREBASE_CLIENT_EMAIL/FIREBASE_PRIVATE_KEY.",
-    );
-  }
-  return { projectId, clientEmail, privateKey: privateKey.replace(/\\n/g, "\n") };
+/**
+ * Condado no longer needs the Admin SDK on Vercel.
+ * Auth and game data go through the Firebase web SDK + Firestore rules.
+ * This file is kept so leftover imports fail loudly instead of initializing
+ * a private key that must never ship to the browser.
+ */
+export function getAdminFirestore(): never {
+  throw new Error("Admin SDK desativado. O Condado usa Firestore no cliente.");
 }
 
-function getAdminApp(): App {
-  if (!app) {
-    app = getApps()[0] ?? initializeApp({ credential: cert(getServiceAccount()) });
-  }
-  return app;
-}
-
-export function getAdminFirestore(): Firestore {
-  return getFirestore(getAdminApp());
-}
-
-export function getAdminAuth(): Auth {
-  return getAuth(getAdminApp());
+export function getAdminAuth(): never {
+  throw new Error("Admin SDK desativado. O Condado usa Firebase Auth no cliente.");
 }

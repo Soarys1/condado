@@ -191,7 +191,7 @@ function storedAmount(b: BuildingInst, now = Date.now()): number {
 function wireCloudSync() {
   setCloudSync(async (s) => {
     try {
-      const r = await pushCloud({ data: s });
+      const r = await pushCloud(s);
       const dg = r.gold - s.gold;
       const db = r.bread - s.bread;
       const dn = r.niens - s.niens;
@@ -291,12 +291,11 @@ export const useGame = create<GameStore>((set, get) => ({
   startCloud: async (nick, referredBy) => {
     try {
       const result = await createProfile({
-        data: { nick, referredBy: referredBy?.trim().toUpperCase() || null },
+        nick,
+        referredBy: referredBy?.trim().toUpperCase() || null,
       });
       if (!result?.save) {
-        throw new Error(
-          "O servidor não retornou o perfil do condado. Verifique FIREBASE_SERVICE_ACCOUNT_JSON no Vercel e tente novamente.",
-        );
+        throw new Error("O Firestore não devolveu o perfil. Tente novamente.");
       }
       const { save } = result;
       const now = Date.now();
@@ -938,7 +937,7 @@ export const useGame = create<GameStore>((set, get) => ({
       return false;
     }
     try {
-      const r = await cloudTransfer({ data: { toId, amount: n, kind } });
+      const r = await cloudTransfer({ toId, amount: n, kind });
       const label =
         kind === "niens"
           ? "Niens"
@@ -980,7 +979,7 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   peekId: (id) => {
-    void peekPlayer({ data: id })
+    void peekPlayer(id)
       .then((r) => {
         set({
           lookup: r.nick ? { id: r.id, nick: r.nick } : null,
@@ -1354,7 +1353,7 @@ export const useGame = create<GameStore>((set, get) => ({
       return false;
     }
     try {
-      const r = await renameCounty({ data: n });
+      const r = await renameCounty(n);
       const s = get();
       set({ player: { ...s.player, nick: r.nick }, nickDraft: r.nick, toast: "Nome atualizado." });
       persist({ ...get() });

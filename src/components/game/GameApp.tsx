@@ -80,7 +80,7 @@ import {
 import { loadAssets } from "@/lib/game/assets";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { auth } from "@/lib/firebase";
-import { setBearerToken } from "@/lib/auth/client";
+import { setBearerToken, signOut } from "@/lib/auth/client";
 import { UserButton } from "@/lib/auth/gates";
 import {
   claimWeekly,
@@ -179,6 +179,7 @@ export function GameApp() {
 
 function Splash({ signedIn }: { signedIn: boolean }) {
   const startCloud = useGame((s) => s.startCloud);
+  const startGame = useGame((s) => s.startGame);
   const toast = useGame((s) => s.toast);
   const [nick, setNick] = useState("");
   const [ref, setRef] = useState("");
@@ -201,8 +202,8 @@ function Splash({ signedIn }: { signedIn: boolean }) {
             Condado
           </h1>
           <p className="mt-3 max-w-sm text-[0.95rem] leading-relaxed text-parchment-dim">
-            Conta com e-mail. Nome de condado único. Ouro, Niens e cartas ficam no servidor — nada
-            some do telemóvel.
+            Cria conta com e-mail e senha. O nome do condado é único. Ouro, Niens e cartas ficam no
+            Firestore — nada some do telemóvel.
           </p>
           <a
             href="/login"
@@ -220,6 +221,17 @@ function Splash({ signedIn }: { signedIn: boolean }) {
             <MessageCircle className="size-4" />
             Grupo no WhatsApp
           </a>
+          <button
+            type="button"
+            className="mt-3 flex h-11 w-full items-center justify-center text-sm text-parchment-dim"
+            onClick={() => {
+              unlockAudio();
+              startMusic("village");
+              startGame("Senhor");
+            }}
+          >
+            Jogar no reino de treino (sem conta)
+          </button>
         </div>
       </div>
     );
@@ -1145,9 +1157,18 @@ function ProfileSheet() {
             </p>
           </form>
         ) : (
-          <p className="mt-2 text-sm text-parchment-dim">
-            {currentUser?.primaryEmail ?? "Conta externa associada"}
-          </p>
+          <div className="mt-2 space-y-2">
+            <p className="text-sm text-parchment-dim">
+              {currentUser?.primaryEmail ?? "Conta Google associada"}
+            </p>
+            <button
+              type="button"
+              className="h-10 w-full rounded-md border border-line text-sm"
+              onClick={() => void signOut("/")}
+            >
+              Sair da conta
+            </button>
+          </div>
         )}
         {accountMessage && <p className="mt-2 text-xs text-niens">{accountMessage}</p>}
       </div>

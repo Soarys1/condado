@@ -4,6 +4,31 @@ Jogo de estratégia medieval no browser — constrói o teu condado, treina trop
 
 Tema rústico em vista isométrica 3/4, otimizado para **celular e desktop**.
 
+## Contas e banco (Firebase)
+
+Cadastro, login e o progresso do jogo usam **Firebase Auth + Cloud Firestore**. Não há SQLite, Postgres nem Better Auth no caminho do jogo.
+
+- **Criar conta / Entrar**: e-mail + senha, ou Google.
+- **Nome do condado**: único (coleção `condado_nick_index`).
+- **Progresso**: ouro, pão, Niens, cartas, mapa e ranking em `condado_profiles`.
+- **Transferências**: `condado_transfers` (o destinatário recebe no próximo carregamento).
+- **Ranking semanal**: estrelas da semana, prêmio domingo 23h Brasília.
+
+A configuração web pública do projeto `condado-dcdf5` já vai no código. **Não precisa de variáveis `VITE_FIREBASE_*` no Vercel.** Nunca coloque o JSON da conta de serviço (`firebase-adminsdk`) no GitHub, no frontend, nem numa variável `VITE_*`.
+
+### Firebase Console (uma vez)
+
+1. Authentication → Sign-in method: **E-mail/senha** e **Google** ligados.
+2. Authentication → Settings → Authorized domains: inclua `localhost`, `vercel.app` e o teu domínio de produção.
+3. Firestore já existe (`southamerica-east1`). Não é preciso “iniciar coleção” — o jogo cria os documentos sozinho.
+4. Firestore → Rules: o ficheiro `firestore.rules` deste repositório (já publicado).
+
+### Vercel
+
+Liga o GitHub `Soarys1/condado` e faz **Redeploy**. Não é obrigatório colar o JSON de Admin. Depois do deploy, testa **Criar conta** com um e-mail novo.
+
+Se o Google falhar com `unauthorized-domain`, adiciona `vercel.app` em Authorized domains e espera um minuto.
+
 ## Como jogar
 
 1. Constrói minas (ouro) e fazendas (pão). Recolhe quando a bolha aparecer.
@@ -16,7 +41,7 @@ Tema rústico em vista isométrica 3/4, otimizado para **celular e desktop**.
 8. Envia Niens, ouro, pão e cartas pelo ID (cola o ID, vê o nick, escolhe o envio).
 9. Muros retos (I) ou deitados (—). Gira com a seta. Toque 3 vezes para mover. Fileira inteira selecionável. Limite 200 + 55 por nível.
 10. **Passe de Batalha**: dia 1 de cada mês, 30 dias (fevereiro 27). 50 níveis.
-11. **Alianças**: 5 milhões para fundar. Guerra sábado 8h–23h de Brasília. Pares de alianças; ímpar espera.
+11. **Alianças**: 5 milhões para fundar. Guerra sábado 8h–23h de Brasília.
 12. Se te atacam online, só assistes. Depois, 1 hora de escudo.
 
 ## Rodar localmente
@@ -26,45 +51,11 @@ npm install
 npm run dev
 ```
 
-Abre [http://localhost:8080](http://localhost:8080).
-
 ```bash
 npm run build
 npm run typecheck
 ```
 
-## Música e sons
-
-A trilha **não é um MP3**. É gerada em tempo real (Web Audio API) em:
-
-[`src/lib/game/audio.ts`](src/lib/game/audio.ts)
-
-Três modos, sem drone grave contínuo:
-
-| O quê | Onde | Efeito |
-|---|---|---|
-| Vila — flauta | `VILLAGE_FLUTE` | Melodia original |
-| Vila — alaúde | `VILLAGE_LUTE` | Segunda voz do condado |
-| Batalha | `BATTLE_FLUTE` + `BATTLE_HARMONY` | Raid / preparação |
-| Guerra de aliança | `WAR_HORN` + `WAR_FIFTH` | Sábado 8h–23h BRT |
-| Velocidade | `bpm` em `schedule()` | Vila 72, guerra 108, batalha 128 |
-
-Efeitos (clique, flecha, coleta, recuo) ficam no mesmo arquivo, **acima** das melodias.
-
-## Estrutura
-
-```
-src/lib/game/          regras, batalha, render, áudio, save
-src/components/game/   UI (HUD, folhas, perfil, mercado, passe, aliança)
-public/game/           sprites e texturas
-```
-
 ## Stack
 
-TanStack Start + React + Canvas 2D + Zustand. Persistência em `localStorage`.
-
-## Persistência Firebase/Firestore
-
-A persistência do jogo usa o Firebase Admin SDK no servidor. Os documentos ficam nas coleções `condado_profiles`, `condado_player_index`, `condado_nick_index`, `condado_transfers` e `condado_week_claims`; o cliente não acessa diretamente os dados do jogo. As operações de saldo, transferência e recompensa usam transações do Firestore para evitar perda de recursos durante autosaves concorrentes.
-
-Configure as variáveis `VITE_FIREBASE_*` com a configuração do Firebase Web no frontend e `FIREBASE_SERVICE_ACCOUNT_JSON` somente no ambiente do servidor. Nunca envie o JSON de conta de serviço para o GitHub nem o coloque em `public/`, no bundle do navegador ou em uma variável `VITE_*`. Depois de configurar o projeto, aplique `firebase.json`, `firestore.rules` e `firestore.indexes.json` com a Firebase CLI. A regra inicial bloqueia o acesso direto do cliente; as funções do servidor usam o Admin SDK e continuam protegidas pelo middleware de autenticação.
+TanStack Start + React + Canvas 2D + Zustand. Auth: Firebase Auth. Banco: Cloud Firestore.

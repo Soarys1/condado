@@ -1,7 +1,7 @@
-import { onIdTokenChanged, signInAnonymously, type User } from "firebase/auth";
+import { onIdTokenChanged, type User } from "firebase/auth";
 import { useEffect, useState } from "react";
 import { auth } from "../firebase";
-import { authEnabled, setBearerToken } from "./client";
+import { setBearerToken } from "./client";
 
 export type AppUser = {
   id: string;
@@ -38,24 +38,16 @@ function normalizeUser(user: User): AppUser {
 }
 
 export function useCurrentUserState(): CurrentUserState {
-  const [user, setUser] = useState<AppUser | null>(authEnabled ? null : DEV_USER);
-  const [isPending, setIsPending] = useState(authEnabled);
+  const [user, setUser] = useState<AppUser | null>(null);
+  const [isPending, setIsPending] = useState(true);
 
   useEffect(() => {
-    if (!authEnabled) return;
-    let creatingAnonymous = false;
-    return onIdTokenChanged(auth, async (nextUser) => {
-      if (!nextUser && !creatingAnonymous) {
-        creatingAnonymous = true;
-        try {
-          await signInAnonymously(auth);
-          return;
-        } catch (error) {
-          console.error("Firebase anonymous auth error", error);
-        } finally {
-          creatingAnonymous = false;
-        }
-      }
+    const timeout = window.setTimeout(() => {
+      setUser((current) => current ?? (auth.currentUser ? normalizeUser(auth.currentUser) : null));
+      setIsPending(false);
+    }, 2500);
+    const unsub = onIdTokenChanged(auth, async (nextUser) => {
+      window.clearTimeout(timeout);
       try {
         setBearerToken(nextUser ? await nextUser.getIdToken() : null);
       } finally {
@@ -63,6 +55,10 @@ export function useCurrentUserState(): CurrentUserState {
         setIsPending(false);
       }
     });
+    return () => {
+      window.clearTimeout(timeout);
+      unsub();
+    };
   }, []);
 
   return { user, isPending };
