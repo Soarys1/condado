@@ -239,7 +239,12 @@ export const useGame = create<GameStore>((set, get) => ({
   hydrateFromCloud: async () => {
     wireCloudSync();
     try {
-      const cloudResult = await pullCloud();
+      const cloudResult = await Promise.race([
+        pullCloud(),
+        new Promise<{ save: null }>((resolve) =>
+          window.setTimeout(() => resolve({ save: null }), 8000),
+        ),
+      ]);
       const save = cloudResult?.save;
       if (!save) {
         set({ hydrated: true, screen: "splash" });

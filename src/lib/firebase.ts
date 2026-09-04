@@ -52,6 +52,7 @@ export const auth: Auth = (() => {
 })();
 
 export const db: Firestore = (() => {
-  dbInstance = getFirestore(getFirebaseApp());
+  // Enterprise/named database id is "default" (not the SDK's "(default)").
+  dbInstance = getFirestore(getFirebaseApp(), "default");
   return dbInstance;
 })();
