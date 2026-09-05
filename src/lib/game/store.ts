@@ -1,11 +1,17 @@
 import { create } from "zustand";
 import {
   ALLIANCE_FOUND_GOLD,
+  BREAD_PACK,
+  BREAD_PACK_BUY_GOLD,
+  BREAD_PACK_SELL_GOLD,
+  BREAD_UPKEEP_PER_TROOP_DAY,
   BUILDINGS,
   COUNTY_MAX,
+  DAILY_ATTACK_CAP,
   DEFENDER_COST,
   GENERAL_MAX_LEVEL,
   GENERAL_UNLOCK_COUNTY,
+  GOLD_NAME_PL,
   LOOT_CAP,
   NIEN_COST_GOLD,
   NIEN_SELL_GOLD,
@@ -15,17 +21,23 @@ import {
   SHIELD_MS,
   SPEED_TRAIN_GOLD,
   TROOPS,
+  WAR_ATTACK_CAP,
   armyCapacity,
+  brtDayKey,
   campUpgradeGold,
   countyUpgradeCost,
+  dailyAttackCap,
+  dailyNienSendCap,
   defenderCap,
   generalCardsFor,
+  goldWord,
   isHero,
   passCostNiens,
   passReward,
   passSeasonKey,
   passWindow,
   productionPerSec,
+  resourceLabel,
   storageCap,
   troopCardsFor,
   troopUpgradeBread,
@@ -36,21 +48,12 @@ import {
   rankingWindow,
   type BuildingType,
   type ResourceKind,
+  type Tradable,
   type TroopType,
   type WallDir,
 } from "./constants";
 import { Battle } from "./battle";
-import {
-  botArmy,
-  findLord,
-  findNick,
-  LORDS,
-  lordsOfAlliance,
-  marketBoard,
-  pairWar,
-  randomChat,
-  warChest,
-} from "./bots";
+import { ALLIANCES, botArmy, findLord, findNick, LORDS, lordsOfAlliance, pairWar, randomChat, warChest } from "./bots";
 import { defaultSave, persist, setCloudSync, wipeSave } from "./save";
 import type {
   BuildingInst,
@@ -67,14 +70,18 @@ import type {
 import { canPlace, canPlaceWall, countType, generateBase, nid, snapPlace, wallRow } from "./world";
 import { sfxBuild, sfxClick, sfxCoin, sfxError, sfxHorn, sfxStar } from "./audio";
 import {
+  cancelMarketOffer,
   cloudTransfer,
+  createMarketOffer,
   createProfile,
   creditReferral,
+  listMarket,
   listTransfers,
   peekPlayer,
   pullCloud,
   pushCloud,
   renameCounty,
+  takeMarketOffer,
 } from "./cloud";
 
 export let battle: Battle | null = null;
@@ -136,9 +143,14 @@ interface GameStore extends SaveState {
   retreat: () => void;
   finishBattle: () => void;
   sendChat: (text: string) => void;
-  buyOffer: (id: string) => boolean;
+  buyOffer: (id: string) => Promise<boolean>;
   buyNien: () => boolean;
   sellNien: () => boolean;
+  buyBreadPack: () => boolean;
+  sellBreadPack: () => boolean;
+  postOffer: (giveKind: Tradable, giveAmount: number, wantKind: Tradable, wantAmount: number) => Promise<boolean>;
+  withdrawOffer: (id: string) => Promise<boolean>;
+  refreshMarket: () => Promise<void>;
   transfer: (toId: string, amount: number, kind: ResourceKind) => Promise<boolean>;
   peekId: (id: string) => void;
   rename: (nick: string) => Promise<boolean>;
@@ -223,7 +235,7 @@ export const useGame = create<GameStore>((set, get) => ({
   ghost: null,
   deployType: "infantry",
   toast: null,
-  offers: marketBoard(),
+  offers: [],
   nickDraft: "",
   placingDir: "h",
   movingId: null,
@@ -239,12 +251,7 @@ export const useGame = create<GameStore>((set, get) => ({
   hydrateFromCloud: async () => {
     wireCloudSync();
     try {
-      const cloudResult = await Promise.race([
-        pullCloud(),
-        new Promise<{ save: null }>((resolve) =>
-          window.setTimeout(() => resolve({ save: null }), 8000),
-        ),
-      ]);
+      const cloudResult = await pullCloud();
       const save = cloudResult?.save;
       if (!save) {
         set({ hydrated: true, screen: "splash" });
@@ -279,6 +286,7 @@ export const useGame = create<GameStore>((set, get) => ({
       } catch {
         /* ignore */
       }
+      void get().refreshMarket();
       return true;
     } catch {
       set({ hydrated: true, screen: "splash" });
@@ -382,7 +390,7 @@ export const useGame = create<GameStore>((set, get) => ({
       gold += share;
       war = { ...war, resolved: true };
       toast = won
-        ? `Guerra vencida. +${share.toLocaleString("pt")} ouro do cofre.`
+        ? `Guerra vencida. +${share.toLocaleString("pt")} ${GOLD_NAME_PL} do cofre.`
         : war.sittingOut
           ? "Sábado ímpar: a aliança ficou de fora."
           : "Guerra perdida. O cofre ficou com o rival.";
@@ -399,6 +407,23 @@ export const useGame = create<GameStore>((set, get) => ({
     }
 
     const referralClaimed = s.referralClaimed;
+    const troopsNow =
+      trained.army.infantry +
+      trained.army.archers +
+      trained.army.cavalry +
+      trained.army.general +
+      trained.army.generaless +
+      trained.army.defender +
+      trained.jobs.length;
+    let bread = s.bread;
+    const upkeep = troopsNow * BREAD_UPKEEP_PER_TROOP_DAY * (dt / 86400);
+    if (upkeep > 0) {
+      if (bread >= upkeep) bread -= upkeep;
+      else {
+        bread = 0;
+        if (!toast) toast = "Sem pão para a manutenção. Cada tropa gasta 20 pães por dia.";
+      }
+    }
 
     set({
       lastTick: now,
@@ -408,6 +433,7 @@ export const useGame = create<GameStore>((set, get) => ({
       pass,
       war,
       gold,
+      bread,
       referralClaimed,
       toast,
     });
@@ -487,7 +513,7 @@ export const useGame = create<GameStore>((set, get) => ({
     }
     if (s.gold < def.costGold) {
       sfxError();
-      set({ toast: "Ouro insuficiente." });
+      set({ toast: `Faltam ${GOLD_NAME_PL}.` });
       return false;
     }
     if (type === "wall" && !canPlaceWall(s.buildings, s.countyLevel)) {
@@ -529,7 +555,7 @@ export const useGame = create<GameStore>((set, get) => ({
       return;
     }
     const buildings = s.buildings.map((x) => (x.id === id ? { ...x, lastCollect: Date.now() } : x));
-    if (kind === "gold") set({ gold: s.gold + amt, buildings, toast: `+${amt} ouro` });
+    if (kind === "gold") set({ gold: s.gold + amt, buildings, toast: `+${amt} ${goldWord(amt)}` });
     else set({ bread: s.bread + amt, buildings, toast: `+${amt} pão` });
     persist({ ...get() });
     sfxCoin();
@@ -561,7 +587,7 @@ export const useGame = create<GameStore>((set, get) => ({
       buildings,
       gold: s.gold + gold,
       bread: s.bread + bread,
-      toast: `Coletado ${gold} ouro e ${bread} pão.`,
+      toast: `Coletado ${gold} ${goldWord(gold)} e ${bread} pão.`,
     });
     persist({ ...get() });
     sfxCoin();
@@ -578,7 +604,7 @@ export const useGame = create<GameStore>((set, get) => ({
     const cost = upgradeCost(b.type, b.level);
     if (s.gold < cost) {
       sfxError();
-      set({ toast: "Ouro insuficiente para melhorar." });
+      set({ toast: `Faltam ${GOLD_NAME_PL} para melhorar.` });
       return false;
     }
     set({
@@ -601,7 +627,7 @@ export const useGame = create<GameStore>((set, get) => ({
       gold: s.gold + refund,
       selectedId: null,
       sheet: null,
-      toast: `Demolido. +${refund} ouro.`,
+      toast: `Demolido. +${refund} ${goldWord(refund)}.`,
     });
     persist({ ...get() });
   },
@@ -634,7 +660,7 @@ export const useGame = create<GameStore>((set, get) => ({
         return false;
       }
       if (s.gold < DEFENDER_COST) {
-        set({ toast: "Ouro insuficiente." });
+        set({ toast: `Faltam ${GOLD_NAME_PL}.` });
         return false;
       }
       set({
@@ -672,7 +698,7 @@ export const useGame = create<GameStore>((set, get) => ({
     const job = s.training.find((t) => t.id === id);
     if (!job) return false;
     if (s.gold < SPEED_TRAIN_GOLD) {
-      set({ toast: `Precisa de ${SPEED_TRAIN_GOLD} ouro para acelerar.` });
+      set({ toast: `Precisa de ${SPEED_TRAIN_GOLD} ${GOLD_NAME_PL} para acelerar.` });
       return false;
     }
     const army = { ...s.army };
@@ -698,16 +724,35 @@ export const useGame = create<GameStore>((set, get) => ({
       sfxError();
       return;
     }
-    if (s.war && s.war.foeId && lord.allianceId === s.war.foeId) {
-      const used = s.war.attacks[lord.id] ?? 0;
-      if (used >= 2) {
-        set({ toast: "Anti-farm: no máximo 2 ataques por base nesta guerra." });
+    const warOn = !!(s.war && s.war.foeId && lord.allianceId === s.war.foeId && !s.war.sittingOut);
+    if (warOn) {
+      const used = s.war!.attacks[lord.id] ?? 0;
+      if (used >= WAR_ATTACK_CAP) {
+        set({ toast: `Guerra de aliança: no máximo ${WAR_ATTACK_CAP} ataques por base.` });
         sfxError();
         return;
       }
     }
+    const day = brtDayKey();
+    const rec = s.attacksByTarget[lord.id];
+    const usedToday = rec && rec.day === day ? rec.count : 0;
+    const cap = dailyAttackCap(warOn);
+    if (usedToday >= cap) {
+      set({
+        toast: warOn
+          ? `Esta base já sofreu ${cap} ataques de guerra hoje.`
+          : `Uma conta só pode ser atacada ${DAILY_ATTACK_CAP} vezes por dia.`,
+      });
+      sfxError();
+      return;
+    }
     raidTarget = lord;
-    set({ screen: "march", sheet: null, marchLord: lord });
+    set({
+      screen: "march",
+      sheet: null,
+      marchLord: lord,
+      attacksByTarget: { ...s.attacksByTarget, [lord.id]: { day, count: usedToday + 1 } },
+    });
     sfxClick();
   },
 
@@ -816,6 +861,9 @@ export const useGame = create<GameStore>((set, get) => ({
     let weekStars = s.weekKey === win.key ? s.weekStars : 0;
     const weekKey = win.key;
     if (!battle.spectator && win.open) weekStars += r.stars;
+    const attackerNick = battle.spectator ? raidTarget.nick : s.player.nick;
+    const defenderNick = battle.spectator ? s.player.nick : raidTarget.nick;
+    const troopsLost = battle.spectator ? 0 : r.casualties;
     set({
       army,
       gold: Math.max(0, s.gold + (battle.spectator ? 0 : r.gold) - stolen),
@@ -832,13 +880,17 @@ export const useGame = create<GameStore>((set, get) => ({
         {
           id: nid("r"),
           at: Date.now(),
-          attacker: battle.spectator ? raidTarget.nick : s.player.nick,
+          attacker: attackerNick,
+          defender: defenderNick,
           gold: r.gold,
           bread: 0,
           incoming: !!battle.spectator,
+          destruction: r.destruction,
+          troopsLost,
+          stars: r.stars,
         },
         ...s.raids,
-      ].slice(0, 12),
+      ].slice(0, 24),
       screen: "results",
     });
     persist({ ...get() });
@@ -871,43 +923,30 @@ export const useGame = create<GameStore>((set, get) => ({
     persist({ ...get() });
   },
 
-  buyOffer: (id) => {
-    const s = get();
-    const o = s.offers.find((x) => x.id === id);
-    if (!o) return false;
-    if (s.niens < o.wantNiens) {
-      set({ toast: "Niens insuficientes." });
+  buyOffer: async (id) => {
+    try {
+      const r = await takeMarketOffer(id);
+      set({
+        gold: r.gold,
+        bread: r.bread,
+        niens: r.niens,
+        toast: `Trato fechado com ${r.sellerNick}.`,
+      });
+      persist({ ...get() });
+      await get().refreshMarket();
+      sfxCoin();
+      return true;
+    } catch (e) {
+      set({ toast: e instanceof Error ? e.message : "Falha no trato." });
       sfxError();
       return false;
     }
-    const gold = o.give.kind === "gold" ? s.gold + o.give.amount : s.gold;
-    const bread = o.give.kind === "bread" ? s.bread + o.give.amount : s.bread;
-    set({
-      niens: s.niens - o.wantNiens,
-      gold,
-      bread,
-      offers: s.offers.filter((x) => x.id !== id),
-      toast: `Comprado de ${o.sellerNick}.`,
-      chat: [
-        ...s.chat,
-        {
-          id: nid("m"),
-          fromId: o.sellerId,
-          fromNick: o.sellerNick,
-          text: `Trato fechado com ${s.player.nick}. Niens recebidos.`,
-          at: Date.now(),
-        },
-      ].slice(-40),
-    });
-    persist({ ...get() });
-    sfxCoin();
-    return true;
   },
 
   buyNien: () => {
     const s = get();
     if (s.gold < NIEN_COST_GOLD) {
-      set({ toast: `Precisa de ${NIEN_COST_GOLD.toLocaleString("pt")} ouro.` });
+      set({ toast: `Precisa de ${NIEN_COST_GOLD.toLocaleString("pt")} ${GOLD_NAME_PL}.` });
       sfxError();
       return false;
     }
@@ -927,11 +966,83 @@ export const useGame = create<GameStore>((set, get) => ({
     set({
       niens: s.niens - 1,
       gold: s.gold + NIEN_SELL_GOLD,
-      toast: `+${NIEN_SELL_GOLD.toLocaleString("pt")} ouro.`,
+      toast: `+${NIEN_SELL_GOLD.toLocaleString("pt")} ${GOLD_NAME_PL}.`,
     });
     persist({ ...get() });
     sfxCoin();
     return true;
+  },
+
+  buyBreadPack: () => {
+    const s = get();
+    if (s.gold < BREAD_PACK_BUY_GOLD) {
+      set({ toast: `Precisa de ${BREAD_PACK_BUY_GOLD.toLocaleString("pt")} ${GOLD_NAME_PL}.` });
+      sfxError();
+      return false;
+    }
+    set({
+      gold: s.gold - BREAD_PACK_BUY_GOLD,
+      bread: s.bread + BREAD_PACK,
+      toast: `+${BREAD_PACK.toLocaleString("pt")} pães.`,
+    });
+    persist({ ...get() });
+    sfxCoin();
+    return true;
+  },
+
+  sellBreadPack: () => {
+    const s = get();
+    if (s.bread < BREAD_PACK) {
+      set({ toast: `Precisa de ${BREAD_PACK.toLocaleString("pt")} pães.` });
+      sfxError();
+      return false;
+    }
+    set({
+      bread: s.bread - BREAD_PACK,
+      gold: s.gold + BREAD_PACK_SELL_GOLD,
+      toast: `+${BREAD_PACK_SELL_GOLD.toLocaleString("pt")} ${GOLD_NAME_PL}.`,
+    });
+    persist({ ...get() });
+    sfxCoin();
+    return true;
+  },
+
+  postOffer: async (giveKind, giveAmount, wantKind, wantAmount) => {
+    try {
+      const r = await createMarketOffer({ giveKind, giveAmount, wantKind, wantAmount });
+      set({ gold: r.gold, bread: r.bread, niens: r.niens, toast: "Oferta publicada no mercado real." });
+      persist({ ...get() });
+      await get().refreshMarket();
+      sfxCoin();
+      return true;
+    } catch (e) {
+      set({ toast: e instanceof Error ? e.message : "Não foi possível publicar." });
+      sfxError();
+      return false;
+    }
+  },
+
+  withdrawOffer: async (id) => {
+    try {
+      const r = await cancelMarketOffer(id);
+      set({ gold: r.gold, bread: r.bread, niens: r.niens, toast: "Oferta retirada." });
+      persist({ ...get() });
+      await get().refreshMarket();
+      return true;
+    } catch (e) {
+      set({ toast: e instanceof Error ? e.message : "Não foi possível retirar." });
+      sfxError();
+      return false;
+    }
+  },
+
+  refreshMarket: async () => {
+    try {
+      const { offers } = await listMarket();
+      set({ offers });
+    } catch {
+      /* offline */
+    }
   },
 
   transfer: async (toId, amount, kind) => {
@@ -941,18 +1052,21 @@ export const useGame = create<GameStore>((set, get) => ({
       set({ toast: "Quantia inválida." });
       return false;
     }
+    if (kind === "niens") {
+      const day = brtDayKey();
+      const sent = s.niensSentDay === day ? s.niensSentToday : 0;
+      const cap = dailyNienSendCap(s.countyLevel);
+      if (sent + n > cap) {
+        set({
+          toast: `No nível ${s.countyLevel} podes enviar ${cap} Niens por dia. Já enviaste ${sent}.`,
+        });
+        sfxError();
+        return false;
+      }
+    }
     try {
       const r = await cloudTransfer({ toId, amount: n, kind });
-      const label =
-        kind === "niens"
-          ? "Niens"
-          : kind === "gold"
-            ? "ouro"
-            : kind === "bread"
-              ? "pão"
-              : kind === "troopCards"
-                ? "cartas de tropa"
-                : "cartas de general";
+      const label = resourceLabel(kind, n);
       const rec: TransferRecord = {
         id: r.id,
         at: Date.now(),
@@ -964,6 +1078,8 @@ export const useGame = create<GameStore>((set, get) => ({
         amount: n,
         incoming: false,
       };
+      const day = brtDayKey();
+      const sent = s.niensSentDay === day ? s.niensSentToday : 0;
       set({
         gold: r.gold,
         bread: r.bread,
@@ -971,6 +1087,8 @@ export const useGame = create<GameStore>((set, get) => ({
         troopCards: r.troopCards,
         generalCards: r.generalCards,
         ledger: [rec, ...s.ledger].slice(0, 40),
+        niensSentDay: kind === "niens" ? day : s.niensSentDay,
+        niensSentToday: kind === "niens" ? sent + n : s.niensSentToday,
         toast: `${n} ${label} enviados a ${r.toNick}.`,
       });
       persist({ ...get() });
@@ -1073,7 +1191,7 @@ export const useGame = create<GameStore>((set, get) => ({
       set({
         toast: cost.niens
           ? `Precisa de ${cost.niens} Niens.`
-          : `Precisa de ${cost.gold.toLocaleString("pt")} ouro.`,
+          : `Precisa de ${cost.gold.toLocaleString("pt")} ${GOLD_NAME_PL}.`,
       });
       sfxError();
       return false;
@@ -1101,13 +1219,13 @@ export const useGame = create<GameStore>((set, get) => ({
               troopCards: save?.troopCards ?? get().troopCards,
               generalCards: save?.generalCards ?? get().generalCards,
               referralClaimed: true,
-              toast: `Indique e Ganhe: tu e o amigo recebem ${REFERRAL_GOLD.toLocaleString("pt")} ouro.`,
+              toast: `Indique e Ganhe: tu e o amigo recebem ${REFERRAL_GOLD.toLocaleString("pt")} ${GOLD_NAME_PL}.`,
             });
           } catch {
             set({
               gold: get().gold + r.gold,
               referralClaimed: true,
-              toast: `Indique e Ganhe: tu e o amigo recebem ${REFERRAL_GOLD.toLocaleString("pt")} ouro.`,
+              toast: `Indique e Ganhe: tu e o amigo recebem ${REFERRAL_GOLD.toLocaleString("pt")} ${GOLD_NAME_PL}.`,
             });
           }
           persist({ ...get() });
@@ -1157,7 +1275,7 @@ export const useGame = create<GameStore>((set, get) => ({
     const g = troopUpgradeGold(cur + 1);
     const br = troopUpgradeBread(cur + 1);
     if (s.troopCards < cards || s.gold < g || s.bread < br) {
-      set({ toast: `Precisa ${cards} cartas, ${g} ouro, ${br} pão.` });
+      set({ toast: `Precisa ${cards} cartas, ${g} ${GOLD_NAME_PL}, ${br} pão.` });
       return false;
     }
     set({
@@ -1184,7 +1302,7 @@ export const useGame = create<GameStore>((set, get) => ({
     }
     const cost = campUpgradeGold(s.campLevel);
     if (s.gold < cost) {
-      set({ toast: `Precisa de ${cost.toLocaleString("pt")} ouro.` });
+      set({ toast: `Precisa de ${cost.toLocaleString("pt")} ${GOLD_NAME_PL}.` });
       return false;
     }
     set({
@@ -1255,7 +1373,7 @@ export const useGame = create<GameStore>((set, get) => ({
       return false;
     }
     if (s.gold < ALLIANCE_FOUND_GOLD) {
-      set({ toast: "Precisa de 5.000.000 de ouro." });
+      set({ toast: `Precisa de 5.000.000 de ${GOLD_NAME_PL}.` });
       sfxError();
       return false;
     }
@@ -1316,7 +1434,7 @@ export const useGame = create<GameStore>((set, get) => ({
     }
     set({
       inviteCopied: true,
-      toast: "ID copiado. Quando o amigo chegar ao Condado 3, ambos ganham 300.000 ouro.",
+      toast: `ID copiado. Quando o amigo chegar ao Condado 3, ambos ganham 300.000 ${GOLD_NAME_PL}.`,
     });
   },
 
@@ -1333,6 +1451,11 @@ export const useGame = create<GameStore>((set, get) => ({
   beginIncoming: (lord) => {
     const s = get();
     if (s.screen !== "village") return;
+    const day = brtDayKey();
+    const warOn = !!(s.war && warWindow().open && !s.war.sittingOut);
+    const received = s.attacksReceivedDay === day ? s.attacksReceived : 0;
+    const cap = dailyAttackCap(warOn);
+    if (received >= cap) return;
     const attacker = lord ?? LORDS[Math.floor(Math.random() * LORDS.length)]!;
     raidTarget = attacker;
     battle = new Battle(s.buildings, botArmy(attacker.rank), LOOT_CAP, {
@@ -1346,6 +1469,8 @@ export const useGame = create<GameStore>((set, get) => ({
       sheet: null,
       placing: null,
       ghost: null,
+      attacksReceivedDay: day,
+      attacksReceived: received + 1,
       toast: `${attacker.nick} ataca o teu condado. Só podes assistir.`,
     });
     sfxHorn();
@@ -1424,7 +1549,7 @@ export const useGame = create<GameStore>((set, get) => ({
     }
     const cost = targets.reduce((n, b) => n + upgradeCost(b.type, b.level), 0);
     if (s.gold < cost) {
-      set({ toast: `Precisa de ${cost.toLocaleString("pt")} ouro.` });
+      set({ toast: `Precisa de ${cost.toLocaleString("pt")} ${GOLD_NAME_PL}.` });
       sfxError();
       return false;
     }
@@ -1432,7 +1557,7 @@ export const useGame = create<GameStore>((set, get) => ({
     set({
       gold: s.gold - cost,
       buildings: s.buildings.map((b) => (ids.has(b.id) ? { ...b, level: b.level + 1 } : b)),
-      toast: `${targets.length}× ${BUILDINGS[type].name} → Nv.+1 · ${cost.toLocaleString("pt")} ouro.`,
+      toast: `${targets.length}× ${BUILDINGS[type].name} → Nv.+1 · ${cost.toLocaleString("pt")} ${GOLD_NAME_PL}.`,
     });
     persist({ ...get() });
     sfxBuild();
@@ -1451,7 +1576,7 @@ export const useGame = create<GameStore>((set, get) => ({
     }
     const cost = targets.reduce((n, b) => n + upgradeCost("wall", b.level), 0);
     if (s.gold < cost) {
-      set({ toast: `Fileira: ${cost.toLocaleString("pt")} ouro.` });
+      set({ toast: `Fileira: ${cost.toLocaleString("pt")} ${GOLD_NAME_PL}.` });
       sfxError();
       return false;
     }
@@ -1459,7 +1584,7 @@ export const useGame = create<GameStore>((set, get) => ({
     set({
       gold: s.gold - cost,
       buildings: s.buildings.map((b) => (ids.has(b.id) ? { ...b, level: b.level + 1 } : b)),
-      toast: `Fileira ${targets.length} muros · ${cost.toLocaleString("pt")} ouro.`,
+      toast: `Fileira ${targets.length} muros · ${cost.toLocaleString("pt")} ${GOLD_NAME_PL}.`,
     });
     persist({ ...get() });
     sfxBuild();

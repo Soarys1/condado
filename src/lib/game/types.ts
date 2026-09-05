@@ -1,4 +1,4 @@
-import type { BuildingType, ResourceKind, TroopType, WallDir } from "./constants";
+import type { BuildingType, ResourceKind, Tradable, TroopType, WallDir } from "./constants";
 
 export type GameScreen =
   | "splash"
@@ -58,9 +58,13 @@ export interface RaidLog {
   id: string;
   at: number;
   attacker: string;
+  defender: string;
   gold: number;
   bread: number;
   incoming: boolean;
+  destruction: number;
+  troopsLost: number;
+  stars: number;
 }
 
 export interface TransferRecord {
@@ -78,9 +82,13 @@ export interface TransferRecord {
 export interface MarketOffer {
   id: string;
   sellerId: string;
+  sellerUid: string;
   sellerNick: string;
-  give: { kind: "gold" | "bread"; amount: number };
-  wantNiens: number;
+  giveKind: Tradable;
+  giveAmount: number;
+  wantKind: Tradable;
+  wantAmount: number;
+  createdAt: number;
 }
 
 export interface Lord {
@@ -157,6 +165,11 @@ export interface SaveState {
   weekKey: string;
   weekClaimed: string | null;
   ledger: TransferRecord[];
+  niensSentDay: string;
+  niensSentToday: number;
+  attacksReceivedDay: string;
+  attacksReceived: number;
+  attacksByTarget: Record<string, { day: string; count: number }>;
 }
 
 export type SheetId =

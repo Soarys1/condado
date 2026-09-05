@@ -1,5 +1,6 @@
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -10,11 +11,21 @@ import {
   type Transaction,
 } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
-import { REFERRAL_GOLD, rankingWindow, weeklyPrize, type ResourceKind } from "./constants";
+import {
+  REFERRAL_GOLD,
+  brtDayKey,
+  dailyNienSendCap,
+  marketOfferId,
+  rankingWindow,
+  weeklyPrize,
+  type ResourceKind,
+  type Tradable,
+} from "./constants";
 import { defaultSave, migrateCloud } from "./save";
-import type { SaveState } from "./types";
+import type { MarketOffer, SaveState } from "./types";
 import { botWeekBoard, findNick } from "./bots";
 import { makeId } from "./world";
+import { deviceFingerprint, getDeviceId } from "./device";
 
 export type RankRow = {
   playerId: string;
@@ -44,6 +55,9 @@ const transfersCol = () => collection(db, "condado_transfers");
 const claimsCol = () => collection(db, "condado_week_claims");
 const nickIndexCol = () => collection(db, "condado_nick_index");
 const playerIndexCol = () => collection(db, "condado_player_index");
+const emailIndexCol = () => collection(db, "condado_email_index");
+const devicesCol = () => collection(db, "condado_devices");
+const marketCol = () => collection(db, "condado_market");
 
 function requireUid(): string {
   const uid = auth.currentUser?.uid;
@@ -109,7 +123,7 @@ function profilePayload(save: SaveState, extra?: Partial<{ appliedTransferIds: s
       ...save,
       chat: save.chat.slice(-40),
       allianceChat: save.allianceChat.slice(-40),
-      raids: save.raids.slice(-12),
+      raids: save.raids.slice(-24),
       ledger: save.ledger.slice(0, 40),
     },
     playerId: save.player.id,
@@ -209,20 +223,45 @@ export async function pullCloud() {
 
 export async function createProfile(input: { nick: string; referredBy?: string | null }) {
   const uid = requireUid();
-  const nick = input.nick.trim().slice(0, 18);
+  const nick = input.nick.trim().replace(/\s+/g, " ").slice(0, 18);
   if (nick.length < 3) throw new Error("O nome do condado precisa de ao menos 3 letras.");
+  const email = auth.currentUser?.email?.trim().toLowerCase();
+  if (!email) throw new Error("A conta precisa de um e-mail. E-mail duplicado não é aceite.");
+  const deviceId = getDeviceId();
+  const fingerprint = await deviceFingerprint();
   const save = defaultSave(nick, input.referredBy?.trim().toUpperCase() || null);
   const ref = doc(profilesCol(), uid);
   const nickRef = doc(nickIndexCol(), nick.toLowerCase());
   const playerRef = doc(playerIndexCol(), save.player.id);
+  const emailRef = doc(emailIndexCol(), email);
+  const deviceRef = doc(devicesCol(), deviceId);
+  const fpRef = doc(devicesCol(), `fp_${fingerprint}`);
   try {
     const result = await runTransaction(db, async (tx: Transaction) => {
-      const [existing, taken] = await Promise.all([tx.get(ref), tx.get(nickRef)]);
+      const [existing, taken, emailTaken, deviceTaken, fpTaken] = await Promise.all([
+        tx.get(ref),
+        tx.get(nickRef),
+        tx.get(emailRef),
+        tx.get(deviceRef),
+        tx.get(fpRef),
+      ]);
       if (existing.exists()) return withoutMeta(profileFromDoc(uid, existing.data() as Record<string, unknown>));
       if (taken.exists()) throw new Error("Este nome de condado já está em uso.");
-      tx.set(ref, profilePayload(save, { appliedTransferIds: [] }));
+      if (emailTaken.exists() && emailTaken.data()?.userId !== uid) {
+        throw new Error("Este e-mail já está ligado a outro condado.");
+      }
+      if (deviceTaken.exists() && deviceTaken.data()?.userId !== uid) {
+        throw new Error("Já existe um condado neste aparelho. Multi-contas não são permitidas.");
+      }
+      if (fpTaken.exists() && fpTaken.data()?.userId !== uid) {
+        throw new Error("Já existe um condado neste aparelho. Multi-contas não são permitidas.");
+      }
+      tx.set(ref, profilePayload(save, { appliedTransferIds: [], accountEmail: email }));
       tx.set(nickRef, { userId: uid, playerId: save.player.id });
       tx.set(playerRef, { userId: uid, nick: save.player.nick });
+      tx.set(emailRef, { userId: uid, playerId: save.player.id });
+      tx.set(deviceRef, { userId: uid, playerId: save.player.id, kind: "device" });
+      tx.set(fpRef, { userId: uid, playerId: save.player.id, kind: "fingerprint" });
       return save;
     });
     return { save: result };
@@ -325,6 +364,18 @@ export async function cloudTransfer(data: { toId: string; amount: number; kind: 
       if (toId === me.player.id) throw new Error("Não envie para si mesmo.");
       const field = kindField(data.kind);
       if (amount > Number(me[field])) throw new Error("Quantia inválida.");
+      if (data.kind === "niens") {
+        const day = brtDayKey();
+        const sent = me.niensSentDay === day ? me.niensSentToday : 0;
+        const cap = dailyNienSendCap(me.countyLevel);
+        if (sent + amount > cap) {
+          throw new Error(
+            `No nível ${me.countyLevel} podes enviar ${cap} Niens por dia. Já enviaste ${sent}.`,
+          );
+        }
+        me.niensSentDay = day;
+        me.niensSentToday = sent + amount;
+      }
       const toNick = destIndex.exists() ? String(destIndex.data()?.nick ?? "") : findNick(toId);
       if (!toNick) throw new Error("ID não encontrado. Cole e confira o nick.");
       const next = { ...me, [field]: Number(me[field]) - amount } as Profile;
@@ -500,5 +551,146 @@ export async function creditReferral() {
     });
   } catch (error) {
     throw firestoreError(error, "Não foi possível creditar o convite.");
+  }
+}
+
+function offerFromDoc(id: string, data: Record<string, unknown>): MarketOffer {
+  return {
+    id,
+    sellerId: String(data.sellerId ?? ""),
+    sellerUid: String(data.sellerUid ?? ""),
+    sellerNick: String(data.sellerNick ?? ""),
+    giveKind: data.giveKind as Tradable,
+    giveAmount: Number(data.giveAmount ?? 0),
+    wantKind: data.wantKind as Tradable,
+    wantAmount: Number(data.wantAmount ?? 0),
+    createdAt: Date.parse(String(data.createdAt ?? "")) || Date.now(),
+  };
+}
+
+export async function listMarket(): Promise<{ offers: MarketOffer[] }> {
+  requireUid();
+  const snap = await getDocs(marketCol());
+  const offers = snap.docs
+    .map((d) => offerFromDoc(d.id, d.data() as Record<string, unknown>))
+    .filter((o) => o.giveAmount > 0 && o.wantAmount > 0 && o.giveKind !== o.wantKind)
+    .sort((a, b) => b.createdAt - a.createdAt);
+  return { offers };
+}
+
+export async function createMarketOffer(input: {
+  giveKind: Tradable;
+  giveAmount: number;
+  wantKind: Tradable;
+  wantAmount: number;
+}) {
+  const uid = requireUid();
+  const giveAmount = Math.floor(input.giveAmount);
+  const wantAmount = Math.floor(input.wantAmount);
+  if (giveAmount <= 0 || wantAmount <= 0) throw new Error("Quantia inválida.");
+  if (input.giveKind === input.wantKind) throw new Error("Troca precisa de recursos diferentes.");
+  const id = marketOfferId(input.giveKind, giveAmount, input.wantKind, wantAmount);
+  const offerRef = doc(marketCol(), id);
+  const meRef = doc(profilesCol(), uid);
+  try {
+    return await runTransaction(db, async (tx: Transaction) => {
+      const [offerSnap, meSnap] = await Promise.all([tx.get(offerRef), tx.get(meRef)]);
+      if (offerSnap.exists()) throw new Error("Esta proposta já está no mercado. As ofertas são únicas.");
+      if (!meSnap.exists()) throw new Error("Condado não encontrado.");
+      const me = profileFromDoc(uid, meSnap.data() as Record<string, unknown>);
+      const field = kindField(input.giveKind);
+      if (giveAmount > Number(me[field])) throw new Error("Não tens esse recurso para listar.");
+      const next = { ...me, [field]: Number(me[field]) - giveAmount } as Profile;
+      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds }), { merge: true });
+      tx.set(offerRef, {
+        sellerUid: uid,
+        sellerId: me.player.id,
+        sellerNick: me.player.nick,
+        giveKind: input.giveKind,
+        giveAmount,
+        wantKind: input.wantKind,
+        wantAmount,
+        createdAt: new Date().toISOString(),
+      });
+      return {
+        ok: true as const,
+        gold: next.gold,
+        bread: next.bread,
+        niens: next.niens,
+        offerId: id,
+      };
+    });
+  } catch (error) {
+    throw firestoreError(error, "Não foi possível publicar a oferta.");
+  }
+}
+
+export async function takeMarketOffer(offerId: string) {
+  const uid = requireUid();
+  const offerRef = doc(marketCol(), offerId);
+  const meRef = doc(profilesCol(), uid);
+  try {
+    return await runTransaction(db, async (tx: Transaction) => {
+      const [offerSnap, meSnap] = await Promise.all([tx.get(offerRef), tx.get(meRef)]);
+      if (!offerSnap.exists()) throw new Error("Esta oferta já foi fechada.");
+      if (!meSnap.exists()) throw new Error("Condado não encontrado.");
+      const offer = offerFromDoc(offerSnap.id, offerSnap.data() as Record<string, unknown>);
+      if (offer.sellerUid === uid) throw new Error("Não podes comprar a tua própria oferta.");
+      const me = profileFromDoc(uid, meSnap.data() as Record<string, unknown>);
+      const payField = kindField(offer.wantKind);
+      const getField = kindField(offer.giveKind);
+      if (offer.wantAmount > Number(me[payField])) throw new Error("Recurso insuficiente para este trato.");
+      const next = {
+        ...me,
+        [payField]: Number(me[payField]) - offer.wantAmount,
+        [getField]: Number(me[getField]) + offer.giveAmount,
+      } as Profile;
+      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds }), { merge: true });
+      tx.delete(offerRef);
+      const payRef = doc(transfersCol(), makeId("MK"));
+      tx.set(payRef, {
+        fromUserId: uid,
+        fromPlayerId: me.player.id,
+        fromNick: me.player.nick,
+        toPlayerId: offer.sellerId,
+        toNick: offer.sellerNick,
+        kind: offer.wantKind,
+        amount: offer.wantAmount,
+        createdAt: new Date().toISOString(),
+        market: true,
+      });
+      return {
+        ok: true as const,
+        gold: next.gold,
+        bread: next.bread,
+        niens: next.niens,
+        sellerNick: offer.sellerNick,
+      };
+    });
+  } catch (error) {
+    throw firestoreError(error, "Não foi possível fechar o trato.");
+  }
+}
+
+export async function cancelMarketOffer(offerId: string) {
+  const uid = requireUid();
+  const offerRef = doc(marketCol(), offerId);
+  const meRef = doc(profilesCol(), uid);
+  try {
+    return await runTransaction(db, async (tx: Transaction) => {
+      const [offerSnap, meSnap] = await Promise.all([tx.get(offerRef), tx.get(meRef)]);
+      if (!offerSnap.exists()) throw new Error("Oferta já não existe.");
+      if (!meSnap.exists()) throw new Error("Condado não encontrado.");
+      const offer = offerFromDoc(offerSnap.id, offerSnap.data() as Record<string, unknown>);
+      if (offer.sellerUid !== uid) throw new Error("Só o autor pode retirar a oferta.");
+      const me = profileFromDoc(uid, meSnap.data() as Record<string, unknown>);
+      const field = kindField(offer.giveKind);
+      const next = { ...me, [field]: Number(me[field]) + offer.giveAmount } as Profile;
+      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds }), { merge: true });
+      tx.delete(offerRef);
+      return { ok: true as const, gold: next.gold, bread: next.bread, niens: next.niens };
+    });
+  } catch (error) {
+    throw firestoreError(error, "Não foi possível retirar a oferta.");
   }
 }

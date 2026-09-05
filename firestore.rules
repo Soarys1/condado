@@ -27,10 +27,29 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /condado_email_index/{email} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /condado_devices/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
     match /condado_transfers/{id} {
       allow read: if signedIn();
       allow create: if signedIn() && request.resource.data.fromUserId == request.auth.uid;
       allow update, delete: if false;
+    }
+
+    match /condado_market/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.sellerUid == request.auth.uid;
+      allow update: if false;
+      allow delete: if signedIn();
     }
 
     match /condado_week_claims/{id} {

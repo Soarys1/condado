@@ -1,5 +1,5 @@
 export const SAVE_KEY = "condado.save.v3";
-export const SAVE_VERSION = 4;
+export const SAVE_VERSION = 5;
 
 export const GRID = 32;
 export const TILE_W = 68;
@@ -41,6 +41,16 @@ export const BUILDING_MAX = 15;
 export const MARCH_MS = 3400;
 export const WHATSAPP_GROUP = "https://chat.whatsapp.com/H5SSZINqtk0HOMPBjhTrqk?s=cl&p=a&mlu=0";
 
+/** Display name of the gold resource. Internal field stays `gold`. */
+export const GOLD_NAME = "Libra";
+export const GOLD_NAME_PL = "Libras";
+export const BREAD_UPKEEP_PER_TROOP_DAY = 20;
+export const DAILY_ATTACK_CAP = 12;
+export const WAR_ATTACK_CAP = 2;
+export const BREAD_PACK = 1000;
+export const BREAD_PACK_BUY_GOLD = 2_400;
+export const BREAD_PACK_SELL_GOLD = 900;
+
 export type BuildingType =
   | "castle"
   | "wall"
@@ -55,6 +65,7 @@ export type BuildingType =
 export type TroopType = "infantry" | "archers" | "cavalry" | "general" | "generaless" | "defender";
 
 export type ResourceKind = "gold" | "bread" | "niens" | "troopCards" | "generalCards";
+export type Tradable = "gold" | "bread" | "niens";
 export type WallDir = "h" | "v";
 
 export interface BuildingDef {
@@ -151,7 +162,7 @@ export const BUILDINGS: Record<BuildingType, BuildingDef> = {
     aoe: 0,
     goldReward: 0,
     role: "economy",
-    desc: "Produz ouro com o tempo.",
+    desc: "Produz Libras com o tempo.",
   },
   farm: {
     type: "farm",
@@ -214,14 +225,14 @@ export const TROOPS: Record<TroopType, TroopDef> = {
     costBread: 50,
     costGold: 0,
     hp: 150,
-    dps: 25,
-    speed: 1.79,
+    dps: 14,
+    speed: 0.48,
     range: 0.72,
     trainMs: 6_000,
     prefer: "nearest",
     ignoreWalls: false,
     shootOverWalls: false,
-    desc: "5% mais rápida. Só rompe muro se não houver passagem.",
+    desc: "A pé. A mais lenta. Só rompe muro se não houver passagem.",
   },
   archers: {
     type: "archers",
@@ -229,14 +240,14 @@ export const TROOPS: Record<TroopType, TroopDef> = {
     costBread: 30,
     costGold: 0,
     hp: 60,
-    dps: 20,
-    speed: 2.25,
+    dps: 11,
+    speed: 0.64,
     range: 4.5,
     trainMs: 4_000,
     prefer: "nearest",
     ignoreWalls: false,
     shootOverWalls: true,
-    desc: "Atiram de longe, por cima dos muros.",
+    desc: "Mais rápidos que a infantaria. Atiram por cima dos muros.",
   },
   cavalry: {
     type: "cavalry",
@@ -244,23 +255,23 @@ export const TROOPS: Record<TroopType, TroopDef> = {
     costBread: 150,
     costGold: 0,
     hp: 400,
-    dps: 70,
-    speed: 2.76,
+    dps: 28,
+    speed: 0.98,
     range: 0.85,
     trainMs: 14_000,
     prefer: "defense",
     ignoreWalls: true,
     shootOverWalls: false,
-    desc: "20% mais lenta. Salta muros e foca defesas.",
+    desc: "A tropa mais veloz. Salta muros e foca defesas.",
   },
   general: {
     type: "general",
-    name: "General",
+    name: "General Shin",
     costBread: 1000,
     costGold: 0,
     hp: 2000,
-    dps: 200,
-    speed: 3.05,
+    dps: 85,
+    speed: 0.72,
     range: 1.05,
     trainMs: 40_000,
     prefer: "core",
@@ -270,18 +281,18 @@ export const TROOPS: Record<TroopType, TroopDef> = {
   },
   generaless: {
     type: "generaless",
-    name: "Generala",
+    name: "General Leona",
     costBread: 900,
     costGold: 0,
     hp: 1100,
-    dps: 155,
-    speed: 3.9,
+    dps: 62,
+    speed: 0.8,
     range: 4.8,
     trainMs: 36_000,
     prefer: "core",
     ignoreWalls: true,
     shootOverWalls: true,
-    desc: "Rápida, à distância. Evolui só com cartas.",
+    desc: "À distância. Evolui só com cartas.",
   },
   defender: {
     type: "defender",
@@ -289,14 +300,14 @@ export const TROOPS: Record<TroopType, TroopDef> = {
     costBread: 0,
     costGold: 5_000,
     hp: 220,
-    dps: 28,
-    speed: 1.55,
+    dps: 16,
+    speed: 0.44,
     range: 0.8,
     trainMs: 10_000,
     prefer: "nearest",
     ignoreWalls: false,
     shootOverWalls: false,
-    desc: "Custa 5.000 ouro. Capacidade sobe no Campo de Treino.",
+    desc: "Custa 5.000 Libras. Capacidade sobe no Campo de Treino.",
   },
 };
 
@@ -443,9 +454,9 @@ export function passCostNiens(seasonKey: string): number {
 export function passReward(level: number): { gold: number; bread: number; niens: number; troopCards: number; generalCards: number; label: string } {
   if (level === 48) return { gold: 0, bread: 0, niens: 0, troopCards: 12, generalCards: 0, label: "12 cartas de tropa" };
   if (level === 49) return { gold: 0, bread: 0, niens: 0, troopCards: 0, generalCards: 6, label: "6 cartas de general" };
-  if (level === 50) return { gold: 500_000, bread: 500_000, niens: 1, troopCards: 0, generalCards: 0, label: "1 Nien + 500k ouro + 500k pão" };
+  if (level === 50) return { gold: 500_000, bread: 500_000, niens: 1, troopCards: 0, generalCards: 0, label: `1 Nien + 500k ${GOLD_NAME_PL} + 500k pão` };
   if (level % 2 === 0) return { gold: 0, bread: 4000 + level * 600, niens: 0, troopCards: 0, generalCards: 0, label: `${4000 + level * 600} pão` };
-  return { gold: 5000 + level * 800, bread: 0, niens: 0, troopCards: 0, generalCards: 0, label: `${5000 + level * 800} ouro` };
+  return { gold: 5000 + level * 800, bread: 0, niens: 0, troopCards: 0, generalCards: 0, label: `${5000 + level * 800} ${GOLD_NAME_PL}` };
 }
 
 export function warWindow(now = Date.now()): { open: boolean; start: number; end: number } {
@@ -526,5 +537,40 @@ export function weeklyPrize(rank: number): { gold: number; troopCards: number; g
   if (rank <= 7) return { gold: 0, troopCards: 3, generalCards: 0, label: "3 cartas tropa" };
   const t = (20 - rank) / 12;
   const gold = Math.round((50_000 + t * 250_000) / 1000) * 1000;
-  return { gold, troopCards: 0, generalCards: 0, label: `${gold.toLocaleString("pt")} ouro` };
+  return { gold, troopCards: 0, generalCards: 0, label: `${gold.toLocaleString("pt")} ${GOLD_NAME_PL}` };
+}
+
+export function goldWord(n = 2): string {
+  return n === 1 ? GOLD_NAME : GOLD_NAME_PL;
+}
+
+export function resourceLabel(kind: ResourceKind | Tradable, n = 2): string {
+  if (kind === "gold") return goldWord(n);
+  if (kind === "bread") return n === 1 ? "pão" : "pães";
+  if (kind === "niens") return n === 1 ? "Nien" : "Niens";
+  if (kind === "troopCards") return "cartas de tropa";
+  return "cartas de general";
+}
+
+export function brtDayKey(now = Date.now()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(now));
+}
+
+export function dailyNienSendCap(countyLevel: number): number {
+  if (countyLevel >= 11) return 20;
+  if (countyLevel >= 6) return 10;
+  return 5;
+}
+
+export function dailyAttackCap(war: boolean): number {
+  return war ? WAR_ATTACK_CAP : DAILY_ATTACK_CAP;
+}
+
+export function marketOfferId(giveKind: Tradable, giveAmount: number, wantKind: Tradable, wantAmount: number): string {
+  return `${giveKind}_${giveAmount}_${wantKind}_${wantAmount}`;
 }

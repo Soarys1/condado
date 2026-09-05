@@ -26,11 +26,18 @@ import {
 } from "lucide-react";
 import {
   ALLIANCE_FOUND_GOLD,
+  BREAD_PACK,
+  BREAD_PACK_BUY_GOLD,
+  BREAD_PACK_SELL_GOLD,
+  BREAD_UPKEEP_PER_TROOP_DAY,
   BUILD_ORDER,
   BUILDINGS,
   COLLECT_READY,
   COUNTY_MAX,
+  DAILY_ATTACK_CAP,
   DEFENDER_COST,
+  GOLD_NAME,
+  GOLD_NAME_PL,
   MARCH_MS,
   NIEN_COST_GOLD,
   NIEN_SELL_GOLD,
@@ -39,18 +46,23 @@ import {
   SPEED_TRAIN_GOLD,
   TROOP_ORDER,
   TROOPS,
+  WAR_ATTACK_CAP,
   armyCapacity,
+  brtDayKey,
   buildingDamage,
   buildingHp,
   campUpgradeGold,
   countyUpgradeCost,
+  dailyNienSendCap,
   defenderCap,
   generalCardsFor,
+  goldWord,
   isHero,
   passCostNiens,
   passReward,
   passWindow,
   rankingWindow,
+  resourceLabel,
   scaledTroop,
   troopAsset,
   troopCardsFor,
@@ -62,6 +74,7 @@ import {
   weeklyPrize,
   WHATSAPP_GROUP,
   type ResourceKind,
+  type Tradable,
   type TroopType,
 } from "@/lib/game/constants";
 import { ALLIANCES, LORDS, lordsOfAlliance } from "@/lib/game/bots";
@@ -202,7 +215,7 @@ function Splash({ signedIn }: { signedIn: boolean }) {
             Condado
           </h1>
           <p className="mt-3 max-w-sm text-[0.95rem] leading-relaxed text-parchment-dim">
-            Cria conta com e-mail e senha. O nome do condado é único. Ouro, Niens e cartas ficam no
+            Cria conta com e-mail e senha. O nome do condado é único. Libras, Niens e cartas ficam no
             Firestore — nada some do telemóvel.
           </p>
           <a
@@ -323,7 +336,7 @@ function HUD() {
     <>
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 pt-[max(0.6rem,env(safe-area-inset-top))]">
         <div className="pointer-events-auto mx-auto flex max-w-3xl items-center gap-2 px-3">
-          <Pill icon={<Coins className="size-3.5" />} label={formatRes(gold)} tone="gold" />
+          <Pill icon={<Coins className="size-3.5" />} label={formatRes(gold)} tone="gold" title={GOLD_NAME_PL} />
           <Pill icon={<Wheat className="size-3.5" />} label={formatRes(bread)} tone="bread" />
           <Pill icon={<Gem className="size-3.5" />} label={formatRes(niens)} tone="niens" />
           {screen === "village" && (
@@ -470,14 +483,19 @@ function Pill({
   icon,
   label,
   tone,
+  title,
 }: {
   icon: ReactNode;
   label: string;
   tone: "gold" | "bread" | "niens";
+  title?: string;
 }) {
   const color = tone === "niens" ? "text-niens" : tone === "gold" ? "text-gold" : "text-bread";
   return (
-    <div className="flex h-9 min-w-0 items-center gap-1.5 rounded-md border border-line bg-panel/85 px-2.5">
+    <div
+      title={title}
+      className="flex h-9 min-w-0 items-center gap-1.5 rounded-md border border-line bg-panel/85 px-2.5"
+    >
       <span className={color}>{icon}</span>
       <span className={`tabular text-sm font-semibold ${color}`}>{label}</span>
     </div>
@@ -630,7 +648,8 @@ function ArmySheet() {
   return (
     <div className="space-y-3">
       <p className="text-sm text-parchment-dim">
-        Capacidade {used}/{cap}. Defensores {army.defender}/{defenderCap(campLevel)}.
+        Capacidade {used}/{cap}. Defensores {army.defender}/{defenderCap(campLevel)}. Cada tropa,
+        incluindo generais, consome {BREAD_UPKEEP_PER_TROOP_DAY} pães por dia.
       </p>
       {hasCamp && (
         <button
@@ -645,7 +664,7 @@ function ArmySheet() {
         const d = TROOPS[type];
         const st = scaledTroop(type, troopLevels[type], campLevel);
         const costLabel =
-          type === "defender" ? `${formatRes(DEFENDER_COST)} ouro` : `${d.costBread} pão`;
+          type === "defender" ? `${formatRes(DEFENDER_COST)} ${GOLD_NAME_PL}` : `${d.costBread} pão`;
         const can = type === "defender" ? gold >= DEFENDER_COST : bread >= d.costBread;
         return (
           <div
@@ -684,7 +703,7 @@ function ArmySheet() {
                 {TROOPS[j.type].name} · {formatTime(j.remaining)}
               </span>
               <button type="button" className="text-gold" onClick={() => speedTrain(j.id)}>
-                {formatRes(SPEED_TRAIN_GOLD)} ouro
+                {formatRes(SPEED_TRAIN_GOLD)} {GOLD_NAME_PL}
               </button>
             </div>
           ))}
@@ -743,10 +762,16 @@ function ChatSheet() {
 
 const TRANSFER_KINDS: Array<{ k: ResourceKind; label: string }> = [
   { k: "niens", label: "Niens" },
-  { k: "gold", label: "Ouro" },
+  { k: "gold", label: GOLD_NAME },
   { k: "bread", label: "Pão" },
   { k: "troopCards", label: "Cartas tropa" },
   { k: "generalCards", label: "Cartas general" },
+];
+
+const TRADE_KINDS: Array<{ k: Tradable; label: string }> = [
+  { k: "gold", label: GOLD_NAME },
+  { k: "bread", label: "Pão" },
+  { k: "niens", label: "Niens" },
 ];
 
 function MarketSheet() {
@@ -754,25 +779,43 @@ function MarketSheet() {
   const buyOffer = useGame((s) => s.buyOffer);
   const buyNien = useGame((s) => s.buyNien);
   const sellNien = useGame((s) => s.sellNien);
+  const buyBreadPack = useGame((s) => s.buyBreadPack);
+  const sellBreadPack = useGame((s) => s.sellBreadPack);
+  const postOffer = useGame((s) => s.postOffer);
+  const withdrawOffer = useGame((s) => s.withdrawOffer);
+  const refreshMarket = useGame((s) => s.refreshMarket);
   const transfer = useGame((s) => s.transfer);
   const peekId = useGame((s) => s.peekId);
   const lookup = useGame((s) => s.lookup);
   const player = useGame((s) => s.player);
   const gold = useGame((s) => s.gold);
+  const bread = useGame((s) => s.bread);
   const niens = useGame((s) => s.niens);
+  const countyLevel = useGame((s) => s.countyLevel);
+  const niensSentDay = useGame((s) => s.niensSentDay);
+  const niensSentToday = useGame((s) => s.niensSentToday);
   const ledger = useGame((s) => s.ledger);
   const refreshLedger = useGame((s) => s.refreshLedger);
   const [to, setTo] = useState("");
   const [amt, setAmt] = useState("1");
   const [kind, setKind] = useState<ResourceKind>("niens");
+  const [giveKind, setGiveKind] = useState<Tradable>("gold");
+  const [wantKind, setWantKind] = useState<Tradable>("niens");
+  const [giveAmt, setGiveAmt] = useState("150000");
+  const [wantAmt, setWantAmt] = useState("1");
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
     void refreshLedger();
-  }, [refreshLedger]);
+    void refreshMarket();
+  }, [refreshLedger, refreshMarket]);
+  const cap = dailyNienSendCap(countyLevel);
+  const day = brtDayKey();
+  const sent = niensSentDay === day ? niensSentToday : 0;
   return (
     <div className="space-y-4">
       <p className="text-sm text-parchment-dim">
-        Niens custam {formatRes(NIEN_COST_GOLD)} e vendem por {formatRes(NIEN_SELL_GOLD)}. O spread
-        força o comércio entre senhores. Seu ID{" "}
+        Tesouro: {formatRes(gold)} {GOLD_NAME_PL} · {formatRes(bread)} pães · {formatRes(niens)}{" "}
+        Niens. As ofertas do mercado são únicas e visíveis a todos os senhores. Seu ID{" "}
         <span className="font-display text-niens">{player.id}</span>.
       </p>
       <div className="grid grid-cols-2 gap-2">
@@ -783,7 +826,8 @@ function MarketSheet() {
         >
           <span className="block font-display text-niens">Comprar 1 Nien</span>
           <span className="text-xs text-parchment-dim">
-            {formatRes(NIEN_COST_GOLD)} ouro{gold < NIEN_COST_GOLD ? " · falta ouro" : ""}
+            {formatRes(NIEN_COST_GOLD)} {GOLD_NAME_PL}
+            {gold < NIEN_COST_GOLD ? ` · faltam ${GOLD_NAME_PL.toLowerCase()}` : ""}
           </span>
         </button>
         <button
@@ -793,31 +837,60 @@ function MarketSheet() {
         >
           <span className="block font-display text-gold">Vender 1 Nien</span>
           <span className="text-xs text-parchment-dim">
-            {formatRes(NIEN_SELL_GOLD)} ouro{niens < 1 ? " · sem gemas" : ""}
+            {formatRes(NIEN_SELL_GOLD)} {GOLD_NAME_PL}
+            {niens < 1 ? " · sem gemas" : ""}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={buyBreadPack}
+          className="rounded-md border border-line bg-ink-2 px-3 py-3 text-left text-sm"
+        >
+          <span className="block font-display">Comprar {formatRes(BREAD_PACK)} pães</span>
+          <span className="text-xs text-parchment-dim">
+            {formatRes(BREAD_PACK_BUY_GOLD)} {GOLD_NAME_PL}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={sellBreadPack}
+          className="rounded-md border border-line bg-ink-2 px-3 py-3 text-left text-sm"
+        >
+          <span className="block font-display">Vender {formatRes(BREAD_PACK)} pães</span>
+          <span className="text-xs text-parchment-dim">
+            {formatRes(BREAD_PACK_SELL_GOLD)} {GOLD_NAME_PL}
           </span>
         </button>
       </div>
       <div>
-        <p className="mb-2 font-display text-sm">Ofertas dos senhores</p>
+        <p className="mb-2 font-display text-sm">Ofertas universais</p>
         <div className="space-y-2">
-          {offers.map((o) => (
-            <div
-              key={o.id}
-              className="flex items-center justify-between rounded-md border border-line px-3 py-2"
-            >
-              <div>
-                <p className="text-sm">{o.sellerNick}</p>
-                <p className="text-xs text-parchment-dim">
-                  {formatRes(o.give.amount)} ouro por {o.wantNiens} Nien
-                </p>
+          {offers.map((o) => {
+            const mine = o.sellerId === player.id;
+            return (
+              <div
+                key={o.id}
+                className="flex items-center justify-between rounded-md border border-line px-3 py-2"
+              >
+                <div>
+                  <p className="text-sm">{o.sellerNick}</p>
+                  <p className="text-xs text-parchment-dim">
+                    Dá {formatRes(o.giveAmount)} {resourceLabel(o.giveKind, o.giveAmount)} · pede{" "}
+                    {formatRes(o.wantAmount)} {resourceLabel(o.wantKind, o.wantAmount)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="text-sm text-niens"
+                  onClick={() => void (mine ? withdrawOffer(o.id) : buyOffer(o.id))}
+                >
+                  {mine ? "Retirar" : "Aceitar"}
+                </button>
               </div>
-              <button type="button" className="text-sm text-niens" onClick={() => buyOffer(o.id)}>
-                Comprar
-              </button>
-            </div>
-          ))}
+            );
+          })}
           {offers.length === 0 && (
-            <p className="text-sm text-parchment-dim">O tabuleiro está vazio.</p>
+            <p className="text-sm text-parchment-dim">Nenhuma oferta no reino agora.</p>
           )}
         </div>
       </div>
@@ -825,10 +898,74 @@ function MarketSheet() {
         className="space-y-2 rounded-md border border-line p-3"
         onSubmit={(e) => {
           e.preventDefault();
-          transfer(to, Number(amt), kind);
+          setBusy(true);
+          void postOffer(giveKind, Number(giveAmt), wantKind, Number(wantAmt)).finally(() =>
+            setBusy(false),
+          );
+        }}
+      >
+        <p className="font-display text-sm">Publicar oferta única</p>
+        <p className="text-xs text-parchment-dim">
+          Só existe uma proposta com as mesmas quantias no reino inteiro.
+        </p>
+        <div className="grid grid-cols-3 gap-1">
+          {TRADE_KINDS.map(({ k, label }) => (
+            <button
+              key={`g-${k}`}
+              type="button"
+              onClick={() => setGiveKind(k)}
+              className={`h-10 rounded-md border text-[0.65rem] ${giveKind === k ? "border-niens bg-panel-2" : "border-line bg-ink-2"}`}
+            >
+              Dar {label}
+            </button>
+          ))}
+        </div>
+        <input
+          value={giveAmt}
+          onChange={(e) => setGiveAmt(e.target.value)}
+          type="number"
+          min={1}
+          className="h-11 w-full rounded-md border border-line bg-ink px-3 text-sm"
+        />
+        <div className="grid grid-cols-3 gap-1">
+          {TRADE_KINDS.map(({ k, label }) => (
+            <button
+              key={`w-${k}`}
+              type="button"
+              onClick={() => setWantKind(k)}
+              className={`h-10 rounded-md border text-[0.65rem] ${wantKind === k ? "border-niens bg-panel-2" : "border-line bg-ink-2"}`}
+            >
+              Pedir {label}
+            </button>
+          ))}
+        </div>
+        <input
+          value={wantAmt}
+          onChange={(e) => setWantAmt(e.target.value)}
+          type="number"
+          min={1}
+          className="h-11 w-full rounded-md border border-line bg-ink px-3 text-sm"
+        />
+        <button
+          type="submit"
+          disabled={busy || giveKind === wantKind}
+          className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink disabled:opacity-40"
+        >
+          {busy ? "A publicar…" : "Publicar no mercado"}
+        </button>
+      </form>
+      <form
+        className="space-y-2 rounded-md border border-line p-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void transfer(to, Number(amt), kind);
         }}
       >
         <p className="font-display text-sm">Enviar a outro senhor</p>
+        <p className="text-xs text-parchment-dim">
+          Limite de Niens hoje: {sent}/{cap} (Nv.{countyLevel} · Nv.1–5: 5, Nv.6–10: 10, Nv.11–15:
+          20).
+        </p>
         <input
           value={to}
           onChange={(e) => {
@@ -869,20 +1006,11 @@ function MarketSheet() {
       </form>
       {ledger.length > 0 && (
         <div>
-          <p className="mb-2 font-display text-sm">Registo de envios</p>
+          <p className="mb-2 font-display text-sm">Registo de envios e recebidos</p>
           <div className="max-h-40 space-y-1 overflow-y-auto">
             {ledger.slice(0, 16).map((t) => (
               <p key={t.id} className="text-xs text-parchment-dim">
-                {t.incoming ? "Recebeste" : "Enviaste"} {t.amount}{" "}
-                {t.kind === "gold"
-                  ? "ouro"
-                  : t.kind === "bread"
-                    ? "pão"
-                    : t.kind === "niens"
-                      ? "Niens"
-                      : t.kind === "troopCards"
-                        ? "cartas tropa"
-                        : "cartas general"}{" "}
+                {t.incoming ? "Recebeste" : "Enviaste"} {t.amount} {resourceLabel(t.kind, t.amount)}{" "}
                 {t.incoming ? `de ${t.fromNick}` : `a ${t.toNick}`}
               </p>
             ))}
@@ -951,7 +1079,7 @@ function InfoSheet() {
           className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink disabled:opacity-40"
         >
           {stored >= COLLECT_READY
-            ? `Recolher ${stored} ${b.type === "mine" ? "ouro" : "pão"}`
+            ? `Recolher ${stored} ${b.type === "mine" ? goldWord(stored) : "pão"}`
             : stored > 0
               ? `A produzir · ${stored} guardados`
               : "A produzir…"}
@@ -981,7 +1109,7 @@ function InfoSheet() {
           onClick={() => upgradeWallRow(b.id)}
           className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm"
         >
-          Melhorar fileira ({row.length}) · {formatRes(rowCost)} ouro
+          Melhorar fileira ({row.length}) · {formatRes(rowCost)} {GOLD_NAME_PL}
           {gold < rowCost ? " · falta" : ""}
         </button>
       )}
@@ -1004,7 +1132,7 @@ function InfoSheet() {
             ? "Condado no máximo"
             : countyCost.niens
               ? `Avançar condado · ${countyCost.niens} Niens`
-              : `Avançar condado · ${formatRes(countyCost.gold)} ouro`}
+              : `Avançar condado · ${formatRes(countyCost.gold)} ${GOLD_NAME_PL}`}
         </button>
       )}
       {b.type !== "castle" && (
@@ -1014,7 +1142,7 @@ function InfoSheet() {
             onClick={() => upgrade(b.id)}
             className="h-11 rounded-md border border-line bg-ink-2 font-display text-sm"
           >
-            Melhorar · {cost} ouro
+            Melhorar · {cost} {GOLD_NAME_PL}
           </button>
           <button
             type="button"
@@ -1031,7 +1159,7 @@ function InfoSheet() {
           onClick={() => upgradeType(b.type)}
           className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm"
         >
-          Melhorar todas as {d.name} ({sameType.length}) · {formatRes(typeCost)} ouro
+          Melhorar todas as {d.name} ({sameType.length}) · {formatRes(typeCost)} {GOLD_NAME_PL}
           {gold < typeCost ? " · falta" : ""}
         </button>
       )}
@@ -1057,6 +1185,7 @@ function ProfileSheet() {
   const copyInvite = useGame((s) => s.copyInvite);
   const referredBy = useGame((s) => s.referredBy);
   const shieldUntil = useGame((s) => s.shieldUntil);
+  const raids = useGame((s) => s.raids);
   const [name, setName] = useState(nickDraft || player.nick);
   const [accountEmail, setAccountEmail] = useState("");
   const [accountPassword, setAccountPassword] = useState("");
@@ -1186,7 +1315,7 @@ function ProfileSheet() {
           </button>
         </div>
         <p className="mt-1 text-xs text-parchment-dim">
-          Convide um amigo. Quando ele chegar ao Condado 3, ambos ganham 300.000 ouro.
+          Convide um amigo. Quando ele chegar ao Condado 3, ambos ganham 300.000 {GOLD_NAME_PL}.
         </p>
       </div>
       <ul className="space-y-1 text-sm">
@@ -1194,7 +1323,7 @@ function ProfileSheet() {
           Condado nível {countyLevel}/{COUNTY_MAX}
         </li>
         <li>
-          Ouro {formatRes(gold)} · Pão {formatRes(bread)} · Niens {formatRes(niens)}
+          {GOLD_NAME} {formatRes(gold)} · Pão {formatRes(bread)} · Niens {formatRes(niens)}
         </li>
         <li>
           Cartas tropa {troopCards} · Cartas general {generalCards}
@@ -1211,6 +1340,20 @@ function ProfileSheet() {
           Fundado em {new Date(player.createdAt).toLocaleDateString("pt")}
         </li>
       </ul>
+      {raids.length > 0 && (
+        <div>
+          <p className="mb-2 font-display text-sm">Registo de combates</p>
+          <div className="max-h-44 space-y-1 overflow-y-auto">
+            {raids.slice(0, 16).map((r) => (
+              <p key={r.id} className="text-xs text-parchment-dim">
+                {r.incoming ? `${r.attacker} atacou-te` : `Atacaste ${r.defender || r.attacker}`} ·{" "}
+                {Math.round((r.destruction ?? 0) * 100)}% destruído · {r.troopsLost ?? 0} tropas ·{" "}
+                {formatRes(r.gold)} {GOLD_NAME_PL}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
       <a
         href={WHATSAPP_GROUP}
         target="_blank"
@@ -1248,7 +1391,7 @@ function TrainSheet() {
       >
         {campLevel >= countyLevel
           ? "Campo no limite do condado"
-          : `Melhorar campo · ${formatRes(campCost)} ouro`}
+          : `Melhorar campo · ${formatRes(campCost)} ${GOLD_NAME_PL}`}
       </button>
       {TROOP_ORDER.filter((t) => t !== "defender").map((type: TroopType) => {
         const lv = troopLevels[type];
@@ -1272,7 +1415,7 @@ function TrainSheet() {
                 {" · "}
                 {hero
                   ? `${cards} cartas de general`
-                  : `${cards} cartas · ${formatRes(g)} ouro · ${br} pão`}
+                  : `${cards} cartas · ${formatRes(g)} ${GOLD_NAME_PL} · ${br} pão`}
               </p>
             </div>
             <button
@@ -1286,7 +1429,7 @@ function TrainSheet() {
         );
       })}
       <p className="text-xs text-parchment-dim">
-        Ouro em estoque {formatRes(gold)} · Pão {formatRes(bread)}
+        {GOLD_NAME} em estoque {formatRes(gold)} · Pão {formatRes(bread)}
       </p>
     </div>
   );
@@ -1379,7 +1522,7 @@ function AllianceSheet() {
     return (
       <div className="space-y-3">
         <p className="text-sm text-parchment-dim">
-          Fundar custa {formatRes(ALLIANCE_FOUND_GOLD)} ouro e libera o chat. Guerra: sábados 8h–23h
+          Fundar custa {formatRes(ALLIANCE_FOUND_GOLD)} {GOLD_NAME_PL} e libera o chat. Guerra: sábados 8h–23h
           de Brasília. Pares de alianças; ímpar fica de fora.
         </p>
         <input
@@ -1394,7 +1537,7 @@ function AllianceSheet() {
           className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink"
         >
           Fundar · {formatRes(ALLIANCE_FOUND_GOLD)}{" "}
-          {gold < ALLIANCE_FOUND_GOLD ? "(falta ouro)" : ""}
+          {gold < ALLIANCE_FOUND_GOLD ? `(faltam ${GOLD_NAME_PL.toLowerCase()})` : ""}
         </button>
         <p className="text-xs text-parchment-dim">
           Alianças do reino: {ALLIANCES.map((a) => a.name).join(", ")}
@@ -1465,7 +1608,11 @@ function RaidSelect() {
   const stars = useGame((s) => s.stars);
   const war = useGame((s) => s.war);
   const shieldUntil = useGame((s) => s.shieldUntil);
+  const attacksByTarget = useGame((s) => s.attacksByTarget);
   const foes = war?.foeId ? lordsOfAlliance(war.foeId) : [];
+  const day = brtDayKey();
+  const win = warWindow();
+  const warLive = !!(war && win.open && !war.sittingOut);
   return (
     <div className="absolute inset-0 z-30 flex items-end bg-ink/55 md:items-center md:justify-center">
       <div className="panel w-full max-h-[82dvh] overflow-y-auto rounded-t-xl p-4 md:max-w-lg md:rounded-xl">
@@ -1473,7 +1620,7 @@ function RaidSelect() {
           <div>
             <h2 className="font-display text-lg">Condados vizinhos</h2>
             <p className="text-xs text-parchment-dim">
-              Estrelas {stars}
+              Estrelas {stars} · {DAILY_ATTACK_CAP} ataques/dia por conta
               {Date.now() < shieldUntil ? " · escudo ativo (não te atacam)" : ""}
             </p>
           </div>
@@ -1488,13 +1635,17 @@ function RaidSelect() {
         </div>
         {foes.length > 0 && (
           <p className="mb-2 text-xs text-niens">
-            Guerra: {war?.foeName}. Máx. 2 ataques por base.
+            Guerra: {war?.foeName}. Máx. {WAR_ATTACK_CAP} ataques por base, só nesta guerra.
           </p>
         )}
         <div className="space-y-2">
           {LORDS.map((l) => {
-            const used = war?.attacks[l.id] ?? 0;
-            const warFoe = !!war?.foeId && l.allianceId === war.foeId;
+            const usedWar = war?.attacks[l.id] ?? 0;
+            const rec = attacksByTarget[l.id];
+            const usedDay = rec && rec.day === day ? rec.count : 0;
+            const warFoe = warLive && !!war?.foeId && l.allianceId === war.foeId;
+            const cap = warFoe ? WAR_ATTACK_CAP : DAILY_ATTACK_CAP;
+            const used = warFoe ? Math.max(usedWar, usedDay) : usedDay;
             return (
               <button
                 key={l.id}
@@ -1506,8 +1657,8 @@ function RaidSelect() {
                 <div className="min-w-0 flex-1">
                   <p className="font-display">{l.nick}</p>
                   <p className="text-xs text-parchment-dim">
-                    {l.title} · {l.id} · saque até {l.lootGold} ouro
-                    {warFoe ? ` · guerra ${used}/2` : ""}
+                    {l.title} · {l.id} · saque até {l.lootGold} {GOLD_NAME_PL}
+                    {warFoe ? ` · guerra ${used}/${cap}` : ` · ${used}/${cap} hoje`}
                   </p>
                 </div>
                 <ChevronRight className="size-4 text-parchment-dim" />
@@ -1762,9 +1913,10 @@ function Results() {
         <ul className="mt-4 space-y-1 text-sm">
           <li>Destruição: {Math.round(r.destruction * 100)}%</li>
           <li>
-            {spectator ? "Ouro perdido" : "Ouro saqueado"}: {r.gold} (máx. 8.400)
+            {spectator ? `${GOLD_NAME_PL} perdidas` : `${GOLD_NAME_PL} saqueadas`}: {r.gold} (máx.
+            8.400)
           </li>
-          {!spectator && <li>Vivos: {alive} voltaram ao acampamento.</li>}
+          {!spectator && <li>Tropas perdidas: {r.casualties}. Vivos: {alive} voltaram.</li>}
           {spectator && <li>Escudo de 1 hora ativado. Pão e Niens intactos.</li>}
         </ul>
         <p className="mt-3 text-xs text-parchment-dim">
@@ -1840,8 +1992,8 @@ function RankSheet() {
   return (
     <div className="space-y-3">
       <p className="text-sm text-parchment-dim">
-        Segunda 8h às domingo 23h de Brasília. Quem mais ganhar estrelas entra no top 20. 20º–8º
-        ouro (50 mil a 300 mil). 7º–4º: 3 cartas tropa. Top 3: 4 cartas tropa + 2 general.
+        Segunda 8h às domingo 23h de Brasília. Quem mais ganhar estrelas entra no top 20. 20º–8º{" "}
+        {GOLD_NAME_PL} (50 mil a 300 mil). 7º–4º: 3 cartas tropa. Top 3: 4 cartas tropa + 2 general.
       </p>
       <p className="text-xs text-parchment-dim">
         {win.open

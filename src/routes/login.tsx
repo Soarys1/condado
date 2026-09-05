@@ -38,7 +38,7 @@ function firebaseErrorMessage(error: unknown): string {
 }
 
 function AuthForm() {
-  const [mode, setMode] = useState<"entrar" | "criar">("criar");
+  const [mode, setMode] = useState<"entrar" | "criar">("entrar");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -112,24 +112,24 @@ function AuthForm() {
         </p>
         <h1 className="mt-2 font-display text-4xl font-semibold tracking-wide">Condado</h1>
         <p className="mt-3 text-sm leading-relaxed text-parchment-dim">
-          Cria a tua conta com e-mail. O nome do condado fica único no reino e o progresso vive no
-          Firestore.
+          Conta já criada entra direto no condado. E-mail e nome de condado são únicos — uma conta
+          por aparelho.
         </p>
 
         <div className="mt-5 grid grid-cols-2 rounded-md border border-line bg-ink-2/80 p-1">
-          <button
-            type="button"
-            className={`h-10 rounded-sm font-display text-sm ${mode === "criar" ? "bg-parchment text-ink" : "text-parchment-dim"}`}
-            onClick={() => setMode("criar")}
-          >
-            Criar conta
-          </button>
           <button
             type="button"
             className={`h-10 rounded-sm font-display text-sm ${mode === "entrar" ? "bg-parchment text-ink" : "text-parchment-dim"}`}
             onClick={() => setMode("entrar")}
           >
             Entrar
+          </button>
+          <button
+            type="button"
+            className={`h-10 rounded-sm font-display text-sm ${mode === "criar" ? "bg-parchment text-ink" : "text-parchment-dim"}`}
+            onClick={() => setMode("criar")}
+          >
+            Criar conta
           </button>
         </div>
 

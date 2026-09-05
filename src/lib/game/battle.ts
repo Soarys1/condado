@@ -7,6 +7,7 @@ import {
   PREP_MS,
   REAL_BUILDINGS,
   TROOPS,
+  GOLD_NAME,
   buildingDamage,
   buildingHp,
   isHero,
@@ -88,6 +89,7 @@ export interface BattleResult {
   bread: number;
   castleDown: boolean;
   survivors: ArmyCounts;
+  casualties: number;
   elapsed: number;
   retreated: boolean;
 }
@@ -340,7 +342,7 @@ export class Battle {
       this.float(
         castle?.cx ?? 14,
         (castle?.cy ?? 14) - 1.2,
-        `${sign}${band.gold} ouro (${Math.round(band.at * 100)}%)`,
+        `${sign}${band.gold} ${GOLD_NAME} (${Math.round(band.at * 100)}%)`,
         "#e4c15a",
       );
     }
@@ -536,19 +538,19 @@ export class Battle {
         tz: 0.35,
         tx: target.cx,
         ty: target.cy,
-        speed: 10,
-        dmg: st.dps * 0.4,
+        speed: 7,
+        dmg: st.dps,
         aoe: 0,
         fromDefense: false,
       });
-      t.cooldown = 0.4;
+      t.cooldown = 1;
       if (this.sfxGate <= 0) {
         sfxArrow();
         this.sfxGate = 0.12;
       }
     } else {
-      this.hurtBuilding(target, st.dps * dt, t.x, t.y);
-      t.cooldown = 0;
+      this.hurtBuilding(target, st.dps, t.x, t.y);
+      t.cooldown = 1;
       if (this.sfxGate <= 0) {
         sfxHit();
         this.sfxGate = 0.16;
@@ -806,8 +808,10 @@ export class Battle {
       generaless: 0,
       defender: 0,
     };
+    let casualties = 0;
     for (const t of this.troops) {
       if (t.alive) survivors[t.type] += 1;
+      else casualties += 1;
     }
     this.result = {
       stars,
@@ -817,6 +821,7 @@ export class Battle {
       bread: 0,
       castleDown,
       survivors,
+      casualties,
       elapsed: (BATTLE_MS - this.fightLeft) / 1000,
       retreated,
     };

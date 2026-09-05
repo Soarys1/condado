@@ -1,4 +1,4 @@
-import type { ArmyCounts, ChatMsg, Lord, MarketOffer } from "./types";
+import type { ArmyCounts, ChatMsg, Lord } from "./types";
 
 export const LORDS: Lord[] = [
   { id: "CDN-ALDRIC", nick: "Sir Aldric", title: "Escudeiro", rank: 0, lootGold: 8400, lootBread: 0, allianceId: "AL-CORVO" },
@@ -18,12 +18,12 @@ export const ALLIANCES = [
 
 const CHAT_POOL = [
   "Alguém vende pão? As fazendas do norte secaram.",
-  "Niens não se saqueiam. Só o tesouro as vende — 450 mil ouro.",
+  "Niens não se saqueiam. Só o tesouro as vende — 450 mil libras.",
   "O condado de Fernão está aberto. Muros fracos no flanco leste.",
-  "Uma Nien vale um cofre. Ouro, o reino gasta.",
+  "Uma Nien vale um cofre. Libras, o reino gasta.",
   "Guerra de aliança é sábado, 8h às 23h de Brasília.",
   "As minas rendem pouco depois da geada.",
-  "Quem atacar o meu castelo vai pagar em ouro. Gemas ficam.",
+  "Quem atacar o meu castelo vai pagar em libras. Gemas ficam.",
   "Mercado justo. Cola o ID, vê o nick, escolhe o envio.",
   "A torre nova segura infantaria. Cavalaria ainda passa.",
   "Pão quente, tropas leais. Assim se governa.",
@@ -39,18 +39,9 @@ export function randomChat(now = Date.now()): ChatMsg {
 
 export function seedChat(now = Date.now()): ChatMsg[] {
   return [
-    { id: "m0", fromId: "CDN-HERALDO", fromNick: "Heraldo", text: "Bem-vindos. Niens são gemas. Ouro se saqueia. Gemas, não.", at: now - 120000, channel: "global" },
-    { id: "m1", fromId: LORDS[0]!.id, fromNick: LORDS[0]!.nick, text: "Procuro ataque honrado. Ouro alto. Niens no cofre.", at: now - 80000, channel: "global" },
+    { id: "m0", fromId: "CDN-HERALDO", fromNick: "Heraldo", text: "Bem-vindos. Niens são gemas. Libras se saqueiam. Gemas, não.", at: now - 120000, channel: "global" },
+    { id: "m1", fromId: LORDS[0]!.id, fromNick: LORDS[0]!.nick, text: "Procuro ataque honrado. Libras altas. Niens no cofre.", at: now - 80000, channel: "global" },
     { id: "m2", fromId: LORDS[3]!.id, fromNick: LORDS[3]!.nick, text: "Guerra sábado. Pares de alianças. Ímpar espera.", at: now - 35000, channel: "global" },
-  ];
-}
-
-export function marketBoard(): MarketOffer[] {
-  return [
-    { id: "o1", sellerId: "CDN-ALDRIC", sellerNick: "Sir Aldric", give: { kind: "gold", amount: 148000 }, wantNiens: 1 },
-    { id: "o2", sellerId: "CDN-MARELA", sellerNick: "Marela do Vale", give: { kind: "gold", amount: 152000 }, wantNiens: 1 },
-    { id: "o3", sellerId: "CDN-RODRIGO", sellerNick: "Rodrigo Caldeira", give: { kind: "gold", amount: 300000 }, wantNiens: 2 },
-    { id: "o4", sellerId: "CDN-ISOLDE", sellerNick: "Dama Isolde", give: { kind: "gold", amount: 445000 }, wantNiens: 3 },
   ];
 }
 

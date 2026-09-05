@@ -20,7 +20,7 @@ export function defaultSave(nick = "Senhor", referredBy: string | null = null): 
     player: { id: makeId("CDN"), nick: nick.trim() || "Senhor", createdAt: now },
     gold: 8_000,
     bread: 400,
-    niens: 1,
+    niens: 0,
     troopCards: 2,
     generalCards: 0,
     countyLevel: 1,
@@ -48,6 +48,11 @@ export function defaultSave(nick = "Senhor", referredBy: string | null = null): 
     weekKey: "",
     weekClaimed: null,
     ledger: [],
+    niensSentDay: "",
+    niensSentToday: 0,
+    attacksReceivedDay: "",
+    attacksReceived: 0,
+    attacksByTarget: {},
   };
 }
 
@@ -87,7 +92,6 @@ function migrate(s: SaveState): SaveState {
     training: Array.isArray(s.training) ? s.training : [],
     chat: Array.isArray(s.chat) ? s.chat.slice(-40) : base.chat,
     allianceChat: Array.isArray(s.allianceChat) ? s.allianceChat.slice(-40) : [],
-    raids: Array.isArray(s.raids) ? s.raids.slice(-12) : [],
     shieldUntil: s.shieldUntil ?? 0,
     referredBy: s.referredBy ?? null,
     referralClaimed: s.referralClaimed ?? false,
@@ -99,6 +103,23 @@ function migrate(s: SaveState): SaveState {
     weekKey: s.weekKey ?? "",
     weekClaimed: s.weekClaimed ?? null,
     ledger: Array.isArray(s.ledger) ? s.ledger.slice(0, 40) : [],
+    raids: (Array.isArray(s.raids) ? s.raids.slice(-24) : []).map((r) => ({
+      id: r.id,
+      at: r.at,
+      attacker: r.attacker,
+      defender: r.defender ?? "",
+      gold: r.gold ?? 0,
+      bread: r.bread ?? 0,
+      incoming: !!r.incoming,
+      destruction: r.destruction ?? 0,
+      troopsLost: r.troopsLost ?? 0,
+      stars: r.stars ?? 0,
+    })),
+    niensSentDay: s.niensSentDay ?? "",
+    niensSentToday: s.niensSentToday ?? 0,
+    attacksReceivedDay: s.attacksReceivedDay ?? "",
+    attacksReceived: s.attacksReceived ?? 0,
+    attacksByTarget: s.attacksByTarget ?? {},
   };
 }
 
@@ -121,7 +142,7 @@ export function persist(state: SaveState) {
       player: state.player,
       chat: state.chat.slice(-40),
       allianceChat: state.allianceChat.slice(-40),
-      raids: state.raids.slice(-12),
+      raids: state.raids.slice(-24),
       ledger: state.ledger.slice(0, 40),
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(blob));
