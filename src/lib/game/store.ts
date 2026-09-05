@@ -54,7 +54,7 @@ import {
 } from "./constants";
 import { Battle } from "./battle";
 import { ALLIANCES, botArmy, findLord, findNick, LORDS, lordsOfAlliance, pairWar, randomChat, warChest } from "./bots";
-import { defaultSave, persist, setCloudSync, wipeSave } from "./save";
+import { defaultSave, flushCloud, loadSave, persist, progressScore, setCloudSync, wipeSave } from "./save";
 import type {
   BuildingInst,
   ChatMsg,
@@ -68,19 +68,25 @@ import type {
   TransferRecord,
 } from "./types";
 import { canPlace, canPlaceWall, countType, generateBase, nid, snapPlace, wallRow } from "./world";
+import { isEdgeTile } from "./iso";
 import { sfxBuild, sfxClick, sfxCoin, sfxError, sfxHorn, sfxStar } from "./audio";
+import { auth } from "@/lib/firebase";
 import {
   cancelMarketOffer,
   cloudTransfer,
   createMarketOffer,
   createProfile,
   creditReferral,
+  listenGlobalChat,
   listMarket,
+  listRaidTargets,
   listTransfers,
   peekPlayer,
   pullCloud,
   pushCloud,
   renameCounty,
+  sendGlobalChat,
+  submitRaidResult,
   takeMarketOffer,
 } from "./cloud";
 
@@ -116,6 +122,7 @@ interface GameStore extends SaveState {
   selectedRow: string[];
   marchLord: Lord | null;
   lookup: { id: string; nick: string } | null;
+  raidTargets: Lord[];
   hydrate: () => void;
   hydrateFromCloud: () => Promise<boolean>;
   startGame: (nick: string, referredBy?: string) => void;
@@ -178,6 +185,7 @@ interface GameStore extends SaveState {
   upgradeType: (type: BuildingType) => boolean;
   upgradeWallRow: (id: string) => boolean;
   refreshLedger: () => Promise<void>;
+  refreshTargets: () => Promise<void>;
 }
 
 function armySize(s: SaveState): number {
@@ -205,24 +213,69 @@ function wireCloudSync() {
     try {
       const r = await pushCloud(s);
       const dg = r.gold - s.gold;
-      const db = r.bread - s.bread;
+      const dbread = r.bread - s.bread;
       const dn = r.niens - s.niens;
       const dt = r.troopCards - s.troopCards;
       const dgc = r.generalCards - s.generalCards;
-      if (dg || db || dn || dt || dgc) {
+      if (dg || dbread || dn || dt || dgc) {
         const cur = useGame.getState();
         useGame.setState({
           gold: cur.gold + dg,
-          bread: cur.bread + db,
+          bread: cur.bread + dbread,
           niens: cur.niens + dn,
           troopCards: cur.troopCards + dt,
           generalCards: cur.generalCards + dgc,
         });
       }
-    } catch {
-      /* offline or unsigned */
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "";
+      if (msg.includes("recusou") || msg.includes("guardar")) {
+        useGame.setState({ toast: "Não foi possível guardar na nuvem. O condado local está salvo." });
+      }
     }
   });
+}
+
+let chatUnsub: (() => void) | null = null;
+let liveChat = false;
+
+function startLiveChat() {
+  chatUnsub?.();
+  liveChat = false;
+  if (!auth.currentUser) return;
+  try {
+    chatUnsub = listenGlobalChat((rows) => {
+      liveChat = true;
+      useGame.setState({ chat: rows });
+    });
+  } catch {
+    liveChat = false;
+  }
+}
+
+function applyLoadedSave(save: ReturnType<typeof defaultSave>, extra?: { toast?: string | null }) {
+  const now = Date.now();
+  const win = rankingWindow(now);
+  const weekStars = save.weekKey === win.key ? save.weekStars : 0;
+  const training = applyTraining(save, Math.min(8 * 3600_000, Math.max(0, now - save.lastTick)));
+  useGame.setState({
+    ...save,
+    weekStars,
+    weekKey: win.key,
+    army: training.army,
+    training: training.jobs,
+    lastTick: now,
+    hydrated: true,
+    screen: "village",
+    nickDraft: save.player.nick,
+    placingDir: "h",
+    movingId: null,
+    selectedRow: [],
+    marchLord: null,
+    sheet: null,
+    toast: extra?.toast ?? null,
+  });
+  persist({ ...useGame.getState() });
 }
 
 export const useGame = create<GameStore>((set, get) => ({
@@ -242,44 +295,43 @@ export const useGame = create<GameStore>((set, get) => ({
   selectedRow: [],
   marchLord: null,
   lookup: null,
+  raidTargets: [],
 
   hydrate: () => {
     wireCloudSync();
-    set({ hydrated: true, screen: "splash" });
+    const local = loadSave();
+    if (local) applyLoadedSave(local);
+    else set({ hydrated: true, screen: "splash" });
   },
 
   hydrateFromCloud: async () => {
     wireCloudSync();
+    const local = loadSave();
     try {
       const cloudResult = await pullCloud();
-      const save = cloudResult?.save;
+      let save = cloudResult?.save ?? null;
+      if (save && local && local.player?.id === save.player.id && progressScore(local) > progressScore(save) + 50) {
+        save = local;
+        try {
+          await pushCloud(local);
+        } catch {
+          /* keep local; retry on next persist */
+        }
+      }
+      if (!save && local) {
+        save = local;
+        try {
+          await pushCloud(local);
+        } catch {
+          /* still play local */
+        }
+      }
       if (!save) {
         set({ hydrated: true, screen: "splash" });
         return false;
       }
-      const now = Date.now();
-      const win = rankingWindow(now);
-      const weekStars = save.weekKey === win.key ? save.weekStars : 0;
-      const training = applyTraining(
-        save,
-        Math.min(8 * 3600_000, Math.max(0, now - save.lastTick)),
-      );
-      set({
-        ...save,
-        weekStars,
-        weekKey: win.key,
-        army: training.army,
-        training: training.jobs,
-        lastTick: now,
-        hydrated: true,
-        screen: "village",
-        nickDraft: save.player.nick,
-        placingDir: "h",
-        movingId: null,
-        selectedRow: [],
-        marchLord: null,
-      });
-      persist({ ...get() });
+      applyLoadedSave(save);
+      startLiveChat();
       try {
         const led = await listTransfers();
         set({ ledger: led.rows });
@@ -287,8 +339,15 @@ export const useGame = create<GameStore>((set, get) => ({
         /* ignore */
       }
       void get().refreshMarket();
+      void get().refreshTargets();
+      void flushCloud();
       return true;
     } catch {
+      if (local) {
+        applyLoadedSave(local, { toast: "Sem nuvem agora. O condado local foi reaberto." });
+        startLiveChat();
+        return true;
+      }
       set({ hydrated: true, screen: "splash" });
       return false;
     }
@@ -324,6 +383,8 @@ export const useGame = create<GameStore>((set, get) => ({
       });
       persist({ ...get() });
       sfxClick();
+      startLiveChat();
+      void flushCloud();
       return true;
     } catch (e) {
       set({ toast: e instanceof Error ? e.message : "Não foi possível fundar o condado." });
@@ -347,7 +408,7 @@ export const useGame = create<GameStore>((set, get) => ({
 
     const trained = applyTraining(s, dt * 1000);
     let chat = s.chat;
-    if (Math.random() < dt * 0.05) {
+    if (!liveChat && !auth.currentUser && Math.random() < dt * 0.05) {
       chat = [...chat.slice(-39), randomChat(now)];
     }
     const season = passSeasonKey(now).key;
@@ -714,7 +775,10 @@ export const useGame = create<GameStore>((set, get) => ({
     return true;
   },
 
-  openRaid: () => set({ screen: "raid", sheet: null, placing: null }),
+  openRaid: () => {
+    set({ screen: "raid", sheet: null, placing: null });
+    void get().refreshTargets();
+  },
 
   beginAttack: (lord) => {
     const s = get();
@@ -725,6 +789,16 @@ export const useGame = create<GameStore>((set, get) => ({
       return;
     }
     const warOn = !!(s.war && s.war.foeId && lord.allianceId === s.war.foeId && !s.war.sittingOut);
+    if (lord.real && lord.countyLevel != null && Math.abs(lord.countyLevel - s.countyLevel) > 1) {
+      set({ toast: "Só podes atacar condados de um nível acima, igual ou abaixo." });
+      sfxError();
+      return;
+    }
+    if (lord.real && (lord.shieldUntil ?? 0) > Date.now()) {
+      set({ toast: "Este condado está sob escudo." });
+      sfxError();
+      return;
+    }
     if (warOn) {
       const used = s.war!.attacks[lord.id] ?? 0;
       if (used >= WAR_ATTACK_CAP) {
@@ -764,7 +838,10 @@ export const useGame = create<GameStore>((set, get) => ({
       return;
     }
     raidTarget = lord;
-    const layout = generateBase(lord.id, lord.rank);
+    const layout =
+      lord.real && lord.buildings && lord.buildings.length > 0
+        ? lord.buildings
+        : generateBase(lord.id, lord.rank);
     battle = new Battle(layout, { ...s.army }, lord.lootGold, {
       levels: s.troopLevels,
       campLevel: s.campLevel,
@@ -791,10 +868,13 @@ export const useGame = create<GameStore>((set, get) => ({
     const s = get();
     const type = s.deployType;
     const ok = battle.deploy(type, gx, gy);
-    if (!ok) return false;
+    if (!ok) {
+      if (!isEdgeTile(gx, gy)) set({ toast: "Posicione nas bordas douradas." });
+      return false;
+    }
     const army = { ...s.army };
     army[type] = Math.max(0, army[type] - 1);
-    set({ army });
+    set({ army, toast: `${TROOPS[type].name} em campo.` });
     return true;
   },
 
@@ -804,8 +884,15 @@ export const useGame = create<GameStore>((set, get) => ({
       set({ screen: "spectate" });
       return;
     }
-    if (battle.troops.length === 0) {
-      set({ toast: "Posicione ao menos uma tropa nas bordas." });
+    const left =
+      battle.remainingOf("infantry") +
+      battle.remainingOf("archers") +
+      battle.remainingOf("cavalry") +
+      battle.remainingOf("general") +
+      battle.remainingOf("generaless") +
+      battle.remainingOf("defender");
+    if (battle.troops.length === 0 && left <= 0) {
+      set({ toast: "Sem tropas no acampamento." });
       sfxError();
       return;
     }
@@ -895,6 +982,18 @@ export const useGame = create<GameStore>((set, get) => ({
     });
     persist({ ...get() });
     if (r.stars > 0 && !battle.spectator) sfxStar();
+    if (!battle.spectator && raidTarget.real) {
+      void submitRaidResult({
+        defenderId: raidTarget.id,
+        defenderNick: raidTarget.nick,
+        goldTaken: r.gold,
+        destruction: r.destruction,
+        stars: r.stars,
+        troopsLost,
+      }).catch(() => {
+        /* inbox opcional */
+      });
+    }
   },
 
   sendChat: (text) => {
@@ -909,6 +1008,13 @@ export const useGame = create<GameStore>((set, get) => ({
       at: Date.now(),
       self: true,
     };
+    set({ chat: [...s.chat, msg].slice(-40) });
+    if (liveChat || auth.currentUser) {
+      void sendGlobalChat({ playerId: s.player.id, nick: s.player.nick, text: t }).catch((e) => {
+        set({ toast: e instanceof Error ? e.message : "Chat indisponível." });
+      });
+      return;
+    }
     const replyLord = LORDS[Math.floor(Math.random() * LORDS.length)]!;
     const reply: ChatMsg = {
       id: nid("m"),
@@ -919,7 +1025,7 @@ export const useGame = create<GameStore>((set, get) => ({
         : `Ouvido, ${s.player.nick}. O condado observa.`,
       at: Date.now() + 400,
     };
-    set({ chat: [...s.chat, msg, reply].slice(-40) });
+    set({ chat: [...get().chat, reply].slice(-40) });
     persist({ ...get() });
   },
 
@@ -1597,6 +1703,28 @@ export const useGame = create<GameStore>((set, get) => ({
       set({ ledger: led.rows });
     } catch {
       /* ignore */
+    }
+  },
+
+  refreshTargets: async () => {
+    const s = get();
+    const bots: Lord[] = LORDS.filter((l) => Math.abs((l.rank || 0) + 1 - s.countyLevel) <= 1).map(
+      (l) => ({
+        ...l,
+        countyLevel: (l.rank || 0) + 1,
+        title: `${l.title} · Nv.${(l.rank || 0) + 1}`,
+        real: false,
+      }),
+    );
+    try {
+      const { targets } = await listRaidTargets(s.player.id, s.countyLevel);
+      set({ raidTargets: [...targets, ...bots] });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "";
+      set({
+        raidTargets: bots,
+        toast: msg.includes("Entre") ? null : "Lista de senhores incompleta. Mostrando treino.",
+      });
     }
   },
 }));

@@ -12,6 +12,46 @@ const DEFAULT_LEVELS: TroopLevels = {
   defender: 1,
 };
 
+const SAVE_FIELDS: (keyof SaveState)[] = [
+  "version",
+  "player",
+  "gold",
+  "bread",
+  "niens",
+  "troopCards",
+  "generalCards",
+  "countyLevel",
+  "campLevel",
+  "troopLevels",
+  "buildings",
+  "army",
+  "training",
+  "lastTick",
+  "tutorial",
+  "chat",
+  "allianceChat",
+  "raids",
+  "stars",
+  "raidsWon",
+  "muted",
+  "shieldUntil",
+  "referredBy",
+  "referralClaimed",
+  "inviteCopied",
+  "pass",
+  "alliance",
+  "war",
+  "weekStars",
+  "weekKey",
+  "weekClaimed",
+  "ledger",
+  "niensSentDay",
+  "niensSentToday",
+  "attacksReceivedDay",
+  "attacksReceived",
+  "attacksByTarget",
+];
+
 export function defaultSave(nick = "Senhor", referredBy: string | null = null): SaveState {
   const now = Date.now();
   const season = passSeasonKey(now).key;
@@ -58,10 +98,25 @@ export function defaultSave(nick = "Senhor", referredBy: string | null = null): 
 
 export function loadSave(): SaveState | null {
   try {
-    const raw = localStorage.getItem(SAVE_KEY) ?? localStorage.getItem("condado.save.v2") ?? localStorage.getItem("condado.save.v1");
+    const raw =
+      localStorage.getItem(SAVE_KEY) ??
+      localStorage.getItem(SAVE_KEY + ".bak") ??
+      localStorage.getItem("condado.save.v2") ??
+      localStorage.getItem("condado.save.v1");
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as SaveState;
-    return migrate(parsed);
+    const parsed = migrate(JSON.parse(raw) as SaveState);
+    try {
+      const bakRaw = localStorage.getItem(SAVE_KEY + ".bak");
+      if (bakRaw) {
+        const bak = migrate(JSON.parse(bakRaw) as SaveState);
+        if (bak.player?.id === parsed.player.id && progressScore(bak) > progressScore(parsed) + 50) {
+          return bak;
+        }
+      }
+    } catch {
+      /* bak inválido */
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -123,8 +178,28 @@ function migrate(s: SaveState): SaveState {
   };
 }
 
+/** Drop Zustand actions / UI fields so Firestore never sees functions. */
+export function toSave(raw: unknown): SaveState {
+  const src = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const picked: Record<string, unknown> = {};
+  for (const key of SAVE_FIELDS) {
+    if (key in src) picked[key] = src[key];
+  }
+  return migrate(picked as unknown as SaveState);
+}
+
+export function progressScore(s: SaveState): number {
+  const built = s.buildings.reduce((n, b) => n + (b.level || 1), 0);
+  return s.countyLevel * 1_000_000_000 + built * 10_000 + s.gold + s.bread + s.niens * 100_000 + s.stars * 1_000;
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 let cloudSync: ((s: SaveState) => Promise<void>) | null = null;
 let cloudTimer: ReturnType<typeof setTimeout> | null = null;
+let lastBlob: SaveState | null = null;
 
 export function setCloudSync(fn: ((s: SaveState) => Promise<void>) | null) {
   cloudSync = fn;
@@ -136,34 +211,43 @@ export function migrateCloud(s: SaveState): SaveState {
 
 export function persist(state: SaveState) {
   try {
-    const blob: SaveState = {
-      ...state,
-      version: SAVE_VERSION,
-      player: state.player,
-      chat: state.chat.slice(-40),
-      allianceChat: state.allianceChat.slice(-40),
-      raids: state.raids.slice(-24),
-      ledger: state.ledger.slice(0, 40),
-    };
+    const blob = cloneJson(toSave(state));
+    lastBlob = blob;
     localStorage.setItem(SAVE_KEY, JSON.stringify(blob));
     localStorage.setItem(SAVE_KEY + ".bak", JSON.stringify(blob));
-    if (cloudSync) {
-      if (cloudTimer) clearTimeout(cloudTimer);
-      cloudTimer = setTimeout(() => {
-        void cloudSync?.(blob);
-      }, 1400);
-    }
+    if (!cloudSync) return;
+    if (cloudTimer) clearTimeout(cloudTimer);
+    cloudTimer = setTimeout(() => {
+      cloudTimer = null;
+      if (lastBlob && cloudSync) void cloudSync(lastBlob);
+    }, 250);
   } catch {
     /* quota */
+  }
+}
+
+export async function flushCloud() {
+  if (cloudTimer) {
+    clearTimeout(cloudTimer);
+    cloudTimer = null;
+  }
+  if (lastBlob && cloudSync) {
+    try {
+      await cloudSync(lastBlob);
+    } catch {
+      /* offline */
+    }
   }
 }
 
 export function wipeSave() {
   try {
     localStorage.removeItem(SAVE_KEY);
+    localStorage.removeItem(SAVE_KEY + ".bak");
     localStorage.removeItem("condado.save.v2");
     localStorage.removeItem("condado.save.v1");
   } catch {
     /* ignore */
   }
+  lastBlob = null;
 }

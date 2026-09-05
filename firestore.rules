@@ -58,6 +58,22 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    match /condado_chat/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.fromUserId == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 160;
+      allow update, delete: if false;
+    }
+
+    match /condado_raid_inbox/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.fromUserId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
     match /usuarios/{uid} {
       allow read, write: if isOwner(uid);
     }

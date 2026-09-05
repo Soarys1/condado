@@ -77,9 +77,9 @@ import {
   type Tradable,
   type TroopType,
 } from "@/lib/game/constants";
-import { ALLIANCES, LORDS, lordsOfAlliance } from "@/lib/game/bots";
+import { ALLIANCES, lordsOfAlliance } from "@/lib/game/bots";
 import { battle, raidTarget, useGame } from "@/lib/game/store";
-import { persist } from "@/lib/game/save";
+import { flushCloud, persist, loadSave } from "@/lib/game/save";
 import { createRuntime } from "@/lib/game/render";
 import { formatRes, formatTime, countType } from "@/lib/game/world";
 import {
@@ -118,7 +118,18 @@ export function GameApp() {
   useEffect(() => {
     if (isPending) return;
     if (!user) {
-      useGame.setState({ hydrated: true, screen: "splash" });
+      const local = loadSave();
+      if (local) {
+        useGame.setState({
+          ...local,
+          hydrated: true,
+          screen: "village",
+          nickDraft: local.player.nick,
+          sheet: null,
+        });
+      } else {
+        useGame.setState({ hydrated: true, screen: "splash" });
+      }
       return;
     }
     void hydrateFromCloud();
@@ -135,9 +146,19 @@ export function GameApp() {
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "visible") resumeAudio();
+      else void flushCloud();
+    };
+    const onHide = () => {
+      void flushCloud();
     };
     document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onHide);
+    window.addEventListener("beforeunload", onHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("beforeunload", onHide);
+    };
   }, []);
 
   useEffect(() => {
@@ -723,6 +744,9 @@ function ChatSheet() {
   }, [chat.length]);
   return (
     <div className="flex h-[52dvh] flex-col md:h-[calc(100dvh-8rem)]">
+      <p className="mb-2 text-[0.7rem] uppercase tracking-[0.18em] text-parchment-dim">
+        Chat global ao vivo
+      </p>
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
         {chat.map((m) => (
           <div
@@ -747,7 +771,7 @@ function ChatSheet() {
           value={text}
           onChange={(e) => setText(e.target.value)}
           className="h-11 flex-1 rounded-md border border-line bg-ink px-3 text-sm outline-none"
-          placeholder="Fale com os senhores"
+          placeholder="Chat global — todos os senhores vêem"
         />
         <button
           type="submit"
@@ -1605,14 +1629,20 @@ function AllianceSheet() {
 function RaidSelect() {
   const beginAttack = useGame((s) => s.beginAttack);
   const returnVillage = useGame((s) => s.returnVillage);
-  const stars = useGame((s) => s.stars);
   const war = useGame((s) => s.war);
   const shieldUntil = useGame((s) => s.shieldUntil);
   const attacksByTarget = useGame((s) => s.attacksByTarget);
+  const raidTargets = useGame((s) => s.raidTargets);
+  const refreshTargets = useGame((s) => s.refreshTargets);
+  const countyLevel = useGame((s) => s.countyLevel);
   const foes = war?.foeId ? lordsOfAlliance(war.foeId) : [];
   const day = brtDayKey();
   const win = warWindow();
   const warLive = !!(war && win.open && !war.sittingOut);
+  useEffect(() => {
+    void refreshTargets();
+  }, [refreshTargets]);
+  const list = raidTargets;
   return (
     <div className="absolute inset-0 z-30 flex items-end bg-ink/55 md:items-center md:justify-center">
       <div className="panel w-full max-h-[82dvh] overflow-y-auto rounded-t-xl p-4 md:max-w-lg md:rounded-xl">
@@ -1620,8 +1650,8 @@ function RaidSelect() {
           <div>
             <h2 className="font-display text-lg">Condados vizinhos</h2>
             <p className="text-xs text-parchment-dim">
-              Estrelas {stars} · {DAILY_ATTACK_CAP} ataques/dia por conta
-              {Date.now() < shieldUntil ? " · escudo ativo (não te atacam)" : ""}
+              Nv.{countyLevel} · só ±1 nível · {DAILY_ATTACK_CAP} ataques/dia
+              {Date.now() < shieldUntil ? " · escudo ativo" : ""}
             </p>
           </div>
           <button
@@ -1639,13 +1669,14 @@ function RaidSelect() {
           </p>
         )}
         <div className="space-y-2">
-          {LORDS.map((l) => {
+          {list.map((l) => {
             const usedWar = war?.attacks[l.id] ?? 0;
             const rec = attacksByTarget[l.id];
             const usedDay = rec && rec.day === day ? rec.count : 0;
             const warFoe = warLive && !!war?.foeId && l.allianceId === war.foeId;
             const cap = warFoe ? WAR_ATTACK_CAP : DAILY_ATTACK_CAP;
             const used = warFoe ? Math.max(usedWar, usedDay) : usedDay;
+            const shielded = (l.shieldUntil ?? 0) > Date.now();
             return (
               <button
                 key={l.id}
@@ -1655,9 +1686,13 @@ function RaidSelect() {
               >
                 <Shield className={`size-5 ${warFoe ? "text-iron" : "text-parchment-dim"}`} />
                 <div className="min-w-0 flex-1">
-                  <p className="font-display">{l.nick}</p>
+                  <p className="font-display">
+                    {l.nick}
+                    {l.real ? "" : " · treino"}
+                  </p>
                   <p className="text-xs text-parchment-dim">
-                    {l.title} · {l.id} · saque até {l.lootGold} {GOLD_NAME_PL}
+                    {l.title} · {l.id}
+                    {shielded ? " · escudo" : ` · saque até ${l.lootGold} ${GOLD_NAME_PL}`}
                     {warFoe ? ` · guerra ${used}/${cap}` : ` · ${used}/${cap} hoje`}
                   </p>
                 </div>
@@ -1665,6 +1700,11 @@ function RaidSelect() {
               </button>
             );
           })}
+          {list.length === 0 && (
+            <p className="text-sm text-parchment-dim">
+              Nenhum condado no teu nível (±1). Pede ao amigo para evoluir ou espera mais senhores.
+            </p>
+          )}
         </div>
       </div>
     </div>
@@ -1781,7 +1821,7 @@ function BattleHUD() {
       {screen === "prep" && (
         <div className="pointer-events-auto absolute inset-x-0 bottom-0 pb-[max(0.6rem,env(safe-area-inset-bottom))]">
           <p className="mb-2 text-center text-xs text-parchment-dim">
-            Posicione tropas nas bordas douradas. 2 minutos de preparo.
+            Posicione tropas nas bordas douradas. Podes colocar mais depois de iniciar.
           </p>
           <div className="mx-auto flex max-w-xl gap-1 overflow-x-auto px-3">
             {TROOP_ORDER.map((t) => (
@@ -1814,10 +1854,25 @@ function BattleHUD() {
       {screen === "battle" && (
         <div className="pointer-events-auto absolute inset-x-0 bottom-0 pb-[max(0.6rem,env(safe-area-inset-bottom))]">
           <p className="mb-2 text-center text-xs text-parchment-dim">
-            Toque uma construção: tropas próximas focam nela.
+            Bordas douradas: mais tropas. Toque uma construção para focar.
           </p>
+          <div className="mx-auto flex max-w-xl gap-1 overflow-x-auto px-3">
+            {TROOP_ORDER.map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setDeployType(t)}
+                className={`flex min-h-12 min-w-16 flex-1 flex-col items-center rounded-md border px-1 py-1 text-[0.65rem] ${
+                  deployType === t ? "border-niens bg-panel-2" : "border-line bg-panel/90"
+                }`}
+              >
+                <span>{TROOPS[t].name}</span>
+                <span className="tabular">{battle?.remainingOf(t) ?? army[t]}</span>
+              </button>
+            ))}
+          </div>
           {confirm ? (
-            <div className="mx-auto mb-2 w-[min(92%,22rem)] rounded-md border border-line bg-panel p-3 shadow-panel">
+            <div className="mx-auto mb-2 mt-2 w-[min(92%,22rem)] rounded-md border border-line bg-panel p-3 shadow-panel">
               <p className="text-sm">Recuar agora? Os soldados vivos voltam. Os mortos não.</p>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
@@ -1843,7 +1898,7 @@ function BattleHUD() {
             <button
               type="button"
               onClick={() => setConfirm(true)}
-              className="mx-auto flex h-11 w-[min(90%,18rem)] items-center justify-center gap-2 rounded-md border border-line bg-panel/90 font-display text-sm"
+              className="mx-auto mt-2 flex h-11 w-[min(90%,18rem)] items-center justify-center gap-2 rounded-md border border-line bg-panel/90 font-display text-sm"
             >
               <Undo2 className="size-4" />
               Recuar

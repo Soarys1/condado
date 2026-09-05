@@ -121,7 +121,8 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
 
     applyCam();
     drawGround();
-    if (s.screen === "village" || s.screen === "prep" || s.placing) drawGrid(s.screen === "prep");
+    if (s.screen === "village" || s.screen === "prep" || s.screen === "battle" || s.placing)
+      drawGrid(s.screen === "prep" || s.screen === "battle");
     drawDecor();
 
     const layout = battle && (s.screen === "prep" || s.screen === "battle" || s.screen === "results" || s.screen === "spectate")
@@ -678,15 +679,15 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
     const gx = Math.floor(g.gx);
     const gy = Math.floor(g.gy);
 
-    if (st.screen === "prep" && battle) {
-      st.deploy(gx, gy);
-      return;
-    }
-    if (st.screen === "battle" && battle && !battle.spectator) {
-      const hit = battleHit(world.x, world.y);
-      if (hit && hit.type !== "wall") {
-        st.setFocus(hit.id);
-        st.setToast("Tropas próximas focam este alvo.");
+    if ((st.screen === "prep" || st.screen === "battle") && battle && !battle.spectator) {
+      const deployed = st.deploy(gx, gy);
+      if (deployed) return;
+      if (st.screen === "battle") {
+        const hit = battleHit(world.x, world.y);
+        if (hit && hit.type !== "wall") {
+          st.setFocus(hit.id);
+          st.setToast("Tropas próximas focam este alvo.");
+        }
       }
       return;
     }

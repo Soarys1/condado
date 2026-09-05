@@ -1,18 +1,24 @@
 import {
+  addDoc,
   collection,
-  deleteDoc,
   doc,
   getDoc,
   getDocs,
+  limit,
+  onSnapshot,
+  orderBy,
   query,
   where,
   runTransaction,
   setDoc,
   type Transaction,
+  type Unsubscribe,
 } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import {
+  LOOT_CAP,
   REFERRAL_GOLD,
+  SHIELD_MS,
   brtDayKey,
   dailyNienSendCap,
   marketOfferId,
@@ -21,8 +27,8 @@ import {
   type ResourceKind,
   type Tradable,
 } from "./constants";
-import { defaultSave, migrateCloud } from "./save";
-import type { MarketOffer, SaveState } from "./types";
+import { defaultSave, migrateCloud, toSave } from "./save";
+import type { ChatMsg, Lord, MarketOffer, RaidLog, SaveState } from "./types";
 import { botWeekBoard, findNick } from "./bots";
 import { makeId } from "./world";
 import { deviceFingerprint, getDeviceId } from "./device";
@@ -48,6 +54,7 @@ export type LedgerRow = {
 type Profile = SaveState & {
   userId: string;
   appliedTransferIds: string[];
+  appliedRaidIds: string[];
 };
 
 const profilesCol = () => collection(db, "condado_profiles");
@@ -58,6 +65,12 @@ const playerIndexCol = () => collection(db, "condado_player_index");
 const emailIndexCol = () => collection(db, "condado_email_index");
 const devicesCol = () => collection(db, "condado_devices");
 const marketCol = () => collection(db, "condado_market");
+const raidInboxCol = () => collection(db, "condado_raid_inbox");
+
+function savePlayerId(data: Record<string, unknown>): string {
+  const save = data.save as SaveState | undefined;
+  return String(save?.player?.id ?? "");
+}
 
 function requireUid(): string {
   const uid = auth.currentUser?.uid;
@@ -100,6 +113,9 @@ function profileFromDoc(userId: string, data: Record<string, unknown>): Profile 
   const applied = Array.isArray(data.appliedTransferIds)
     ? (data.appliedTransferIds as unknown[]).map(String)
     : [];
+  const appliedRaids = Array.isArray(data.appliedRaidIds)
+    ? (data.appliedRaidIds as unknown[]).map(String)
+    : [];
   return {
     ...save,
     userId,
@@ -113,45 +129,55 @@ function profileFromDoc(userId: string, data: Record<string, unknown>): Profile 
     weekKey: String(data.weekKey ?? save.weekKey),
     referredBy: (data.referredBy as string | null | undefined) ?? save.referredBy,
     referralClaimed: Boolean(data.referralClaimed ?? save.referralClaimed),
+    shieldUntil: Number(data.shieldUntil ?? save.shieldUntil ?? 0),
     appliedTransferIds: applied,
+    appliedRaidIds: appliedRaids,
   };
 }
 
-function profilePayload(save: SaveState, extra?: Partial<{ appliedTransferIds: string[]; accountEmail: string | null }>) {
-  return {
-    save: {
-      ...save,
-      chat: save.chat.slice(-40),
-      allianceChat: save.allianceChat.slice(-40),
-      raids: save.raids.slice(-24),
-      ledger: save.ledger.slice(0, 40),
-    },
-    playerId: save.player.id,
-    nick: save.player.nick,
-    gold: save.gold,
-    bread: save.bread,
-    niens: save.niens,
-    troopCards: save.troopCards,
-    generalCards: save.generalCards,
-    goldPending: 0,
-    breadPending: 0,
-    niensPending: 0,
-    troopCardsPending: 0,
-    generalCardsPending: 0,
-    countyLevel: save.countyLevel,
-    weekStars: save.weekStars,
-    weekKey: save.weekKey,
-    referredBy: save.referredBy ?? null,
-    referralClaimed: save.referralClaimed ?? false,
-    appliedTransferIds: extra?.appliedTransferIds ?? [],
-    accountEmail: extra?.accountEmail ?? auth.currentUser?.email?.toLowerCase() ?? null,
-    updatedAt: new Date().toISOString(),
-  };
+function profilePayload(
+  save: SaveState,
+  extra?: Partial<{ appliedTransferIds: string[]; appliedRaidIds: string[]; accountEmail: string | null }>,
+) {
+  const clean = toSave(save);
+  return JSON.parse(
+    JSON.stringify({
+      save: {
+        ...clean,
+        chat: clean.chat.slice(-40),
+        allianceChat: clean.allianceChat.slice(-40),
+        raids: clean.raids.slice(-24),
+        ledger: clean.ledger.slice(0, 40),
+      },
+      playerId: clean.player.id,
+      nick: clean.player.nick,
+      gold: clean.gold,
+      bread: clean.bread,
+      niens: clean.niens,
+      troopCards: clean.troopCards,
+      generalCards: clean.generalCards,
+      goldPending: 0,
+      breadPending: 0,
+      niensPending: 0,
+      troopCardsPending: 0,
+      generalCardsPending: 0,
+      countyLevel: clean.countyLevel,
+      weekStars: clean.weekStars,
+      weekKey: clean.weekKey,
+      referredBy: clean.referredBy ?? null,
+      referralClaimed: clean.referralClaimed ?? false,
+      shieldUntil: clean.shieldUntil ?? 0,
+      appliedTransferIds: extra?.appliedTransferIds ?? [],
+      appliedRaidIds: extra?.appliedRaidIds ?? [],
+      accountEmail: extra?.accountEmail ?? auth.currentUser?.email?.toLowerCase() ?? null,
+      updatedAt: new Date().toISOString(),
+    }),
+  ) as Record<string, unknown>;
 }
 
 function withoutMeta(p: Profile): SaveState {
-  const { userId: _u, appliedTransferIds: _a, ...save } = p;
-  return save;
+  const { userId: _u, appliedTransferIds: _a, appliedRaidIds: _r, ...save } = p;
+  return toSave(save);
 }
 
 async function incomingTransfers(playerId: string) {
@@ -173,6 +199,7 @@ function applyIncoming(p: Profile, incoming: Array<{ id: string } & Record<strin
   const applied = [...p.appliedTransferIds];
   for (const row of incoming) {
     if (seen.has(row.id)) continue;
+    if (row.chat || row.raid) continue;
     if (String(row.fromPlayerId ?? "") === p.player.id) continue;
     const kind = row.kind as ResourceKind;
     const amount = Number(row.amount ?? 0);
@@ -196,6 +223,50 @@ function applyIncoming(p: Profile, incoming: Array<{ id: string } & Record<strin
   };
 }
 
+async function incomingRaids(playerId: string) {
+  try {
+    const snap = await getDocs(query(raidInboxCol(), where("toPlayerId", "==", playerId)));
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  } catch {
+    return [];
+  }
+}
+
+function applyRaids(p: Profile, incoming: Array<{ id: string } & Record<string, unknown>>): Profile {
+  const seen = new Set(p.appliedRaidIds);
+  let gold = p.gold;
+  let shieldUntil = p.shieldUntil;
+  const raids: RaidLog[] = [...p.raids];
+  const applied = [...p.appliedRaidIds];
+  for (const row of incoming) {
+    if (seen.has(row.id)) continue;
+    const goldTaken = Math.max(0, Number(row.goldTaken ?? 0));
+    gold = Math.max(0, gold - goldTaken);
+    shieldUntil = Math.max(shieldUntil, Date.now() + SHIELD_MS);
+    raids.unshift({
+      id: row.id,
+      at: Date.parse(String(row.createdAt ?? "")) || Date.now(),
+      attacker: String(row.fromNick ?? "Senhor"),
+      defender: p.player.nick,
+      gold: goldTaken,
+      bread: 0,
+      incoming: true,
+      destruction: Number(row.destruction ?? 0),
+      troopsLost: Number(row.troopsLost ?? 0),
+      stars: Number(row.stars ?? 0),
+    });
+    applied.push(row.id);
+    seen.add(row.id);
+  }
+  return {
+    ...p,
+    gold,
+    shieldUntil,
+    raids: raids.slice(0, 24),
+    appliedRaidIds: applied.slice(-200),
+  };
+}
+
 export async function syncAccountEmail() {
   const uid = requireUid();
   const email = auth.currentUser?.email?.trim().toLowerCase();
@@ -214,10 +285,17 @@ export async function pullCloud() {
   if (!snap.exists()) return { save: null as SaveState | null };
   let profile = profileFromDoc(uid, snap.data() as Record<string, unknown>);
   const incoming = await incomingTransfers(profile.player.id);
-  const next = applyIncoming(profile, incoming);
-  await setDoc(ref, profilePayload(withoutMeta(next), { appliedTransferIds: next.appliedTransferIds }), {
-    merge: true,
-  });
+  const inbox = await incomingRaids(profile.player.id);
+  const raidRows = [...inbox, ...incoming.filter((r) => Boolean((r as { raid?: boolean }).raid))];
+  const next = applyRaids(applyIncoming(profile, incoming), raidRows);
+  await setDoc(
+    ref,
+    profilePayload(withoutMeta(next), {
+      appliedTransferIds: next.appliedTransferIds,
+      appliedRaidIds: next.appliedRaidIds,
+    }),
+    { merge: true },
+  );
   return { save: withoutMeta(next) };
 }
 
@@ -256,7 +334,7 @@ export async function createProfile(input: { nick: string; referredBy?: string |
       if (fpTaken.exists() && fpTaken.data()?.userId !== uid) {
         throw new Error("Já existe um condado neste aparelho. Multi-contas não são permitidas.");
       }
-      tx.set(ref, profilePayload(save, { appliedTransferIds: [], accountEmail: email }));
+      tx.set(ref, profilePayload(save, { appliedTransferIds: [], appliedRaidIds: [], accountEmail: email }));
       tx.set(nickRef, { userId: uid, playerId: save.player.id });
       tx.set(playerRef, { userId: uid, nick: save.player.nick });
       tx.set(emailRef, { userId: uid, playerId: save.player.id });
@@ -276,23 +354,34 @@ export async function pushCloud(data: SaveState) {
   try {
     return await runTransaction(db, async (tx: Transaction) => {
       const snap = await tx.get(ref);
+      const clean = toSave(data);
       if (!snap.exists()) {
+        tx.set(ref, profilePayload(clean, { appliedTransferIds: [], appliedRaidIds: [] }));
         return {
           ok: true as const,
-          gold: data.gold,
-          bread: data.bread,
-          niens: data.niens,
-          troopCards: data.troopCards,
-          generalCards: data.generalCards,
+          gold: clean.gold,
+          bread: clean.bread,
+          niens: clean.niens,
+          troopCards: clean.troopCards,
+          generalCards: clean.generalCards,
         };
       }
       const old = profileFromDoc(uid, snap.data() as Record<string, unknown>);
-      const incoming = [] as Array<{ id: string } & Record<string, unknown>>;
-      const next = applyIncoming(
-        { ...old, ...data, player: { ...old.player, ...data.player }, appliedTransferIds: old.appliedTransferIds },
-        incoming,
+      const next = {
+        ...old,
+        ...clean,
+        player: { ...old.player, ...clean.player },
+        appliedTransferIds: old.appliedTransferIds,
+        appliedRaidIds: old.appliedRaidIds,
+      } as Profile;
+      tx.set(
+        ref,
+        profilePayload(withoutMeta(next), {
+          appliedTransferIds: next.appliedTransferIds,
+          appliedRaidIds: next.appliedRaidIds,
+        }),
+        { merge: true },
       );
-      tx.set(ref, profilePayload(withoutMeta(next), { appliedTransferIds: next.appliedTransferIds }), { merge: true });
       return {
         ok: true as const,
         gold: next.gold,
@@ -380,7 +469,7 @@ export async function cloudTransfer(data: { toId: string; amount: number; kind: 
       if (!toNick) throw new Error("ID não encontrado. Cole e confira o nick.");
       const next = { ...me, [field]: Number(me[field]) - amount } as Profile;
       const now = new Date().toISOString();
-      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds }), { merge: true });
+      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds, appliedRaidIds: me.appliedRaidIds }), { merge: true });
       tx.set(txRef, {
         fromUserId: uid,
         fromPlayerId: me.player.id,
@@ -419,6 +508,7 @@ export async function listTransfers() {
   ]);
   const docs = [...fromSnap.docs, ...toSnap.docs]
     .sort((a, b) => String(b.data().createdAt ?? "").localeCompare(String(a.data().createdAt ?? "")))
+    .filter((d) => !d.data().chat && !d.data().raid)
     .slice(0, 40);
   return {
     rows: docs.map((d) => {
@@ -509,7 +599,7 @@ export async function claimWeekly() {
         troopCards: cur.troopCards + prize.troopCards,
         generalCards: cur.generalCards + prize.generalCards,
       };
-      tx.set(profileRef, profilePayload(withoutMeta(next), { appliedTransferIds: cur.appliedTransferIds }), {
+      tx.set(profileRef, profilePayload(withoutMeta(next), { appliedTransferIds: cur.appliedTransferIds, appliedRaidIds: cur.appliedRaidIds }), {
         merge: true,
       });
     });
@@ -530,7 +620,7 @@ export async function creditReferral() {
       if (me.referralClaimed || me.countyLevel < 3 || !me.referredBy) return { granted: false as const };
       const refIndex = await tx.get(doc(playerIndexCol(), me.referredBy));
       const next = { ...me, gold: me.gold + REFERRAL_GOLD, referralClaimed: true };
-      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds }), { merge: true });
+      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds, appliedRaidIds: me.appliedRaidIds }), { merge: true });
       if (refIndex.exists()) {
         const toPlayerId = me.referredBy;
         const toNick = String(refIndex.data()?.nick ?? "");
@@ -601,7 +691,7 @@ export async function createMarketOffer(input: {
       const field = kindField(input.giveKind);
       if (giveAmount > Number(me[field])) throw new Error("Não tens esse recurso para listar.");
       const next = { ...me, [field]: Number(me[field]) - giveAmount } as Profile;
-      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds }), { merge: true });
+      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds, appliedRaidIds: me.appliedRaidIds }), { merge: true });
       tx.set(offerRef, {
         sellerUid: uid,
         sellerId: me.player.id,
@@ -645,7 +735,7 @@ export async function takeMarketOffer(offerId: string) {
         [payField]: Number(me[payField]) - offer.wantAmount,
         [getField]: Number(me[getField]) + offer.giveAmount,
       } as Profile;
-      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds }), { merge: true });
+      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds, appliedRaidIds: me.appliedRaidIds }), { merge: true });
       tx.delete(offerRef);
       const payRef = doc(transfersCol(), makeId("MK"));
       tx.set(payRef, {
@@ -686,7 +776,7 @@ export async function cancelMarketOffer(offerId: string) {
       const me = profileFromDoc(uid, meSnap.data() as Record<string, unknown>);
       const field = kindField(offer.giveKind);
       const next = { ...me, [field]: Number(me[field]) + offer.giveAmount } as Profile;
-      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds }), { merge: true });
+      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds, appliedRaidIds: me.appliedRaidIds }), { merge: true });
       tx.delete(offerRef);
       return { ok: true as const, gold: next.gold, bread: next.bread, niens: next.niens };
     });
@@ -694,3 +784,131 @@ export async function cancelMarketOffer(offerId: string) {
     throw firestoreError(error, "Não foi possível retirar a oferta.");
   }
 }
+
+export async function listRaidTargets(myId: string, myLevel: number): Promise<{ targets: Lord[] }> {
+  requireUid();
+  const snap = await getDocs(profilesCol());
+  const now = Date.now();
+  const targets: Lord[] = [];
+  for (const d of snap.docs) {
+    const data = d.data() as Record<string, unknown>;
+    const pid = String(data.playerId ?? savePlayerId(data));
+    if (!pid || pid === myId) continue;
+    const save = (data.save as SaveState | undefined) ?? null;
+    const level = Number(data.countyLevel ?? save?.countyLevel ?? 1) || 1;
+    if (Math.abs(level - myLevel) > 1) continue;
+    const shieldUntil = Number(data.shieldUntil ?? save?.shieldUntil ?? 0);
+    const nick = String(data.nick ?? save?.player?.nick ?? "Senhor");
+    targets.push({
+      id: pid,
+      nick,
+      title: `Condado Nv.${level}`,
+      rank: level,
+      lootGold: LOOT_CAP,
+      lootBread: 0,
+      allianceId: save?.alliance?.id,
+      countyLevel: level,
+      buildings: Array.isArray(save?.buildings) ? save.buildings : undefined,
+      real: true,
+      shieldUntil,
+    });
+  }
+  targets.sort((a, b) => (a.shieldUntil && a.shieldUntil > now ? 1 : 0) - (b.shieldUntil && b.shieldUntil > now ? 1 : 0));
+  return { targets };
+}
+
+export async function submitRaidResult(input: {
+  defenderId: string;
+  defenderNick: string;
+  goldTaken: number;
+  destruction: number;
+  stars: number;
+  troopsLost: number;
+}) {
+  const uid = requireUid();
+  const me = await getDoc(doc(profilesCol(), uid));
+  if (!me.exists()) return;
+  const data = me.data() as Record<string, unknown>;
+  const payload = {
+    fromUserId: uid,
+    fromPlayerId: String(data.playerId ?? ""),
+    fromNick: String(data.nick ?? ""),
+    toPlayerId: input.defenderId,
+    toNick: input.defenderNick,
+    kind: "gold" as const,
+    amount: Math.max(0, Math.floor(input.goldTaken)),
+    goldTaken: Math.max(0, Math.floor(input.goldTaken)),
+    destruction: input.destruction,
+    stars: input.stars,
+    troopsLost: input.troopsLost,
+    createdAt: new Date().toISOString(),
+    raid: true,
+  };
+  await addDoc(transfersCol(), payload);
+}
+
+export async function sendGlobalChat(input: { playerId: string; nick: string; text: string }) {
+  const uid = requireUid();
+  const text = input.text.trim().slice(0, 160);
+  if (!text) return;
+  const now = Date.now();
+  await addDoc(transfersCol(), {
+    fromUserId: uid,
+    fromPlayerId: input.playerId,
+    fromId: input.playerId,
+    fromNick: input.nick,
+    toPlayerId: "GLOBAL_CHAT",
+    toNick: "Reino",
+    kind: "gold",
+    amount: 0,
+    createdAt: new Date(now).toISOString(),
+    at: now,
+    text,
+    channel: "global",
+    chat: true,
+  });
+}
+
+function mapChatDocs(docs: Array<{ id: string; data: () => unknown }>): ChatMsg[] {
+  return docs
+    .map((d) => {
+      const r = (d.data() ?? {}) as Record<string, unknown>;
+      const text = String(r.text ?? "");
+      return {
+        id: d.id,
+        fromId: String(r.fromId ?? r.fromPlayerId ?? ""),
+        fromNick: String(r.fromNick ?? "Senhor"),
+        text,
+        at: Number(r.at ?? (Date.parse(String(r.createdAt ?? "")) || Date.now())),
+        self: r.fromUserId === auth.currentUser?.uid,
+        channel: "global" as const,
+      };
+    })
+    .filter((m) => m.text)
+    .sort((a, b) => a.at - b.at)
+    .slice(-40);
+}
+
+export function listenGlobalChat(onRows: (rows: ChatMsg[]) => void): Unsubscribe {
+  const indexed = query(
+    transfersCol(),
+    where("toPlayerId", "==", "GLOBAL_CHAT"),
+    orderBy("createdAt", "desc"),
+    limit(40),
+  );
+  const plain = query(transfersCol(), where("toPlayerId", "==", "GLOBAL_CHAT"), limit(80));
+  return onSnapshot(
+    indexed,
+    (snap) => onRows(mapChatDocs(snap.docs)),
+    () => {
+      onSnapshot(
+        plain,
+        (snap) => onRows(mapChatDocs(snap.docs)),
+        () => {
+          /* offline */
+        },
+      );
+    },
+  );
+}
+

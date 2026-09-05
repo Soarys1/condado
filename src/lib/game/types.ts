@@ -99,6 +99,10 @@ export interface Lord {
   lootGold: number;
   lootBread: number;
   allianceId?: string;
+  countyLevel?: number;
+  buildings?: BuildingInst[];
+  real?: boolean;
+  shieldUntil?: number;
 }
 
 export interface PlayerProfile {

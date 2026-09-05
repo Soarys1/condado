@@ -207,7 +207,8 @@ export class Battle {
   }
 
   canDeploy(type: TroopType, gx: number, gy: number): boolean {
-    if (this.phase !== "prep") return false;
+    if (this.phase !== "prep" && this.phase !== "fight") return false;
+    if (this.spectator) return false;
     if (this.armyLeft[type] <= 0) return false;
     if (isHero(type) && this.heroesUsed.has(type)) return false;
     if (!isEdgeTile(gx, gy)) return false;
@@ -237,6 +238,13 @@ export class Battle {
     });
     this.armyLeft[type] = Math.max(0, this.armyLeft[type] - 1);
     if (isHero(type)) this.heroesUsed.add(type);
+    if (this.phase === "fight") {
+      const placed = this.troops[this.troops.length - 1];
+      if (placed) {
+        placed.repath = 0;
+        this.tickTroop(placed, 0.016);
+      }
+    }
     return true;
   }
 
@@ -272,9 +280,14 @@ export class Battle {
 
   startFight() {
     if (this.phase !== "prep") return;
-    if (this.troops.length === 0) return;
     this.phase = "fight";
     this.prepLeft = 0;
+    for (const t of this.troops) {
+      if (!t.alive) continue;
+      t.repath = 0;
+      t.path = [];
+      t.pathI = 0;
+    }
   }
 
   skipPrep() {
@@ -326,7 +339,14 @@ export class Battle {
 
     const buildingsLeft = this.buildings.filter((b) => b.alive && b.type !== "wall");
     const troopsLeft = this.troops.some((t) => t.alive);
-    if (this.fightLeft <= 0 || buildingsLeft.length === 0 || !troopsLeft) {
+    const reserves =
+      this.armyLeft.infantry +
+      this.armyLeft.archers +
+      this.armyLeft.cavalry +
+      this.armyLeft.general +
+      this.armyLeft.generaless +
+      this.armyLeft.defender;
+    if (this.fightLeft <= 0 || buildingsLeft.length === 0 || (!troopsLeft && reserves <= 0)) {
       this.end(false);
     }
   }
@@ -373,6 +393,9 @@ export class Battle {
     }
     if (!goal) return;
 
+    const beforeX = t.x;
+    const beforeY = t.y;
+
     if (this.inRange(t, goal, def.range)) {
       t.path = [];
       this.strike(t, goal, dt);
@@ -396,7 +419,7 @@ export class Battle {
       const planned = this.planRoute(t, goal);
       t.path = planned.path;
       t.pathI = 0;
-      t.repath = 0.45 + Math.random() * 0.25;
+      t.repath = 0.7 + Math.random() * 0.4;
       if (planned.breach) {
         t.targetId = planned.breach.id;
         breach = planned.breach;
@@ -414,10 +437,14 @@ export class Battle {
     const step = t.path[t.pathI];
     if (!step) {
       this.steer(t, goal.cx, goal.cy, st.speed, dt);
-      return;
+    } else {
+      const reached = this.steer(t, step[0] + 0.5, step[1] + 0.5, st.speed, dt);
+      if (reached) t.pathI += 1;
     }
-    const reached = this.steer(t, step[0] + 0.5, step[1] + 0.5, st.speed, dt);
-    if (reached) t.pathI += 1;
+
+    if (Math.hypot(t.x - beforeX, t.y - beforeY) < 0.002) {
+      this.steer(t, goal.cx, goal.cy, Math.max(st.speed, 0.8), dt);
+    }
   }
 
   private planRoute(
