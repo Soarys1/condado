@@ -3,6 +3,12 @@
   "framework": "vite",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/game.js": {
+      "maxDuration": 30,
+      "includeFiles": "node_modules/{firebase-admin,@google-cloud,@grpc,@fastify,google-gax,google-auth-library,google-logging-utils,protobufjs,proto3-json-serializer,jwks-rsa,jsonwebtoken,farmhash-modern,fast-deep-equal,gtoken,jws,gcp-metadata,teeny-request,retry-request,duplexify,functional-red-black-tree}/**"
+    }
+  },
   "rewrites": [
     {
       "source": "/((?!api/|assets/|game/|__grok/|favicon.svg|og.jpg|x-banner.jpg|_shell.html).*)",

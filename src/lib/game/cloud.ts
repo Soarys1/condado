@@ -54,7 +54,11 @@ async function playAction(action: string, payload: Record<string, unknown> = {},
   const user = auth.currentUser;
   if (!user) throw new Error("Entre na tua conta para continuar.");
   const token = await user.getIdToken();
-  const res = await fetch("/api/game", {
+  const endpoint =
+    typeof window !== "undefined" && window.location.hostname === "ocondado.online"
+      ? "https://www.ocondado.online/api/game"
+      : "/api/game";
+  const res = await fetch(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -66,15 +70,20 @@ async function playAction(action: string, payload: Record<string, unknown> = {},
       payload,
     }),
   });
+  const text = await res.text();
   let data: GameActionResult = {};
   try {
-    data = (await res.json()) as GameActionResult;
+    data = text ? (JSON.parse(text) as GameActionResult) : {};
   } catch {
     data = {};
   }
   if (!res.ok) {
     const raw = data as GameActionResult & { message?: string; unhandled?: boolean };
-    if (raw.unhandled || raw.message === "HTTPError") {
+    if (
+      raw.unhandled ||
+      raw.message === "HTTPError" ||
+      /FUNCTION_INVOCATION_FAILED|INTERNAL_SERVER_ERROR/i.test(text)
+    ) {
       throw new Error("O reino ainda não está ligado ao servidor. Tenta dentro de instantes.");
     }
     throw new Error(data.error || "Não foi possível concluir a ação.");

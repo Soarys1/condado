@@ -354,11 +354,11 @@ export const useGame = create<GameStore>((set, get) => ({
       void get().refreshTargets();
       void flushCloud();
       return true;
-    } catch {
+    } catch (error) {
       set({
         hydrated: true,
         screen: "splash",
-        toast: "Não foi possível abrir o condado. Entra novamente.",
+        toast: error instanceof Error ? error.message : "Não foi possível abrir o condado. Entra novamente.",
       });
       return false;
     }

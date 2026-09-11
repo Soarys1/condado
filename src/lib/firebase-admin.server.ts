@@ -1,6 +1,6 @@
 import { cert, getApps, initializeApp, type App } from "firebase-admin/app";
 import { getAuth, type Auth } from "firebase-admin/auth";
-import { getFirestore, type Firestore } from "firebase-admin/firestore";
+import { getFirestore, initializeFirestore, type Firestore } from "firebase-admin/firestore";
 
 const DATABASE_ID = "default";
 const PROJECT_ID = "condado-dcdf5";
@@ -92,7 +92,13 @@ export function getAdminAuth(): Auth {
 }
 
 export function getAdminFirestore(): Firestore {
-  if (!dbInstance) dbInstance = getFirestore(getAdminApp(), DATABASE_ID);
+  if (dbInstance) return dbInstance;
+  const instance = getAdminApp();
+  try {
+    dbInstance = initializeFirestore(instance, { preferRest: true }, DATABASE_ID);
+  } catch {
+    dbInstance = getFirestore(instance, DATABASE_ID);
+  }
   return dbInstance;
 }
 

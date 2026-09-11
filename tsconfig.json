@@ -45,6 +45,8 @@
     "src/lib/app-data/readiness.ts",
     "src/lib/app-data/readiness-schedule.ts",
     "src/lib/app-data/readiness-schedule.test.ts",
-    "src/lib/app-data/use-connector-readiness.ts"
+    "src/lib/app-data/use-connector-readiness.ts",
+    "api/game.js",
+    "api/_handler.cjs"
   ]
 }
