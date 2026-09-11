@@ -8,7 +8,7 @@ import { grokPwaPlugin } from "./scripts/grok-pwa-plugin.mjs";
 // @ts-expect-error JS plugin alongside the TS vite config
 import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
 // @ts-expect-error JS plugin alongside the TS vite config
-import { traceFirebaseAdmin } from "./scripts/trace-firebase-admin.mjs";
+import { traceFirebaseAdmin, writeDistFallback } from "./scripts/trace-firebase-admin.mjs";
 
 const firebaseAdminPackages = [
   "firebase-admin",
@@ -59,6 +59,7 @@ export default defineConfig(({ command, isPreview }) => ({
                 if (!ok) {
                   throw new Error("firebase-admin was not copied into the Vercel function");
                 }
+                await writeDistFallback();
               },
             },
           }),
