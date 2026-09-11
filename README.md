@@ -25,7 +25,7 @@ A chave `AIza…` no cliente **não é um segredo** — é o identificador web p
    - Tipo: **Sensitive / Secret**. Sem prefixo `VITE_`. Ambiente: Production + Preview. Disponível em **Runtime** (não só Build).
    - Cola o JSON numa linha, ou com as quebras `\n` da chave privada tal como o ficheiro original.
    - Se o JSON for recusado pelo tamanho, usa em vez disso `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY` (a chave com `\n`).
-4. O `vercel.json` já pede o preset **TanStack Start** (não Vite/`dist`). Se o deploy ainda pedir pasta `dist`: Settings → Build → Framework = TanStack Start, Output Directory **vazio** (override desligado).
+4. O `vercel.json` usa o preset **Vite** e a pasta `dist` (é isso que o teu projeto na Vercel espera). Não mudes o Output Directory.
 5. Redeploy depois de gravar a variável.
 
 Sem a conta de serviço, o reino de treino abre; a conta real não move ouro.

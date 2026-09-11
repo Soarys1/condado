@@ -29,7 +29,8 @@
   },
   "include": [
     "src",
-    "server"
+    "server",
+    "api"
   ],
   "exclude": [
     "src/lib/db.ts",

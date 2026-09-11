@@ -1,6 +1,6 @@
-import { adminConfigured, verifyPlayerToken } from "@/lib/firebase-admin.server";
-import { handleGameAction } from "@/lib/game/server/engine.server";
-import { GameError } from "@/lib/game/sim";
+import { adminConfigured, verifyPlayerToken } from "../../firebase-admin.server";
+import { handleGameAction } from "./engine.server";
+import { GameError } from "../sim";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

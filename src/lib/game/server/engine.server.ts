@@ -1,5 +1,5 @@
 import type { DocumentData, DocumentReference, Transaction } from "firebase-admin/firestore";
-import { getAdminFirestore } from "@/lib/firebase-admin.server";
+import { getAdminFirestore } from "../../firebase-admin.server";
 import { SHIELD_MS, rankingWindow, weeklyPrize, type BuildingType, type ResourceKind, type Tradable, type TroopType, type WallDir } from "../constants";
 import { defaultSave, migrateCloud, toSave } from "../save";
 import type { ArmyCounts, ChatMsg, Lord, MarketOffer, SaveState, TransferRecord } from "../types";

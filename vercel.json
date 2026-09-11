@@ -1,5 +1,12 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "tanstack-start",
-  "buildCommand": "npm run build"
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/((?!api/|assets/|game/|__grok/|favicon.svg|og.jpg|x-banner.jpg|_shell.html).*)",
+      "destination": "/index.html"
+    }
+  ]
 }
