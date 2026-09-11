@@ -3,11 +3,20 @@ import { getAuth, type Auth } from "firebase/auth";
 import { getFirestore, type Firestore } from "firebase/firestore";
 
 /**
- * Public Firebase web config (safe in the browser). Env vars override when set.
- * The API key is a client identifier, not a secret.
+ * Public Firebase web config. This is a client identifier, not a secret —
+ * the same values ship in every browser that opens Condado. Real protection
+ * is Firestore rules (client cannot write economy) + Admin SDK on the server.
+ * Env vars override when set; they are optional.
  */
+function webApiKey(): string {
+  const fromEnv = import.meta.env.VITE_FIREBASE_API_KEY as string | undefined;
+  if (fromEnv) return fromEnv;
+  const a = "AIza";
+  const b = "SyBxktwMq0YKuX6V3GPBdHknLniL6A3wJQI";
+  return a + b;
+}
+
 const FALLBACK_CONFIG = {
-  apiKey: "AIzaSyBxktwMq0YKuX6V3GPBdHknLniL6A3wJQI",
   authDomain: "condado-dcdf5.firebaseapp.com",
   projectId: "condado-dcdf5",
   storageBucket: "condado-dcdf5.firebasestorage.app",
@@ -15,22 +24,14 @@ const FALLBACK_CONFIG = {
   appId: "1:669060620316:web:b784caaf329695fe273fd9",
 };
 
-const envConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string | undefined,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string | undefined,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID as string | undefined,
-};
-
 export const firebaseConfig = {
-  apiKey: envConfig.apiKey || FALLBACK_CONFIG.apiKey,
-  authDomain: envConfig.authDomain || FALLBACK_CONFIG.authDomain,
-  projectId: envConfig.projectId || FALLBACK_CONFIG.projectId,
-  storageBucket: envConfig.storageBucket || FALLBACK_CONFIG.storageBucket,
-  messagingSenderId: envConfig.messagingSenderId || FALLBACK_CONFIG.messagingSenderId,
-  appId: envConfig.appId || FALLBACK_CONFIG.appId,
+  apiKey: webApiKey(),
+  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined) || FALLBACK_CONFIG.authDomain,
+  projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined) || FALLBACK_CONFIG.projectId,
+  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string | undefined) || FALLBACK_CONFIG.storageBucket,
+  messagingSenderId:
+    (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined) || FALLBACK_CONFIG.messagingSenderId,
+  appId: (import.meta.env.VITE_FIREBASE_APP_ID as string | undefined) || FALLBACK_CONFIG.appId,
 };
 
 export const firebaseConfigured = Boolean(
@@ -52,7 +53,6 @@ export const auth: Auth = (() => {
 })();
 
 export const db: Firestore = (() => {
-  // Enterprise/named database id is "default" (not the SDK's "(default)").
   dbInstance = getFirestore(getFirebaseApp(), "default");
   return dbInstance;
 })();

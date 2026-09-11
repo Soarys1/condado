@@ -14,14 +14,17 @@ Tema rústico em vista isométrica 3/4, otimizado para **celular e desktop**.
 
 A configuração web pública do projeto já vai no código. **Não coloques o JSON da conta de serviço no GitHub, no frontend, nem numa variável `VITE_*`.**
 
+A chave `AIza…` no cliente **não é um segredo** — é o identificador web público. O GitHub às vezes apita; o ouro está protegido pelas regras + servidor.
+
 ### Produção (uma vez)
 
-1. Authentication → e-mail/senha e Google ligados. Domínios autorizados: o teu domínio de produção.
-2. Publica as regras e índices deste repositório (`firestore.rules`, `firestore.indexes.json`).
-3. No Vercel, define:
-   - `FIREBASE_SERVICE_ACCOUNT` — JSON da conta de serviço (texto inteiro), **ou** `FIREBASE_SERVICE_ACCOUNT_BASE64`, **ou** `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`
-   - `ADMIN_EMAILS` — e-mails que vêem o livro do reino (separados por vírgula)
-4. Liga o GitHub `Soarys1/condado` e faz **Redeploy**. Sem a conta de serviço, o jogo de treino abre mas a conta real não move ouro.
+1. **Regras (obrigatório)** — no Console, Firestore → **Segurança**, cola o ficheiro `firestore.rules` deste repositório e clica **Publicar**. Sem isto o cliente antigo ainda consegue escrever ouro.
+2. **Índices** — Firestore → **Índices**, ou publica `firestore.indexes.json`.
+3. **Vercel** — o livro do reino já reconhece `ifcorporationsu@gmail.com` sem variável. Para a economia da conta real, define só:
+   - `FIREBASE_SERVICE_ACCOUNT` = o JSON inteiro da conta de serviço (Project settings → Service accounts → Generate new private key). Sem prefixo `VITE_`. Ambiente: Production + Preview.
+4. Redeploy.
+
+Sem a conta de serviço, o reino de treino abre; a conta real não move ouro.
 
 A economia (libras, Niens, mercado, ranking, saque) só muda no servidor. Pedidos repetidos com o mesmo `requestId` não creditam duas vezes.
 

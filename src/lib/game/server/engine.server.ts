@@ -89,11 +89,12 @@ const profileRef = (uid: string) => col("condado_profiles").doc(uid);
 
 function isAdmin(email: string | null): boolean {
   if (!email) return false;
-  const list = (process.env.ADMIN_EMAILS ?? "")
+  const extra = (process.env.ADMIN_EMAILS ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  return list.includes(email);
+  const allowed = new Set(["ifcorporationsu@gmail.com", ...extra]);
+  return allowed.has(email.toLowerCase());
 }
 
 function profileFromDoc(uid: string, data: DocumentData): Profile {
