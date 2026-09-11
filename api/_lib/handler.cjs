@@ -105,8 +105,8 @@ async function verifyPlayerToken(header) {
 		throw new Error("Sessão expirada. Entra novamente.");
 	}
 }
-const NIEN_COST_GOLD = 45e4;
-const NIEN_SELL_GOLD = 15e4;
+const NIEN_COST_GOLD = 55e4;
+const NIEN_SELL_GOLD = 165e3;
 const SPEED_TRAIN_GOLD = 2500;
 const LOOT_BANDS = [
 	{
@@ -127,11 +127,16 @@ const SHIELD_MS = 36e5;
 const REFERRAL_GOLD = 3e5;
 const ALLIANCE_FOUND_GOLD = 5e6;
 const DEFENDER_COST = 5e3;
+const PASS_BOOST_MULT = 1.4;
+const PASS_BOOST_MS = 2592e6;
 /** Display name of the gold resource. Internal field stays `gold`. */
 const GOLD_NAME = "Libra";
 const GOLD_NAME_PL = "Libras";
 const BREAD_PACK = 1e3;
 const BREAD_PACK_BUY_GOLD = 2400;
+const ALLIANCE_XP_BASE = 4e3;
+const ALLIANCE_WAR_CHEST = 5e7;
+const ALLIANCE_DUEL_MIN = 7e4;
 const BUILDINGS = {
 	castle: {
 		type: "castle",
@@ -260,7 +265,7 @@ const TROOPS = {
 		hp: 150,
 		dps: 14,
 		speed: 1.05,
-		range: .72,
+		range: 1.05,
 		trainMs: 6e3,
 		prefer: "nearest",
 		ignoreWalls: false,
@@ -334,8 +339,8 @@ const TROOPS = {
 		costGold: 5e3,
 		hp: 220,
 		dps: 16,
-		speed: 1,
-		range: .8,
+		speed: 1.05,
+		range: 1.05,
 		trainMs: 1e4,
 		prefer: "nearest",
 		ignoreWalls: false,
@@ -363,8 +368,9 @@ function countyUpgradeCost(fromLevel) {
 function upgradeCost(type, level) {
 	return (BUILDINGS[type].costGold || 400) * 2 ** (level - 1);
 }
-function productionPerSec(level) {
-	return 36 * level / 60;
+function productionPerSec(level, boosted = false) {
+	const base = 36 * level / 60;
+	return boosted ? base * PASS_BOOST_MULT : base;
 }
 function storageCap(level) {
 	return Math.round(productionPerSec(level) * 60 * 12);
@@ -394,6 +400,17 @@ function campUpgradeGold(fromLevel) {
 }
 function defenderCap(campLevel) {
 	return 2 + campLevel * 2;
+}
+function lootCapForCounty(countyLevel) {
+	return Math.round(LOOT_CAP * 1.05 ** (Math.max(1, Math.min(15, Math.floor(countyLevel || 1))) - 1));
+}
+function lootForStars(stars, countyLevel = 1) {
+	const n = Math.max(0, Math.min(3, Math.floor(stars)));
+	const cap = lootCapForCounty(countyLevel);
+	const scale = cap / LOOT_CAP;
+	let gold = 0;
+	for (let i = 0; i < n; i++) gold += Math.round((LOOT_BANDS[i]?.gold ?? 0) * scale);
+	return Math.min(cap, gold);
 }
 function passSeasonKey(now = Date.now()) {
 	const d = new Date(now);
@@ -439,6 +456,11 @@ function passCostNiens(seasonKey) {
 	const idx = (y - 2026) * 12 + (m - 9);
 	return 15 + Math.max(0, idx);
 }
+function passCostWithDiscount(seasonKey, hasScroll) {
+	const base = passCostNiens(seasonKey);
+	if (!hasScroll) return base;
+	return Math.max(1, Math.ceil(base * .55));
+}
 function passReward(level) {
 	if (level === 48) return {
 		gold: 0,
@@ -481,26 +503,88 @@ function passReward(level) {
 		label: `${5e3 + level * 800} ${GOLD_NAME_PL}`
 	};
 }
-function warWindow(now = Date.now()) {
-	const fmt = new Intl.DateTimeFormat("en-US", {
-		timeZone: "America/Sao_Paulo",
-		weekday: "short",
-		year: "numeric",
-		month: "2-digit",
-		day: "2-digit",
-		hour: "2-digit",
-		minute: "2-digit",
-		hour12: false
-	});
-	const parts = Object.fromEntries(fmt.formatToParts(new Date(now)).map((p) => [p.type, p.value]));
-	const open = parts.weekday === "Sat" && Number(parts.hour) >= 8 && Number(parts.hour) < 23;
-	const y = Number(parts.year);
-	const m = Number(parts.month);
-	const d = Number(parts.day);
+function freePassReward(level) {
+	if (level === 48) return {
+		gold: 0,
+		bread: 0,
+		niens: 0,
+		troopCards: 6,
+		generalCards: 0,
+		label: "6 cartas de tropa"
+	};
+	if (level === 49) return {
+		gold: 0,
+		bread: 0,
+		niens: 0,
+		troopCards: 0,
+		generalCards: 3,
+		label: "3 cartas de general"
+	};
+	if (level === 50) return {
+		gold: 1e5,
+		bread: 1e5,
+		niens: 0,
+		troopCards: 3,
+		generalCards: 0,
+		label: `3 cartas de tropa + 100k ${GOLD_NAME_PL} + 100k pão`
+	};
+	if (level % 2 === 0) {
+		const bread = Math.round((4e3 + level * 600) / 2);
+		return {
+			gold: 0,
+			bread,
+			niens: 0,
+			troopCards: 0,
+			generalCards: 0,
+			label: `${bread} pão`
+		};
+	}
+	const gold = Math.round((5e3 + level * 800) / 2);
 	return {
-		open,
-		start: (/* @__PURE__ */ new Date(`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}T08:00:00-03:00`)).getTime(),
-		end: (/* @__PURE__ */ new Date(`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}T23:00:00-03:00`)).getTime()
+		gold,
+		bread: 0,
+		niens: 0,
+		troopCards: 0,
+		generalCards: 0,
+		label: `${gold} ${GOLD_NAME_PL}`
+	};
+}
+function allianceSlots(level) {
+	return 30 + 10 * (Math.max(1, Math.min(7, Math.floor(level || 1))) - 1);
+}
+function allianceXpToNext(level) {
+	if (level < 1 || level >= 7) return 0;
+	return ALLIANCE_XP_BASE * 2 ** (level - 1);
+}
+function applyAllianceXp(level, xp, gained) {
+	let lv = Math.max(1, Math.min(7, Math.floor(level || 1)));
+	let cur = Math.max(0, Math.floor(xp || 0)) + Math.max(0, Math.floor(gained));
+	while (lv < 7) {
+		const need = allianceXpToNext(lv);
+		if (cur < need) break;
+		cur -= need;
+		lv += 1;
+	}
+	return {
+		level: lv,
+		xp: cur
+	};
+}
+function duelGold(seed) {
+	let h = 2166136261;
+	for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
+	const t = (h >>> 0) / 4294967296;
+	return Math.round((ALLIANCE_DUEL_MIN + t * 3e4) / 1e3) * 1e3;
+}
+function warWindow(now = Date.now()) {
+	const key = brtDayKey(now);
+	const start = (/* @__PURE__ */ new Date(`${key}T00:00:00-03:00`)).getTime();
+	const end = start + 864e5;
+	return {
+		open: now >= start && now < end,
+		start,
+		end,
+		key
 	};
 }
 function pad2(n) {
@@ -601,7 +685,7 @@ function dailyAttackCap(war) {
 //#endregion
 //#region src/lib/game/iso.ts
 function inGrid(gx, gy, size = 1) {
-	return gx >= 0 && gy >= 0 && gx + size <= 32 && gy + size <= 32;
+	return gx >= 0 && gy >= 0 && gx + size <= 44 && gy + size <= 44;
 }
 function cellsOf(gx, gy, size) {
 	const out = [];
@@ -626,55 +710,55 @@ function starterVillage() {
 		{
 			id: nid("c"),
 			type: "castle",
-			gx: 14,
-			gy: 14,
+			gx: 20,
+			gy: 20,
 			level: 1
 		},
 		{
 			id: nid("m"),
 			type: "mine",
-			gx: 10,
-			gy: 13,
+			gx: 16,
+			gy: 19,
 			level: 1,
 			lastCollect: now
 		},
 		{
 			id: nid("f"),
 			type: "farm",
-			gx: 19,
-			gy: 13,
+			gx: 25,
+			gy: 19,
 			level: 1,
 			lastCollect: now
 		},
 		{
 			id: nid("w"),
 			type: "wall",
-			gx: 14,
-			gy: 12,
+			gx: 20,
+			gy: 18,
 			level: 1,
 			dir: "h"
 		},
 		{
 			id: nid("w"),
 			type: "wall",
-			gx: 15,
-			gy: 12,
+			gx: 21,
+			gy: 18,
 			level: 1,
 			dir: "h"
 		},
 		{
 			id: nid("w"),
 			type: "wall",
-			gx: 16,
-			gy: 12,
+			gx: 22,
+			gy: 18,
 			level: 1,
 			dir: "h"
 		},
 		{
 			id: nid("w"),
 			type: "wall",
-			gx: 13,
-			gy: 12,
+			gx: 19,
+			gy: 18,
 			level: 1,
 			dir: "v"
 		}
@@ -758,7 +842,7 @@ const LORDS = [
 		nick: "Sir Aldric",
 		title: "Escudeiro",
 		rank: 0,
-		lootGold: 8400,
+		lootGold: lootCapForCounty(1),
 		lootBread: 0,
 		allianceId: "AL-CORVO"
 	},
@@ -767,7 +851,7 @@ const LORDS = [
 		nick: "Marela do Vale",
 		title: "Capitã",
 		rank: 1,
-		lootGold: 8400,
+		lootGold: lootCapForCounty(2),
 		lootBread: 0,
 		allianceId: "AL-ROSA"
 	},
@@ -776,7 +860,7 @@ const LORDS = [
 		nick: "Rodrigo Caldeira",
 		title: "Celador",
 		rank: 2,
-		lootGold: 8400,
+		lootGold: lootCapForCounty(3),
 		lootBread: 0,
 		allianceId: "AL-VALE"
 	},
@@ -785,7 +869,7 @@ const LORDS = [
 		nick: "Dama Isolde",
 		title: "Baronesa",
 		rank: 3,
-		lootGold: 8400,
+		lootGold: lootCapForCounty(4),
 		lootBread: 0,
 		allianceId: "AL-TORRE"
 	},
@@ -794,7 +878,7 @@ const LORDS = [
 		nick: "Fernão Negro",
 		title: "Marechal",
 		rank: 4,
-		lootGold: 8400,
+		lootGold: lootCapForCounty(5),
 		lootBread: 0,
 		allianceId: "AL-CORVO"
 	},
@@ -803,31 +887,9 @@ const LORDS = [
 		nick: "Beatriz da Torre",
 		title: "Duquesa",
 		rank: 5,
-		lootGold: 8400,
+		lootGold: lootCapForCounty(6),
 		lootBread: 0,
 		allianceId: "AL-ROSA"
-	}
-];
-const ALLIANCES = [
-	{
-		id: "AL-CORVO",
-		name: "Corvo Negro",
-		members: ["CDN-ALDRIC", "CDN-FERNAN"]
-	},
-	{
-		id: "AL-ROSA",
-		name: "Rosa de Ferro",
-		members: ["CDN-MARELA", "CDN-BEATRIZ"]
-	},
-	{
-		id: "AL-VALE",
-		name: "Vale Dourado",
-		members: ["CDN-RODRIGO"]
-	},
-	{
-		id: "AL-TORRE",
-		name: "Torre do Norte",
-		members: ["CDN-ISOLDE"]
 	}
 ];
 function seedChat(now = Date.now()) {
@@ -852,7 +914,7 @@ function seedChat(now = Date.now()) {
 			id: "m2",
 			fromId: LORDS[3].id,
 			fromNick: LORDS[3].nick,
-			text: "Guerra sábado. Pares de alianças. Ímpar espera.",
+			text: "Guerra de aliança dura um dia. Duelo no campo.",
 			at: now - 35e3,
 			channel: "global"
 		}
@@ -868,49 +930,6 @@ function findNick(id) {
 	if (lord) return lord.nick;
 	if (key.startsWith("CDN-") && key.length >= 8) return `Senhor ${key.slice(4, 8)}`;
 	return null;
-}
-function warChest(seed) {
-	let h = 2166136261;
-	for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
-	const t = (h >>> 0) / 4294967296;
-	return Math.round((1e7 + t * 4e7) / 1e3) * 1e3;
-}
-function pairWar(playerAllianceId, week) {
-	const ids = ALLIANCES.map((a) => a.id);
-	if (playerAllianceId && !ids.includes(playerAllianceId)) ids.push(playerAllianceId);
-	ids.sort();
-	let h = 0;
-	for (const c of week) h = h * 33 + c.charCodeAt(0) >>> 0;
-	if (ids.length % 2 === 1) {
-		const sit = ids[h % ids.length];
-		if (sit === playerAllianceId) return {
-			foeId: null,
-			foeName: "—",
-			sittingOut: true
-		};
-		const rest = ids.filter((x) => x !== sit);
-		const idx = rest.indexOf(playerAllianceId ?? "");
-		if (idx < 0) return {
-			foeId: rest[0] ?? null,
-			foeName: nameOf(rest[0] ?? ""),
-			sittingOut: false
-		};
-		const foe = rest[idx ^ 1] ?? rest[0];
-		return {
-			foeId: foe,
-			foeName: nameOf(foe),
-			sittingOut: false
-		};
-	}
-	const foe = ids[ids.indexOf(playerAllianceId ?? ids[0]) ^ 1] ?? ids[0];
-	return {
-		foeId: foe,
-		foeName: nameOf(foe),
-		sittingOut: false
-	};
-}
-function nameOf(id) {
-	return ALLIANCES.find((a) => a.id === id)?.name ?? "Aliança rival";
 }
 function botWeekBoard(weekKey) {
 	return LORDS.map((l, i) => {
@@ -973,13 +992,15 @@ const SAVE_FIELDS = [
 	"niensSentToday",
 	"attacksReceivedDay",
 	"attacksReceived",
-	"attacksByTarget"
+	"attacksByTarget",
+	"boostUntil",
+	"passDiscount"
 ];
 function defaultSave(nick = "Senhor", referredBy = null) {
 	const now = Date.now();
 	const season = passSeasonKey(now).key;
 	return {
-		version: 5,
+		version: 6,
 		player: {
 			id: makeId("CDN"),
 			nick: nick.trim() || "Senhor",
@@ -1019,7 +1040,9 @@ function defaultSave(nick = "Senhor", referredBy = null) {
 			season,
 			purchased: false,
 			stars: 0,
-			claimed: []
+			claimed: [],
+			claimedFree: [],
+			extrasClaimed: []
 		},
 		alliance: null,
 		war: null,
@@ -1031,7 +1054,9 @@ function defaultSave(nick = "Senhor", referredBy = null) {
 		niensSentToday: 0,
 		attacksReceivedDay: "",
 		attacksReceived: 0,
-		attacksByTarget: {}
+		attacksByTarget: {},
+		boostUntil: 0,
+		passDiscount: false
 	};
 }
 function cleanBuilding(b, countyLevel, now) {
@@ -1053,16 +1078,48 @@ function migrate(s) {
 	const countyLevel = Math.max(1, Number(s.countyLevel ?? base.countyLevel ?? 1));
 	const buildings = Array.isArray(s.buildings) && s.buildings.length ? s.buildings : base.buildings;
 	const season = passSeasonKey(now).key;
-	const pass = s.pass?.season === season ? s.pass : {
+	const passRaw = s.pass;
+	const pass = passRaw?.season === season ? {
+		season,
+		purchased: !!passRaw.purchased,
+		stars: Number(passRaw.stars ?? 0),
+		claimed: Array.isArray(passRaw.claimed) ? passRaw.claimed.map(Number) : [],
+		claimedFree: Array.isArray(passRaw.claimedFree) ? passRaw.claimedFree.map(Number) : [],
+		extrasClaimed: Array.isArray(passRaw.extrasClaimed) ? passRaw.extrasClaimed.filter((x) => x === "boost" || x === "discount") : []
+	} : {
 		season,
 		purchased: false,
 		stars: 0,
-		claimed: []
+		claimed: [],
+		claimedFree: [],
+		extrasClaimed: []
 	};
+	const alliance = s.alliance ? {
+		id: String(s.alliance.id),
+		name: String(s.alliance.name ?? "Aliança"),
+		members: Array.isArray(s.alliance.members) ? s.alliance.members : [],
+		minLevel: Math.max(1, Number(s.alliance.minLevel ?? 1)),
+		level: Math.max(1, Number(s.alliance.level ?? 1)),
+		xp: Math.max(0, Number(s.alliance.xp ?? 0)),
+		leaderId: String(s.alliance.leaderId ?? s.player?.id ?? ""),
+		slots: Math.max(30, Number(s.alliance.slots ?? 30))
+	} : null;
+	const war = s.war ? {
+		week: String(s.war.week ?? ""),
+		foeId: s.war.foeId ?? null,
+		foeName: String(s.war.foeName ?? ""),
+		chest: Number(s.war.chest ?? 0),
+		ourStars: Number(s.war.ourStars ?? 0),
+		theirStars: Number(s.war.theirStars ?? 0),
+		attacks: s.war.attacks ?? {},
+		sittingOut: !!s.war.sittingOut,
+		resolved: !!s.war.resolved,
+		participants: Array.isArray(s.war.participants) ? s.war.participants.map(String) : []
+	} : null;
 	return {
 		...base,
 		...s,
-		version: 5,
+		version: 6,
 		player: {
 			...base.player,
 			...s.player,
@@ -1071,7 +1128,9 @@ function migrate(s) {
 		army: {
 			...base.army,
 			...s.army,
-			defender: s.army?.defender ?? 0
+			defender: s.army?.defender ?? 0,
+			general: Math.min(1, Number(s.army?.general ?? 0)),
+			generaless: Math.min(1, Number(s.army?.generaless ?? 0))
 		},
 		troopLevels: {
 			...base.troopLevels,
@@ -1090,8 +1149,8 @@ function migrate(s) {
 		referralClaimed: s.referralClaimed ?? false,
 		inviteCopied: s.inviteCopied ?? false,
 		pass,
-		alliance: s.alliance ?? null,
-		war: s.war ?? null,
+		alliance,
+		war,
 		weekStars: s.weekStars ?? 0,
 		weekKey: s.weekKey ?? "",
 		weekClaimed: s.weekClaimed ?? null,
@@ -1112,7 +1171,9 @@ function migrate(s) {
 		niensSentToday: s.niensSentToday ?? 0,
 		attacksReceivedDay: s.attacksReceivedDay ?? "",
 		attacksReceived: s.attacksReceived ?? 0,
-		attacksByTarget: s.attacksByTarget ?? {}
+		attacksByTarget: s.attacksByTarget ?? {},
+		boostUntil: Number(s.boostUntil ?? 0),
+		passDiscount: Boolean(s.passDiscount)
 	};
 }
 /** Drop Zustand actions / UI fields so the cache never stores functions. */
@@ -1142,17 +1203,11 @@ function producerKind(t) {
 	if (t === "farm") return "bread";
 	return null;
 }
-function storedAmount(b, now = Date.now()) {
+function storedAmount(b, now = Date.now(), boosted = false) {
 	if (b.type !== "mine" && b.type !== "farm") return 0;
 	const t0 = b.lastCollect ?? now;
 	const elapsed = Math.max(0, (now - t0) / 1e3);
-	return Math.floor(Math.min(storageCap(b.level), productionPerSec(b.level) * elapsed));
-}
-function lootForStars(stars) {
-	const n = Math.max(0, Math.min(3, Math.floor(stars)));
-	let gold = 0;
-	for (let i = 0; i < n; i++) gold += LOOT_BANDS[i]?.gold ?? 0;
-	return Math.min(LOOT_CAP, gold);
+	return Math.floor(Math.min(storageCap(b.level), productionPerSec(b.level, boosted) * elapsed));
 }
 function kindField(kind) {
 	if (kind === "troopCards") return "troopCards";
@@ -1193,54 +1248,24 @@ function settle(s, now = Date.now()) {
 	const dtMs = Math.min(288e5, Math.max(0, now - (s.lastTick || now)));
 	const trained = applyTraining(s, dtMs);
 	const season = passSeasonKey(now).key;
-	const pass = s.pass?.season === season ? s.pass : {
+	const pass = s.pass?.season === season ? {
+		season,
+		purchased: !!s.pass.purchased,
+		stars: Number(s.pass.stars ?? 0),
+		claimed: Array.isArray(s.pass.claimed) ? s.pass.claimed : [],
+		claimedFree: Array.isArray(s.pass.claimedFree) ? s.pass.claimedFree : [],
+		extrasClaimed: Array.isArray(s.pass.extrasClaimed) ? s.pass.extrasClaimed : []
+	} : {
 		season,
 		purchased: false,
 		stars: 0,
-		claimed: []
+		claimed: [],
+		claimedFree: [],
+		extrasClaimed: []
 	};
-	const win = warWindow(now);
-	const week = new Intl.DateTimeFormat("en-CA", {
-		timeZone: "America/Sao_Paulo",
-		year: "numeric",
-		month: "2-digit",
-		day: "2-digit"
-	}).format(new Date(now));
-	let war = s.war;
-	if (win.open && s.alliance) {
-		if (!war || war.week !== week) {
-			const pair = pairWar(s.alliance.id, week);
-			war = {
-				week,
-				foeId: pair.foeId,
-				foeName: pair.foeName,
-				chest: warChest(week + s.alliance.id),
-				ourStars: 0,
-				theirStars: 0,
-				attacks: {},
-				sittingOut: pair.sittingOut,
-				resolved: false
-			};
-		}
-	}
-	let gold = s.gold;
-	if (war && !win.open && !war.resolved) {
-		const won = !war.sittingOut && war.ourStars > war.theirStars;
-		const members = Math.max(1, s.alliance?.members.length ?? 1);
-		const share = won ? Math.floor(war.chest / members) : 0;
-		if (share) {
-			pushLedger(ledger, {
-				...s,
-				gold
-			}, "war_chest", "gold", share, "war");
-			gold += share;
-		}
-		war = {
-			...war,
-			resolved: true
-		};
-	}
-	const upkeep = (trained.army.infantry + trained.army.archers + trained.army.cavalry + trained.army.general + trained.army.generaless + trained.army.defender + trained.jobs.length) * 20 * (dtMs / 864e5);
+	const war = s.war;
+	const gold = s.gold;
+	const upkeep = (trained.army.infantry + trained.army.archers + trained.army.cavalry + trained.army.general + trained.army.generaless + trained.army.defender + trained.jobs.length) * 20 * (dtMs / 36e5);
 	let bread = s.bread;
 	if (upkeep > 0) {
 		const spend = Math.min(bread, upkeep);
@@ -1275,7 +1300,7 @@ function collectBuilding(s, id, now = Date.now()) {
 	if (!b) throw new GameError("Construção não encontrada.");
 	const kind = producerKind(b.type);
 	if (!kind) throw new GameError("Isto não produz recursos.");
-	const amt = storedAmount(b, now);
+	const amt = storedAmount(b, now, (s.boostUntil ?? 0) > now);
 	if (amt < 1) throw new GameError("Ainda está a produzir.");
 	const buildings = s.buildings.map((x) => x.id === id ? {
 		...x,
@@ -1299,7 +1324,7 @@ function collectAllBuildings(s, now = Date.now()) {
 	let bread = 0;
 	const buildings = s.buildings.map((b) => {
 		if (b.type === "mine") {
-			const amt = storedAmount(b, now);
+			const amt = storedAmount(b, now, (s.boostUntil ?? 0) > now);
 			gold += amt;
 			return amt > 0 ? {
 				...b,
@@ -1307,7 +1332,7 @@ function collectAllBuildings(s, now = Date.now()) {
 			} : b;
 		}
 		if (b.type === "farm") {
-			const amt = storedAmount(b, now);
+			const amt = storedAmount(b, now, (s.boostUntil ?? 0) > now);
 			bread += amt;
 			return amt > 0 ? {
 				...b,
@@ -1541,9 +1566,9 @@ function speedTrainJob(s, id) {
 	};
 }
 function buyNienSim(s) {
-	if (s.gold < 45e4) throw new GameError(`Precisa de ${NIEN_COST_GOLD.toLocaleString("pt")} ${GOLD_NAME_PL}.`);
+	if (s.gold < 55e4) throw new GameError(`Precisa de ${NIEN_COST_GOLD.toLocaleString("pt")} ${GOLD_NAME_PL}.`);
 	const ledger = [];
-	pushLedger(ledger, s, "buy_nien", "gold", -45e4, "shop");
+	pushLedger(ledger, s, "buy_nien", "gold", -55e4, "shop");
 	const next = {
 		...s,
 		gold: s.gold - NIEN_COST_GOLD,
@@ -1677,7 +1702,7 @@ function upgradeCountySim(s) {
 			} : b)
 		},
 		ledger,
-		toast: `Condado nível ${next}.`
+		toast: `Condado nível ${next}. Saque máximo +5%.`
 	};
 }
 function upgradeTroopSim(s, type) {
@@ -1746,7 +1771,7 @@ function upgradeCampSim(s) {
 function buyPassSim(s, now = Date.now()) {
 	if (!passWindow(now).active) throw new GameError("O passe abre no dia 1. Fevereiro dura 27 dias.");
 	if (s.pass.purchased) throw new GameError("Passe já selado nesta temporada.");
-	const cost = passCostNiens(s.pass.season);
+	const cost = passCostWithDiscount(s.pass.season, !!s.passDiscount);
 	if (s.niens < cost) throw new GameError(`Precisa de ${cost} Niens.`);
 	const ledger = [];
 	pushLedger(ledger, s, "buy_pass", "niens", -cost, s.pass.season);
@@ -1757,10 +1782,11 @@ function buyPassSim(s, now = Date.now()) {
 			pass: {
 				...s.pass,
 				purchased: true
-			}
+			},
+			passDiscount: false
 		},
 		ledger,
-		toast: "Passe de Batalha selado."
+		toast: s.passDiscount ? `Passe selado com 45% de desconto · ${cost} Niens.` : "Passe de Batalha selado."
 	};
 }
 function claimPassSim(s, level) {
@@ -1788,6 +1814,62 @@ function claimPassSim(s, level) {
 		},
 		ledger,
 		toast: `Nível ${level}: ${r.label}`
+	};
+}
+function claimFreePassSim(s, level) {
+	const reached = Math.min(50, Math.floor(s.pass.stars / 6));
+	const claimedFree = s.pass.claimedFree ?? [];
+	if (level > reached || claimedFree.includes(level)) throw new GameError("Este nível ainda não está disponível.");
+	const r = freePassReward(level);
+	const ledger = [];
+	if (r.gold) pushLedger(ledger, s, "claim_pass_free", "gold", r.gold, `pass-free:${level}`);
+	if (r.bread) pushLedger(ledger, s, "claim_pass_free", "bread", r.bread, `pass-free:${level}`);
+	if (r.troopCards) pushLedger(ledger, s, "claim_pass_free", "troopCards", r.troopCards, `pass-free:${level}`);
+	if (r.generalCards) pushLedger(ledger, s, "claim_pass_free", "generalCards", r.generalCards, `pass-free:${level}`);
+	return {
+		save: {
+			...s,
+			gold: s.gold + r.gold,
+			bread: s.bread + r.bread,
+			troopCards: s.troopCards + r.troopCards,
+			generalCards: s.generalCards + r.generalCards,
+			pass: {
+				...s.pass,
+				claimedFree: [...claimedFree, level]
+			}
+		},
+		ledger,
+		toast: `Trilha grátis Nv.${level}: ${r.label}`
+	};
+}
+function claimPassExtraSim(s, extra, now = Date.now()) {
+	if (!s.pass.purchased) throw new GameError("Compre o passe primeiro.");
+	if (Math.min(50, Math.floor(s.pass.stars / 6)) < 50 && !s.pass.claimed.includes(50)) throw new GameError("Chega ao nível 50 do passe pago para resgatar os cupons.");
+	const extras = s.pass.extrasClaimed ?? [];
+	if (extras.includes(extra)) throw new GameError("Este cupom já foi resgatado.");
+	if (extra === "boost") return {
+		save: {
+			...s,
+			boostUntil: now + PASS_BOOST_MS,
+			pass: {
+				...s.pass,
+				extrasClaimed: [...extras, "boost"]
+			}
+		},
+		ledger: [],
+		toast: "Boost +40% em minas e fazendas por 30 dias. Já está ativo."
+	};
+	return {
+		save: {
+			...s,
+			passDiscount: true,
+			pass: {
+				...s.pass,
+				extrasClaimed: [...extras, "discount"]
+			}
+		},
+		ledger: [],
+		toast: "Pergaminho de 45% no próximo passe. Usa-o na compra."
 	};
 }
 function skipPassSim(s, now = Date.now()) {
@@ -1821,39 +1903,6 @@ function skipPassSim(s, now = Date.now()) {
 		},
 		ledger,
 		toast: `Nível ${next} comprado: ${r.label}`
-	};
-}
-function foundAllianceSim(s, name) {
-	if (s.alliance) throw new GameError("Já tens aliança.");
-	if (s.gold < 5e6) throw new GameError(`Precisa de 5.000.000 de ${GOLD_NAME_PL}.`);
-	const id = `AL-${s.player.id.slice(4, 8)}`;
-	const ledger = [];
-	pushLedger(ledger, s, "found_alliance", "gold", -5e6, id);
-	return {
-		save: {
-			...s,
-			gold: s.gold - ALLIANCE_FOUND_GOLD,
-			alliance: {
-				id,
-				name: name.trim().slice(0, 22) || "Aliança do Condado",
-				members: [
-					{
-						id: s.player.id,
-						nick: s.player.nick
-					},
-					{
-						id: "CDN-ALDRIC",
-						nick: "Sir Aldric"
-					},
-					{
-						id: "CDN-ISOLDE",
-						nick: "Dama Isolde"
-					}
-				]
-			}
-		},
-		ledger,
-		toast: "Aliança fundada. Chat liberado."
 	};
 }
 function grantReferralSim(s) {
@@ -1892,7 +1941,8 @@ function applyWeeklyPrize(s, rank) {
 function applyRaidFinish(s, input) {
 	const now = input.now ?? Date.now();
 	const stars = Math.max(0, Math.min(3, Math.floor(input.stars)));
-	const goldTaken = Math.max(0, Math.min(lootForStars(stars), LOOT_CAP, Math.floor(input.goldTaken)));
+	const lv = Math.max(1, input.defenderLevel ?? s.countyLevel);
+	const goldTaken = Math.max(0, Math.min(lootForStars(stars, lv), Math.floor(input.goldTaken)));
 	const army = {
 		infantry: clampSurvivor("infantry", input.survivors, input.startedArmy),
 		archers: clampSurvivor("archers", input.survivors, input.startedArmy),
@@ -1906,10 +1956,10 @@ function applyRaidFinish(s, input) {
 	if (win.open) weekStars += stars;
 	const ledger = [];
 	if (goldTaken) pushLedger(ledger, s, "raid_loot", "gold", goldTaken, input.defenderNick);
-	const pass = s.pass.purchased ? {
+	const pass = {
 		...s.pass,
 		stars: s.pass.stars + stars
-	} : s.pass;
+	};
 	return {
 		save: {
 			...s,
@@ -1999,8 +2049,32 @@ const RATE = {
 	sendChat: {
 		n: 8,
 		windowMs: 1e4
+	},
+	foundAlliance: {
+		n: 3,
+		windowMs: 6e4
+	},
+	joinAlliance: {
+		n: 6,
+		windowMs: 6e4
+	},
+	startAllianceDuel: {
+		n: 6,
+		windowMs: 6e4
 	}
 };
+const FAST_ACTIONS = /* @__PURE__ */ new Set([
+	"collect",
+	"collectAll",
+	"train",
+	"upgrade",
+	"placeBuilding",
+	"speedTrain",
+	"rotateWall",
+	"demolish",
+	"upgradeType",
+	"upgradeWallRow"
+]);
 function db() {
 	return getAdminFirestore();
 }
@@ -2228,7 +2302,8 @@ const READ_ONLY = /* @__PURE__ */ new Set([
 	"listTransfers",
 	"peekPlayer",
 	"listRaidTargets",
-	"adminLookup"
+	"adminLookup",
+	"listAllianceFoes"
 ]);
 async function handleGameAction(player, action, payload, requestId) {
 	if (!requestId || requestId.length < 8 || requestId.length > 80) throw new GameError("Pedido inválido.");
@@ -2242,13 +2317,14 @@ async function handleGameAction(player, action, payload, requestId) {
 			const patch = ratePatch((await tx.get(rateRef)).data(), action);
 			const out = await dispatch(tx, player, action, payload, requestId);
 			tx.set(rateRef, patch, { merge: true });
+			const stored = FAST_ACTIONS.has(action) ? slimResult(out) : out;
 			tx.set(reqRef, toFirestore({
-				result: out,
+				result: stored,
 				action,
 				userId: player.uid,
 				at: (/* @__PURE__ */ new Date()).toISOString()
 			}));
-			writeAudit(tx, player.uid, action, requestId, true);
+			if (!FAST_ACTIONS.has(action)) writeAudit(tx, player.uid, action, requestId, true);
 			return out;
 		});
 	} catch (error) {
@@ -2275,22 +2351,22 @@ async function dispatch(tx, player, action, payload, requestId) {
 		case "sync":
 		case "pull": return syncProfile(write(), player, requestId);
 		case "rename": return rename(write(), player, String(payload.nick ?? ""), requestId);
-		case "placeBuilding": return mutate(write(), player, requestId, (p) => placeBuilding(withoutMeta(p), {
+		case "collect": return mutateFast(write(), player, requestId, (p) => collectBuilding(withoutMeta(p), String(payload.id ?? "")));
+		case "collectAll": return mutateFast(write(), player, requestId, (p) => collectAllBuildings(withoutMeta(p)));
+		case "upgrade": return mutateFast(write(), player, requestId, (p) => upgradeBuilding(withoutMeta(p), String(payload.id ?? "")));
+		case "upgradeType": return mutateFast(write(), player, requestId, (p) => upgradeAllOfType(withoutMeta(p), payload.type));
+		case "upgradeWallRow": return mutateFast(write(), player, requestId, (p) => upgradeWallRowSim(withoutMeta(p), String(payload.id ?? "")));
+		case "demolish": return mutateFast(write(), player, requestId, (p) => demolishBuilding(withoutMeta(p), String(payload.id ?? "")));
+		case "rotateWall": return mutateFast(write(), player, requestId, (p) => rotateWalls(withoutMeta(p), String(payload.id ?? ""), Array.isArray(payload.rowIds) ? payload.rowIds.map(String) : void 0));
+		case "train": return mutateFast(write(), player, requestId, (p) => trainTroop(withoutMeta(p), payload.type));
+		case "speedTrain": return mutateFast(write(), player, requestId, (p) => speedTrainJob(withoutMeta(p), String(payload.id ?? "")));
+		case "placeBuilding": return mutateFast(write(), player, requestId, (p) => placeBuilding(withoutMeta(p), {
 			type: payload.type,
 			gx: Number(payload.gx),
 			gy: Number(payload.gy),
 			dir: payload.dir,
 			movingId: typeof payload.movingId === "string" ? payload.movingId : null
 		}));
-		case "collect": return mutate(write(), player, requestId, (p) => collectBuilding(withoutMeta(p), String(payload.id ?? "")));
-		case "collectAll": return mutate(write(), player, requestId, (p) => collectAllBuildings(withoutMeta(p)));
-		case "upgrade": return mutate(write(), player, requestId, (p) => upgradeBuilding(withoutMeta(p), String(payload.id ?? "")));
-		case "upgradeType": return mutate(write(), player, requestId, (p) => upgradeAllOfType(withoutMeta(p), payload.type));
-		case "upgradeWallRow": return mutate(write(), player, requestId, (p) => upgradeWallRowSim(withoutMeta(p), String(payload.id ?? "")));
-		case "demolish": return mutate(write(), player, requestId, (p) => demolishBuilding(withoutMeta(p), String(payload.id ?? "")));
-		case "rotateWall": return mutate(write(), player, requestId, (p) => rotateWalls(withoutMeta(p), String(payload.id ?? ""), Array.isArray(payload.rowIds) ? payload.rowIds.map(String) : void 0));
-		case "train": return mutate(write(), player, requestId, (p) => trainTroop(withoutMeta(p), payload.type));
-		case "speedTrain": return mutate(write(), player, requestId, (p) => speedTrainJob(withoutMeta(p), String(payload.id ?? "")));
 		case "buyNien": return mutate(write(), player, requestId, (p) => buyNienSim(withoutMeta(p)));
 		case "sellNien": return mutate(write(), player, requestId, (p) => sellNienSim(withoutMeta(p)));
 		case "buyBreadPack": return mutate(write(), player, requestId, (p) => buyBreadPackSim(withoutMeta(p)));
@@ -2300,8 +2376,16 @@ async function dispatch(tx, player, action, payload, requestId) {
 		case "upgradeCamp": return mutate(write(), player, requestId, (p) => upgradeCampSim(withoutMeta(p)));
 		case "buyPass": return mutate(write(), player, requestId, (p) => buyPassSim(withoutMeta(p)));
 		case "claimPass": return mutate(write(), player, requestId, (p) => claimPassSim(withoutMeta(p), Number(payload.level)));
+		case "claimFreePass": return mutate(write(), player, requestId, (p) => claimFreePassSim(withoutMeta(p), Number(payload.level)));
+		case "claimPassExtra": return mutate(write(), player, requestId, (p) => claimPassExtraSim(withoutMeta(p), payload.extra === "discount" ? "discount" : "boost"));
 		case "skipPass": return mutate(write(), player, requestId, (p) => skipPassSim(withoutMeta(p)));
-		case "foundAlliance": return mutate(write(), player, requestId, (p) => foundAllianceSim(withoutMeta(p), String(payload.name ?? "")));
+		case "foundAlliance": return foundAllianceAction(write(), player, payload, requestId);
+		case "joinAlliance": return joinAllianceAction(write(), player, String(payload.allianceId ?? ""), requestId);
+		case "leaveAlliance": return leaveAllianceAction(write(), player, requestId);
+		case "recruitAlliance": return recruitAllianceAction(write(), player, requestId);
+		case "listAllianceFoes": return listAllianceFoesAction(player);
+		case "startAllianceDuel": return startAllianceDuelAction(write(), player, String(payload.targetId ?? ""), requestId);
+		case "finishAllianceDuel": return finishAllianceDuelAction(write(), player, payload, requestId);
 		case "sendAllianceChat": return sendAlliance(write(), player, String(payload.text ?? ""), requestId);
 		case "setPrefs": return setPrefs(write(), player, payload, requestId);
 		case "transfer": return transferAction(write(), player, payload, requestId);
@@ -2337,6 +2421,48 @@ async function mutate(tx, player, requestId, fn) {
 	return {
 		save: withoutMeta(profile),
 		toast: r.toast
+	};
+}
+async function prepareFast(tx, uid) {
+	const base = settled(await loadProfile(tx, uid));
+	return {
+		profile: base.profile,
+		ledger: base.ledger,
+		creditRefs: []
+	};
+}
+async function mutateFast(tx, player, requestId, fn) {
+	const prep = await prepareFast(tx, player.uid);
+	const r = fn(prep.profile);
+	const profile = {
+		...prep.profile,
+		...r.save,
+		userId: player.uid,
+		appliedTransferIds: prep.profile.appliedTransferIds,
+		appliedRaidIds: prep.profile.appliedRaidIds,
+		accountEmail: prep.profile.accountEmail
+	};
+	writeProfile(tx, profileRef(player.uid), profile);
+	writeLedger(tx, player.uid, profile.player.id, requestId, [...prep.ledger, ...r.ledger ?? []]);
+	return {
+		save: slimSave(withoutMeta(profile)),
+		toast: r.toast
+	};
+}
+function slimSave(s) {
+	return {
+		...s,
+		chat: [],
+		allianceChat: [],
+		ledger: [],
+		raids: s.raids.slice(-6)
+	};
+}
+function slimResult(out) {
+	if (!out.save) return { toast: out.toast };
+	return {
+		save: slimSave(out.save),
+		toast: out.toast
 	};
 }
 async function createProfile(tx, player, payload, requestId) {
@@ -2405,9 +2531,45 @@ async function syncProfile(tx, player, requestId) {
 		admin: isAdmin(player.email)
 	};
 	const prep = await preparePlayer(tx, player.uid);
-	commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
+	let profile = prep.profile;
+	const extra = [];
+	if (profile.alliance) {
+		const asnap = await tx.get(allianceRef(profile.alliance.id));
+		if (asnap.exists) {
+			let a = allianceFromDoc(asnap.id, asnap.data());
+			const payout = await readAlliancePayout(tx, a);
+			a = payout.next;
+			const mine = payout.rows.find((row) => row.uid === player.uid);
+			if (mine) {
+				extra.push(...mine.ledger);
+				profile = {
+					...profile,
+					gold: mine.profile.gold
+				};
+			}
+			if (payout.settled) {
+				writeAlliancePayout(tx, payout.rows, requestId, player.uid);
+				tx.set(allianceRef(a.id), {
+					resolved: true,
+					xp: a.xp,
+					level: a.level,
+					warDay: a.warDay
+				}, { merge: true });
+			}
+			profile = {
+				...profile,
+				alliance: allianceStateOf(a),
+				war: warFromAlliance(a),
+				allianceChat: a.chat.map((m) => ({
+					...m,
+					self: m.fromId === profile.player.id
+				}))
+			};
+		}
+	}
+	commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...extra], prep.creditRefs);
 	return {
-		save: withoutMeta(prep.profile),
+		save: withoutMeta(profile),
 		admin: isAdmin(player.email)
 	};
 }
@@ -2497,28 +2659,6 @@ async function setPrefs(tx, player, payload, requestId) {
 	const profile = {
 		...p,
 		muted: Boolean(payload.muted ?? p.muted)
-	};
-	writeProfile(tx, profileRef(player.uid), profile);
-	writeLedger(tx, player.uid, profile.player.id, requestId, []);
-	return { save: withoutMeta(profile) };
-}
-async function sendAlliance(tx, player, textRaw, requestId) {
-	const text = textRaw.trim().slice(0, 160);
-	if (!text) throw new GameError("Mensagem vazia.");
-	const p = await loadProfile(tx, player.uid);
-	if (!p.alliance) throw new GameError("Sem aliança.");
-	const msg = {
-		id: makeId("m"),
-		fromId: p.player.id,
-		fromNick: p.player.nick,
-		text,
-		at: Date.now(),
-		self: true,
-		channel: "alliance"
-	};
-	const profile = {
-		...p,
-		allianceChat: [...p.allianceChat, msg].slice(-40)
 	};
 	writeProfile(tx, profileRef(player.uid), profile);
 	writeLedger(tx, player.uid, profile.player.id, requestId, []);
@@ -2826,7 +2966,7 @@ async function listTargetsAction(player) {
 				nick: String(data.nick ?? "Senhor"),
 				title: `Condado Nv.${level}`,
 				rank: level,
-				lootGold: Math.min(8400, Number(data.gold ?? 0)),
+				lootGold: Math.min(lootCapForCounty(level), Number(data.gold ?? 0)),
 				lootBread: 0,
 				countyLevel: level,
 				real: true,
@@ -2855,7 +2995,7 @@ async function startRaidAction(tx, player, targetId, requestId) {
 		...me,
 		...registerAttack(withoutMeta(me), dest.player.id, warOn)
 	};
-	const lootGold = Math.min(lootForStars(3), Math.max(0, dest.gold));
+	const lootGold = Math.min(lootForStars(3, dest.countyLevel), Math.max(0, dest.gold));
 	const sessionId = makeId("RD");
 	commitPrepared(tx, player.uid, me, requestId, prep.ledger, prep.creditRefs);
 	tx.set(col("condado_raid_sessions").doc(sessionId), {
@@ -2865,6 +3005,7 @@ async function startRaidAction(tx, player, targetId, requestId) {
 		defenderNick: dest.player.nick,
 		startedArmy: me.army,
 		lootCap: lootGold,
+		defenderLevel: dest.countyLevel,
 		buildings: dest.buildings,
 		createdAt: Date.now(),
 		open: true
@@ -2886,7 +3027,8 @@ async function finishRaidAction(tx, player, payload, requestId) {
 	if (session.attackerUid !== player.uid) throw new GameError("Ataque inválido.");
 	if (!session.open) throw new GameError("Este ataque já foi resolvido.");
 	const stars = Math.max(0, Math.min(3, Math.floor(Number(payload.stars ?? 0))));
-	const goldTaken = Math.min(Number(session.lootCap ?? 0), lootForStars(stars));
+	const defLevel = Number(session.defenderLevel ?? 1);
+	const goldTaken = Math.min(Number(session.lootCap ?? 0), lootForStars(stars, defLevel));
 	const survivors = payload.survivors ?? {};
 	const startedArmy = session.startedArmy;
 	const prep = await preparePlayer(tx, player.uid);
@@ -2897,7 +3039,8 @@ async function finishRaidAction(tx, player, payload, requestId) {
 		survivors,
 		startedArmy,
 		goldTaken,
-		defenderNick: String(session.defenderNick ?? "Senhor")
+		defenderNick: String(session.defenderNick ?? "Senhor"),
+		defenderLevel: defLevel
 	});
 	const me = {
 		...prep.profile,
@@ -3026,6 +3169,633 @@ async function adminLookup(player, playerIdRaw) {
 		weekStars: p.weekStars,
 		ledger: rows
 	} };
+}
+function allianceRef(id) {
+	return col("condado_alliances").doc(id);
+}
+function allianceFromDoc(id, data) {
+	return {
+		id,
+		name: String(data.name ?? "Aliança"),
+		leaderId: String(data.leaderId ?? ""),
+		leaderUid: String(data.leaderUid ?? ""),
+		minLevel: Number(data.minLevel ?? 3) === 5 ? 5 : 3,
+		level: Math.max(1, Number(data.level ?? 1)),
+		xp: Math.max(0, Number(data.xp ?? 0)),
+		members: Array.isArray(data.members) ? data.members.map((m) => ({
+			id: String(m.id ?? ""),
+			nick: String(m.nick ?? "Senhor"),
+			uid: String(m.uid ?? "")
+		})) : [],
+		chat: Array.isArray(data.chat) ? data.chat.slice(-40) : [],
+		warDay: String(data.warDay ?? ""),
+		foeId: data.foeId ?? null,
+		foeName: String(data.foeName ?? ""),
+		ourPoints: Number(data.ourPoints ?? 0),
+		theirPoints: Number(data.theirPoints ?? 0),
+		participants: Array.isArray(data.participants) ? data.participants.map(String) : [],
+		sittingOut: !!data.sittingOut,
+		resolved: !!data.resolved
+	};
+}
+function allianceStateOf(a) {
+	return {
+		id: a.id,
+		name: a.name,
+		members: a.members.map((m) => ({
+			id: m.id,
+			nick: m.nick,
+			uid: m.uid
+		})),
+		minLevel: a.minLevel,
+		level: a.level,
+		xp: a.xp,
+		leaderId: a.leaderId,
+		slots: allianceSlots(a.level)
+	};
+}
+function warFromAlliance(a) {
+	return {
+		week: a.warDay,
+		foeId: a.foeId,
+		foeName: a.foeName,
+		chest: ALLIANCE_WAR_CHEST,
+		ourStars: a.ourPoints,
+		theirStars: a.theirPoints,
+		attacks: {},
+		sittingOut: a.sittingOut,
+		resolved: a.resolved,
+		participants: a.participants
+	};
+}
+async function readAlliancePayout(tx, a) {
+	const win = warWindow();
+	if (!a.warDay || a.warDay === win.key || a.resolved) return {
+		next: a,
+		rows: [],
+		settled: false
+	};
+	const won = !a.sittingOut && a.ourPoints > a.theirPoints;
+	let xp = a.xp;
+	let level = a.level;
+	if (won) {
+		const grown = applyAllianceXp(a.level, a.xp, 1e3);
+		xp = grown.xp;
+		level = grown.level;
+	}
+	const rows = [];
+	const parts = a.participants.filter(Boolean);
+	const share = won && parts.length ? Math.floor(ALLIANCE_WAR_CHEST / parts.length) : 0;
+	if (share) for (const pid of parts) {
+		const member = a.members.find((m) => m.id === pid);
+		let uid = member?.uid ? String(member.uid) : "";
+		if (!uid) {
+			const idx = await tx.get(col("condado_player_index").doc(pid));
+			uid = idx.exists ? String(idx.data()?.userId ?? "") : "";
+		}
+		if (!uid) continue;
+		const snap = await tx.get(profileRef(uid));
+		if (!snap.exists) continue;
+		const p = profileFromDoc(uid, snap.data());
+		rows.push({
+			uid,
+			profile: {
+				...p,
+				gold: p.gold + share
+			},
+			ledger: [{
+				type: "alliance_war_chest",
+				currency: "gold",
+				amount: share,
+				balanceBefore: p.gold,
+				balanceAfter: p.gold + share,
+				source: a.id
+			}],
+			share
+		});
+	}
+	return {
+		next: {
+			...a,
+			xp,
+			level,
+			resolved: true
+		},
+		rows,
+		settled: true
+	};
+}
+function writeAlliancePayout(tx, rows, requestId, exceptUid) {
+	for (const row of rows) {
+		if (exceptUid && row.uid === exceptUid) continue;
+		writeProfile(tx, profileRef(row.uid), row.profile);
+		writeLedger(tx, row.uid, row.profile.player.id, requestId, row.ledger);
+	}
+}
+async function foundAllianceAction(tx, player, payload, requestId) {
+	const name = String(payload.name ?? "").trim().replace(/\s+/g, " ").slice(0, 22);
+	if (name.length < 3) throw new GameError("O nome da aliança precisa de ao menos 3 letras.");
+	const minLevel = Number(payload.minLevel) === 5 ? 5 : 3;
+	const prep = await preparePlayer(tx, player.uid);
+	if (prep.profile.alliance) throw new GameError("Já tens aliança.");
+	if (prep.profile.gold < 5e6) throw new GameError(`Precisa de 5.000.000 de Libras.`);
+	const nameRef = col("condado_alliance_names").doc(name.toLowerCase());
+	if ((await tx.get(nameRef)).exists) throw new GameError("Este nome de aliança já está em uso.");
+	const id = makeId("AL");
+	const aref = allianceRef(id);
+	const member = {
+		id: prep.profile.player.id,
+		nick: prep.profile.player.nick,
+		uid: player.uid
+	};
+	const doc = {
+		id,
+		name,
+		leaderId: prep.profile.player.id,
+		leaderUid: player.uid,
+		minLevel,
+		level: 1,
+		xp: 0,
+		members: [member],
+		chat: [],
+		warDay: "",
+		foeId: null,
+		foeName: "",
+		ourPoints: 0,
+		theirPoints: 0,
+		participants: [],
+		sittingOut: false,
+		resolved: true
+	};
+	const gold = prep.profile.gold - ALLIANCE_FOUND_GOLD;
+	const profile = {
+		...prep.profile,
+		gold,
+		alliance: allianceStateOf(doc),
+		allianceChat: []
+	};
+	const ledger = [{
+		type: "found_alliance",
+		currency: "gold",
+		amount: -5e6,
+		balanceBefore: prep.profile.gold,
+		balanceAfter: gold,
+		source: id
+	}];
+	commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...ledger], prep.creditRefs);
+	tx.set(nameRef, {
+		allianceId: id,
+		name
+	});
+	tx.set(aref, {
+		...doc,
+		createdAt: (/* @__PURE__ */ new Date()).toISOString()
+	});
+	return {
+		save: withoutMeta(profile),
+		toast: `Aliança ${name} fundada. Entrada a partir do condado ${minLevel}.`
+	};
+}
+async function joinAllianceAction(tx, player, allianceIdRaw, requestId) {
+	const allianceId = allianceIdRaw.trim();
+	if (!allianceId) throw new GameError("Aliança inválida.");
+	const prep = await preparePlayer(tx, player.uid);
+	if (prep.profile.alliance) throw new GameError("Já tens aliança.");
+	const aref = allianceRef(allianceId);
+	const asnap = await tx.get(aref);
+	if (!asnap.exists) throw new GameError("Aliança não encontrada.");
+	const a = allianceFromDoc(allianceId, asnap.data());
+	if (prep.profile.countyLevel < a.minLevel) throw new GameError(`Esta aliança pede condado nível ${a.minLevel}.`);
+	if (a.members.length >= allianceSlots(a.level)) throw new GameError("Aliança lotada.");
+	if (a.members.some((m) => m.id === prep.profile.player.id)) throw new GameError("Já estás nesta aliança.");
+	a.members.push({
+		id: prep.profile.player.id,
+		nick: prep.profile.player.nick,
+		uid: player.uid
+	});
+	const profile = {
+		...prep.profile,
+		alliance: allianceStateOf(a),
+		allianceChat: a.chat,
+		war: warFromAlliance(a)
+	};
+	commitPrepared(tx, player.uid, profile, requestId, prep.ledger, prep.creditRefs);
+	tx.set(aref, { members: a.members }, { merge: true });
+	return {
+		save: withoutMeta(profile),
+		toast: `Entraste em ${a.name}.`
+	};
+}
+async function leaveAllianceAction(tx, player, requestId) {
+	const prep = await preparePlayer(tx, player.uid);
+	if (!prep.profile.alliance) throw new GameError("Sem aliança.");
+	const aref = allianceRef(prep.profile.alliance.id);
+	const asnap = await tx.get(aref);
+	const profile = {
+		...prep.profile,
+		alliance: null,
+		war: null,
+		allianceChat: []
+	};
+	commitPrepared(tx, player.uid, profile, requestId, prep.ledger, prep.creditRefs);
+	if (asnap.exists) {
+		const a = allianceFromDoc(asnap.id, asnap.data());
+		const members = a.members.filter((m) => m.id !== prep.profile.player.id);
+		if (!members.length) {
+			tx.delete(aref);
+			tx.delete(col("condado_alliance_names").doc(a.name.toLowerCase()));
+		} else {
+			const leaderId = a.leaderId === prep.profile.player.id ? members[0].id : a.leaderId;
+			const leaderUid = a.leaderId === prep.profile.player.id ? members[0].uid : a.leaderUid;
+			tx.set(aref, {
+				members,
+				leaderId,
+				leaderUid
+			}, { merge: true });
+		}
+	}
+	return {
+		save: withoutMeta(profile),
+		toast: "Saíste da aliança."
+	};
+}
+async function recruitAllianceAction(tx, player, requestId) {
+	const p = await loadProfile(tx, player.uid);
+	if (!p.alliance) throw new GameError("Sem aliança.");
+	if (p.alliance.leaderId !== p.player.id) throw new GameError("Só o fundador envia recrutamento.");
+	const now = Date.now();
+	tx.set(col("condado_chat").doc(), {
+		fromUserId: player.uid,
+		fromPlayerId: p.player.id,
+		fromId: p.player.id,
+		fromNick: p.player.nick,
+		text: `Recruta: ${p.alliance.name} · condado ${p.alliance.minLevel}+ · ${p.alliance.members.length}/${p.alliance.slots} vagas`,
+		at: now,
+		createdAt: new Date(now).toISOString(),
+		channel: "global",
+		recruitAllianceId: p.alliance.id,
+		recruitMinLevel: p.alliance.minLevel
+	});
+	writeLedger(tx, player.uid, p.player.id, requestId, []);
+	return {
+		save: withoutMeta(p),
+		toast: "Pedido de recrutamento no chat global."
+	};
+}
+async function sendAlliance(tx, player, textRaw, requestId) {
+	const text = textRaw.trim().slice(0, 160);
+	if (!text) throw new GameError("Mensagem vazia.");
+	const p = await loadProfile(tx, player.uid);
+	if (!p.alliance) throw new GameError("Sem aliança.");
+	const aref = allianceRef(p.alliance.id);
+	const asnap = await tx.get(aref);
+	if (!asnap.exists) throw new GameError("Aliança não encontrada.");
+	const a = allianceFromDoc(asnap.id, asnap.data());
+	const msg = {
+		id: makeId("m"),
+		fromId: p.player.id,
+		fromNick: p.player.nick,
+		text,
+		at: Date.now(),
+		self: true,
+		channel: "alliance"
+	};
+	const chat = [...a.chat, {
+		...msg,
+		self: false
+	}].slice(-40);
+	const profile = {
+		...p,
+		allianceChat: [...p.allianceChat, msg].slice(-40),
+		alliance: allianceStateOf({
+			...a,
+			chat
+		})
+	};
+	writeProfile(tx, profileRef(player.uid), profile);
+	tx.set(aref, { chat }, { merge: true });
+	writeLedger(tx, player.uid, p.player.id, requestId, []);
+	return { save: withoutMeta(profile) };
+}
+async function pairAllianceWar(tx, a) {
+	const win = warWindow();
+	const qref = col("condado_war_queue").doc(win.key);
+	const qsnap = await tx.get(qref);
+	const waiting = Array.isArray(qsnap.data()?.waiting) ? qsnap.data().waiting.map(String) : [];
+	if (a.warDay === win.key && !a.resolved) {
+		let foe;
+		if (a.foeId) {
+			const foeSnap = await tx.get(allianceRef(a.foeId));
+			if (foeSnap.exists) foe = allianceFromDoc(foeSnap.id, foeSnap.data());
+		}
+		return {
+			next: a,
+			foe,
+			queueRef: qref,
+			waiting
+		};
+	}
+	const filtered = waiting.filter((id) => id !== a.id);
+	if (!filtered.length) return {
+		next: {
+			...a,
+			warDay: win.key,
+			foeId: null,
+			foeName: "",
+			ourPoints: 0,
+			theirPoints: 0,
+			participants: [],
+			sittingOut: true,
+			resolved: false
+		},
+		queueRef: qref,
+		waiting: [...filtered, a.id]
+	};
+	const foeId = filtered[0];
+	const foeSnap = await tx.get(allianceRef(foeId));
+	if (!foeSnap.exists) return {
+		next: {
+			...a,
+			warDay: win.key,
+			foeId: null,
+			foeName: "",
+			ourPoints: 0,
+			theirPoints: 0,
+			participants: [],
+			sittingOut: true,
+			resolved: false
+		},
+		queueRef: qref,
+		waiting: [...filtered.slice(1), a.id]
+	};
+	const foe = allianceFromDoc(foeId, foeSnap.data());
+	return {
+		next: {
+			...a,
+			warDay: win.key,
+			foeId: foe.id,
+			foeName: foe.name,
+			ourPoints: 0,
+			theirPoints: 0,
+			participants: [],
+			sittingOut: false,
+			resolved: false
+		},
+		foe,
+		queueRef: qref,
+		waiting: filtered.slice(1)
+	};
+}
+async function listAllianceFoesAction(player) {
+	const meSnap = await profileRef(player.uid).get();
+	if (!meSnap.exists) return { foes: [] };
+	const me = profileFromDoc(player.uid, meSnap.data());
+	if (!me.alliance) return { foes: [] };
+	const aSnap = await allianceRef(me.alliance.id).get();
+	if (!aSnap.exists) return { foes: [] };
+	const a = allianceFromDoc(aSnap.id, aSnap.data());
+	if (!a.foeId || a.sittingOut) return {
+		foes: [],
+		save: {
+			...withoutMeta(me),
+			alliance: allianceStateOf(a),
+			war: warFromAlliance(a)
+		}
+	};
+	const foeSnap = await allianceRef(a.foeId).get();
+	if (!foeSnap.exists) return { foes: [] };
+	const foe = allianceFromDoc(foeSnap.id, foeSnap.data());
+	const foes = [];
+	for (const m of foe.members) {
+		if (!m.uid) continue;
+		const ps = await profileRef(m.uid).get();
+		const level = ps.exists ? Number(ps.data()?.countyLevel ?? 1) : 1;
+		foes.push({
+			id: m.id,
+			nick: m.nick,
+			title: `Aliança ${foe.name}`,
+			rank: level,
+			lootGold: 0,
+			lootBread: 0,
+			allianceId: foe.id,
+			countyLevel: level,
+			real: true
+		});
+	}
+	return {
+		foes,
+		save: {
+			...withoutMeta(me),
+			alliance: allianceStateOf(a),
+			war: warFromAlliance(a),
+			allianceChat: a.chat
+		}
+	};
+}
+async function startAllianceDuelAction(tx, player, targetId, requestId) {
+	const prep = await preparePlayer(tx, player.uid);
+	if (!prep.profile.alliance) throw new GameError("Sem aliança.");
+	if (prep.profile.army.infantry + prep.profile.army.archers + prep.profile.army.cavalry + prep.profile.army.general + prep.profile.army.generaless + prep.profile.army.defender <= 0) throw new GameError("Sem tropas no acampamento.");
+	const aref = allianceRef(prep.profile.alliance.id);
+	const asnap = await tx.get(aref);
+	if (!asnap.exists) throw new GameError("Aliança não encontrada.");
+	let a = allianceFromDoc(asnap.id, asnap.data());
+	const win = warWindow();
+	const payout = await readAlliancePayout(tx, a);
+	a = payout.next;
+	const mine = payout.rows.find((row) => row.uid === player.uid);
+	let baseProfile = mine ? {
+		...prep.profile,
+		gold: mine.profile.gold
+	} : prep.profile;
+	const extraLedger = mine ? mine.ledger : [];
+	const paired = await pairAllianceWar(tx, a);
+	a = paired.next;
+	const idx = await tx.get(col("condado_player_index").doc(targetId));
+	if (!idx.exists) throw new GameError("Alvo não encontrado.");
+	const toUid = String(idx.data()?.userId ?? "");
+	const destSnap = await tx.get(profileRef(toUid));
+	if (!destSnap.exists) throw new GameError("Alvo não encontrado.");
+	const dest = profileFromDoc(toUid, destSnap.data());
+	if (payout.settled) writeAlliancePayout(tx, payout.rows, requestId, player.uid);
+	if (a.sittingOut || !a.foeId) {
+		tx.set(paired.queueRef, {
+			waiting: paired.waiting,
+			day: win.key
+		}, { merge: true });
+		tx.set(aref, {
+			warDay: a.warDay,
+			foeId: a.foeId,
+			foeName: a.foeName,
+			ourPoints: a.ourPoints,
+			theirPoints: a.theirPoints,
+			participants: a.participants,
+			sittingOut: a.sittingOut,
+			resolved: a.resolved,
+			xp: a.xp,
+			level: a.level
+		}, { merge: true });
+		const waitingProfile = {
+			...baseProfile,
+			alliance: allianceStateOf(a),
+			war: warFromAlliance(a)
+		};
+		commitPrepared(tx, player.uid, waitingProfile, requestId, [...prep.ledger, ...extraLedger], prep.creditRefs);
+		return {
+			save: withoutMeta(waitingProfile),
+			toast: "À espera de um rival para a guerra de hoje. Tenta de novo em instantes."
+		};
+	}
+	if (dest.alliance?.id !== a.foeId) throw new GameError("Este senhor não está na aliança rival.");
+	const used = baseProfile.war?.attacks[dest.player.id] ?? 0;
+	if (used >= 2) throw new GameError("No máximo 2 duelos por rival neste dia.");
+	const sessionId = makeId("AW");
+	const war = {
+		...warFromAlliance(a),
+		attacks: {
+			...baseProfile.war?.attacks ?? {},
+			[dest.player.id]: used + 1
+		}
+	};
+	const profile = {
+		...baseProfile,
+		alliance: allianceStateOf(a),
+		war
+	};
+	tx.set(paired.queueRef, {
+		waiting: paired.waiting,
+		day: win.key
+	}, { merge: true });
+	tx.set(aref, {
+		warDay: a.warDay,
+		foeId: a.foeId,
+		foeName: a.foeName,
+		ourPoints: a.ourPoints,
+		theirPoints: a.theirPoints,
+		participants: a.participants,
+		sittingOut: false,
+		resolved: false,
+		xp: a.xp,
+		level: a.level
+	}, { merge: true });
+	if (paired.foe) tx.set(allianceRef(paired.foe.id), {
+		warDay: win.key,
+		foeId: a.id,
+		foeName: a.name,
+		sittingOut: false,
+		resolved: false
+	}, { merge: true });
+	commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...extraLedger], prep.creditRefs);
+	tx.set(col("condado_raid_sessions").doc(sessionId), {
+		kind: "alliance",
+		attackerUid: player.uid,
+		defenderUid: toUid,
+		defenderId: dest.player.id,
+		defenderNick: dest.player.nick,
+		allianceId: a.id,
+		foeAllianceId: a.foeId,
+		startedArmy: prep.profile.army,
+		foeArmy: dest.army,
+		foeLevels: dest.troopLevels,
+		foeCamp: dest.campLevel,
+		createdAt: Date.now(),
+		open: true
+	});
+	return {
+		save: withoutMeta(profile),
+		sessionId,
+		nick: dest.player.nick,
+		foeArmy: dest.army,
+		foeLevels: dest.troopLevels,
+		foeCamp: dest.campLevel
+	};
+}
+async function finishAllianceDuelAction(tx, player, payload, requestId) {
+	const sessionId = String(payload.sessionId ?? "");
+	const sessionRef = col("condado_raid_sessions").doc(sessionId);
+	const sessionSnap = await tx.get(sessionRef);
+	if (!sessionSnap.exists) throw new GameError("Duelo inválido.");
+	const session = sessionSnap.data();
+	if (session.attackerUid !== player.uid || session.kind !== "alliance") throw new GameError("Duelo inválido.");
+	if (!session.open) throw new GameError("Este duelo já foi resolvido.");
+	const won = Boolean(payload.won);
+	const retreated = Boolean(payload.retreated);
+	const prep = await preparePlayer(tx, player.uid);
+	const aref = allianceRef(String(session.allianceId));
+	const asnap = await tx.get(aref);
+	const foeRef = allianceRef(String(session.foeAllianceId));
+	const foeSnap = await tx.get(foeRef);
+	const bonus = won && !retreated ? duelGold(sessionId) : 0;
+	const ourAdd = won && !retreated ? 3 : 1;
+	const theirAdd = won && !retreated ? 1 : 3;
+	let a = asnap.exists ? allianceFromDoc(asnap.id, asnap.data()) : null;
+	if (a) {
+		const participants = a.participants.includes(prep.profile.player.id) ? a.participants : [...a.participants, prep.profile.player.id];
+		a = {
+			...a,
+			ourPoints: a.ourPoints + ourAdd,
+			theirPoints: a.theirPoints + theirAdd,
+			participants
+		};
+		tx.set(aref, {
+			ourPoints: a.ourPoints,
+			theirPoints: a.theirPoints,
+			participants
+		}, { merge: true });
+	}
+	if (foeSnap.exists) {
+		const foe = allianceFromDoc(foeSnap.id, foeSnap.data());
+		tx.set(foeRef, {
+			ourPoints: foe.ourPoints + theirAdd,
+			theirPoints: foe.theirPoints + ourAdd
+		}, { merge: true });
+	}
+	const startedArmy = session.startedArmy;
+	const survivors = payload.survivors ?? {};
+	const army = {
+		infantry: prep.profile.army.infantry - (startedArmy.infantry ?? 0) + Math.min(startedArmy.infantry ?? 0, Math.max(0, survivors.infantry ?? 0)),
+		archers: prep.profile.army.archers - (startedArmy.archers ?? 0) + Math.min(startedArmy.archers ?? 0, Math.max(0, survivors.archers ?? 0)),
+		cavalry: prep.profile.army.cavalry - (startedArmy.cavalry ?? 0) + Math.min(startedArmy.cavalry ?? 0, Math.max(0, survivors.cavalry ?? 0)),
+		general: Math.min(1, prep.profile.army.general - (startedArmy.general ?? 0) + Math.min(startedArmy.general ?? 0, Math.max(0, survivors.general ?? 0))),
+		generaless: Math.min(1, prep.profile.army.generaless - (startedArmy.generaless ?? 0) + Math.min(startedArmy.generaless ?? 0, Math.max(0, survivors.generaless ?? 0))),
+		defender: prep.profile.army.defender - (startedArmy.defender ?? 0) + Math.min(startedArmy.defender ?? 0, Math.max(0, survivors.defender ?? 0))
+	};
+	const ledger = [];
+	if (bonus) ledger.push({
+		type: "alliance_duel",
+		currency: "gold",
+		amount: bonus,
+		balanceBefore: prep.profile.gold,
+		balanceAfter: prep.profile.gold + bonus,
+		source: String(session.defenderNick ?? "duelo")
+	});
+	const used = Math.max(prep.profile.war?.attacks[String(session.defenderId)] ?? 0, 1);
+	const profile = {
+		...prep.profile,
+		army,
+		gold: prep.profile.gold + bonus,
+		alliance: a ? allianceStateOf(a) : prep.profile.alliance,
+		war: a ? {
+			...warFromAlliance(a),
+			attacks: {
+				...prep.profile.war?.attacks ?? {},
+				[String(session.defenderId)]: used
+			}
+		} : prep.profile.war
+	};
+	commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...ledger], prep.creditRefs);
+	tx.set(sessionRef, {
+		open: false,
+		won,
+		bonus,
+		resolvedAt: Date.now()
+	}, { merge: true });
+	const toast = won && !retreated ? `Vitória no campo. +3 pontos e ${bonus.toLocaleString("pt")} Libras.` : "Duelo encerrado. +1 ponto para o rival.";
+	return {
+		save: withoutMeta(profile),
+		toast,
+		duelGold: bonus
+	};
 }
 //#endregion
 //#region src/lib/game/server/http.server.ts

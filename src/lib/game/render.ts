@@ -35,7 +35,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
 
   const cam: Cam = { x: 0, y: 0, z: 0.72 };
   const home = useGame.getState().buildings.find((b) => b.type === "castle");
-  const castle = tileCenter(home?.gx ?? 14, home?.gy ?? 14, 3);
+  const castle = tileCenter(home?.gx ?? 20, home?.gy ?? 20, 3);
   cam.x = castle.x;
   cam.y = castle.y;
 
@@ -57,6 +57,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
   let dragging = false;
   let moved = 0;
   let hoverG = { gx: 0, gy: 0 };
+  let commanding: { wx: number; wy: number } | null = null;
 
   void loadAssets();
 
@@ -75,6 +76,27 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       x: (sx - w / 2) / cam.z + cam.x,
       y: (sy - h / 2) / cam.z + cam.y,
     };
+  }
+
+  let vis = { x0: 0, y0: 0, x1: GRID, y1: GRID };
+
+  function viewRange() {
+    const pad = 4;
+    const corners = [toWorld(0, 0), toWorld(w, 0), toWorld(0, h), toWorld(w, h)].map((p) =>
+      worldToGrid(p.x, p.y),
+    );
+    const xs = corners.map((c) => c.gx);
+    const ys = corners.map((c) => c.gy);
+    return {
+      x0: Math.max(0, Math.floor(Math.min(...xs) - pad)),
+      y0: Math.max(0, Math.floor(Math.min(...ys) - pad)),
+      x1: Math.min(GRID, Math.ceil(Math.max(...xs) + pad)),
+      y1: Math.min(GRID, Math.ceil(Math.max(...ys) + pad)),
+    };
+  }
+
+  function inView(gx: number, gy: number, size = 1) {
+    return gx + size >= vis.x0 && gx <= vis.x1 && gy + size >= vis.y0 && gy <= vis.y1;
   }
 
   function applyCam() {
@@ -119,6 +141,11 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
     ctx!.fillStyle = "#3d4a30";
     ctx!.fillRect(0, 0, w, h);
 
+    vis = viewRange();
+    reduced =
+      (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) ||
+      s.buildings.length > 90 ||
+      !!(battle && battle.troops.length > 50);
     applyCam();
     drawGround();
     if (s.screen === "village" || s.screen === "prep" || s.screen === "battle" || s.placing)
@@ -151,6 +178,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
 
     const sprites: DrawItem[] = [];
     for (const b of layout) {
+      if (!inView(b.gx, b.gy, BUILDINGS[b.type].size)) continue;
       if (!b.alive && s.screen !== "results") {
         sprites.push({ y: tileCenter(b.gx, b.gy, BUILDINGS[b.type].size).y, kind: "rubble", b });
         continue;
@@ -160,6 +188,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
     if (battle) {
       for (const t of battle.troops) {
         if (!t.alive) continue;
+        if (!inView(t.x, t.y, 1)) continue;
         const p = iso(t.x, t.y);
         sprites.push({ y: p.y, kind: "t", t });
       }
@@ -172,12 +201,13 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
         drawBuilding(it.b, selected, s.screen !== "village", focused);
       }
       if (it.kind === "rubble" && it.b) drawRubble(it.b);
-      if (it.kind === "t" && it.t) drawTroop(it.t);
+      if (it.kind === "t" && it.t) drawTroop(it.t, !!(battle && it.t.id && battle.selected.has(it.t.id)));
     }
 
     if (s.screen === "village") {
       for (const b of s.buildings) {
         if (b.type !== "mine" && b.type !== "farm") continue;
+        if (!inView(b.gx, b.gy, 2)) continue;
         const stored = s.storedOf(b);
         if (stored < COLLECT_READY) continue;
         drawCollectBubble(b, stored);
@@ -187,15 +217,23 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
     if (s.ghost && s.placing) drawGhost(s.ghost.type, s.ghost.gx, s.ghost.gy, s.ghost.valid, s.ghost.dir);
 
     if (battle) {
-      for (const p of battle.projectiles) drawProj(p);
-      for (const p of battle.particles) {
-        const pos = iso(p.x, p.y);
-        ctx!.globalAlpha = Math.max(0, p.life / p.max);
-        ctx!.fillStyle = p.color;
-        ctx!.beginPath();
-        ctx!.arc(pos.x, pos.y - 8, p.size * TILE_W, 0, Math.PI * 2);
-        ctx!.fill();
-        ctx!.globalAlpha = 1;
+      for (const p of battle.projectiles) {
+        if (!inView(p.x, p.y, 1)) continue;
+        drawProj(p);
+      }
+      if (!reduced) {
+        const parts = battle.particles;
+        const n = Math.min(parts.length, 48);
+        for (let i = parts.length - n; i < parts.length; i++) {
+          const p = parts[i]!;
+          const pos = iso(p.x, p.y);
+          ctx!.globalAlpha = Math.max(0, p.life / p.max);
+          ctx!.fillStyle = p.color;
+          ctx!.beginPath();
+          ctx!.arc(pos.x, pos.y - 8, p.size * TILE_W, 0, Math.PI * 2);
+          ctx!.fill();
+          ctx!.globalAlpha = 1;
+        }
       }
       ctx!.font = "700 13px Cinzel, serif";
       ctx!.textAlign = "center";
@@ -205,6 +243,24 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
         ctx!.fillStyle = f.color;
         ctx!.fillText(f.text, pos.x, pos.y);
         ctx!.globalAlpha = 1;
+      }
+      if (commanding && battle.selected.size) {
+        const sel = battle.selected;
+        const from = battle.troops.find((t) => t.alive && sel.has(t.id));
+        if (from) {
+          const a = iso(from.x, from.y);
+          const b = iso(commanding.wx, commanding.wy);
+          ctx!.strokeStyle = "rgba(228,193,90,0.85)";
+          ctx!.lineWidth = 2.4;
+          ctx!.beginPath();
+          ctx!.moveTo(a.x, a.y);
+          ctx!.lineTo(b.x, b.y);
+          ctx!.stroke();
+          ctx!.fillStyle = "rgba(228,193,90,0.9)";
+          ctx!.beginPath();
+          ctx!.arc(b.x, b.y, 6, 0, Math.PI * 2);
+          ctx!.fill();
+        }
       }
     }
 
@@ -225,7 +281,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       alive: boolean;
       dir?: WallDir;
     };
-    t?: { type: TroopType; x: number; y: number; hp: number; maxHp: number; facing: number };
+    t?: { id?: string; type: TroopType; x: number; y: number; hp: number; maxHp: number; facing: number; side?: string };
   };
 
   function drawGround() {
@@ -270,8 +326,8 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
 
   function drawGrid(deploy: boolean) {
     ctx!.lineWidth = 1;
-    for (let y = 0; y < GRID; y++) {
-      for (let x = 0; x < GRID; x++) {
+    for (let y = vis.y0; y < vis.y1; y++) {
+      for (let x = vis.x0; x < vis.x1; x++) {
         const t = iso(x, y);
         const r = iso(x + 1, y);
         const b = iso(x + 1, y + 1);
@@ -298,9 +354,10 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       seed = (seed * 16807) % 2147483647;
       return (seed - 1) / 2147483646;
     };
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 24; i++) {
       const gx = 1 + rnd() * (GRID - 2);
       const gy = 1 + rnd() * (GRID - 2);
+      if (!inView(gx, gy, 1)) continue;
       const p = iso(gx, gy);
       ctx!.fillStyle = i % 3 === 0 ? "rgba(70, 90, 48, 0.55)" : "rgba(90, 78, 58, 0.4)";
       ctx!.beginPath();
@@ -468,17 +525,34 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
     ctx!.fillRect(c.x + 2, c.y - 6, 7, 8);
   }
 
-  function drawTroop(t: { type: TroopType; x: number; y: number; hp: number; maxHp: number; facing: number }) {
+  function drawTroop(
+    t: { type: TroopType; x: number; y: number; hp: number; maxHp: number; facing: number; side?: string },
+    selected = false,
+  ) {
     const p = iso(t.x, t.y);
     const bob = Math.sin(time * 9 + t.x * 3 + t.y) * 2.2;
     const key = troopAsset(t.type);
     const img = getAsset(key);
     const flip = Math.cos(t.facing) < 0;
     ctx!.save();
-    ctx!.fillStyle = "rgba(20,14,8,0.35)";
-    ctx!.beginPath();
-    ctx!.ellipse(p.x, p.y + 5, 11, 5, 0, 0, Math.PI * 2);
-    ctx!.fill();
+    if (selected) {
+      ctx!.strokeStyle = "rgba(228, 193, 90, 0.9)";
+      ctx!.lineWidth = 2;
+      ctx!.beginPath();
+      ctx!.ellipse(p.x, p.y + 6, 14, 7, 0, 0, Math.PI * 2);
+      ctx!.stroke();
+    }
+    if (t.side === "def") {
+      ctx!.fillStyle = "rgba(140,40,30,0.35)";
+      ctx!.beginPath();
+      ctx!.ellipse(p.x, p.y + 5, 12, 6, 0, 0, Math.PI * 2);
+      ctx!.fill();
+    } else {
+      ctx!.fillStyle = "rgba(20,14,8,0.35)";
+      ctx!.beginPath();
+      ctx!.ellipse(p.x, p.y + 5, 11, 5, 0, 0, Math.PI * 2);
+      ctx!.fill();
+    }
     ctx!.translate(p.x, p.y + bob);
     if (flip) ctx!.scale(-1, 1);
     const hgt = t.type === "cavalry" || t.type === "general" || t.type === "generaless" ? 54 : 42;
@@ -493,7 +567,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
     const bw = 18;
     ctx!.fillStyle = "rgba(12,10,8,0.7)";
     ctx!.fillRect(p.x - bw / 2, p.y - 40, bw, 3);
-    ctx!.fillStyle = "#6b8f4a";
+    ctx!.fillStyle = t.side === "def" ? "#a05040" : "#6b8f4a";
     ctx!.fillRect(p.x - bw / 2, p.y - 40, bw * (t.hp / t.maxHp), 3);
   }
 
@@ -628,7 +702,23 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       pinch0 = Math.hypot(pts[0]!.x - pts[1]!.x, pts[0]!.y - pts[1]!.y);
       zoom0 = cam.z;
       dragging = false;
+      commanding = null;
       return;
+    }
+    const st = useGame.getState();
+    if ((st.screen === "prep" || st.screen === "battle") && battle && !battle.spectator) {
+      const rect = canvas.getBoundingClientRect();
+      const world = toWorld(e.clientX - rect.left, e.clientY - rect.top);
+      const g = worldToGrid(world.x, world.y);
+      const hit = battle.pickAt(g.gx, g.gy);
+      if (hit) {
+        battle.selectGroup(hit);
+        commanding = { wx: g.gx, wy: g.gy };
+        dragging = false;
+        moved = 0;
+        st.setToast("Arrasta para enviar o grupo.");
+        return;
+      }
     }
     dragging = true;
     moved = 0;
@@ -652,6 +742,11 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       if (pinch0 > 0) cam.z = Math.min(MAX_Z, Math.max(MIN_Z, zoom0 * (dist / pinch0)));
       return;
     }
+    if (commanding && battle) {
+      commanding = { wx: g.gx, wy: g.gy };
+      moved += Math.abs(e.movementX) + Math.abs(e.movementY);
+      return;
+    }
     if (!dragging) return;
     const dx = e.movementX;
     const dy = e.movementY;
@@ -663,12 +758,24 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
   function onPointerUp(e: PointerEvent) {
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinch0 = 0;
-    if (!dragging) return;
-    dragging = false;
-    if (moved > 12) return;
     const rect = canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
+    if (commanding && battle) {
+      const world = toWorld(sx, sy);
+      const g = worldToGrid(world.x, world.y);
+      if (moved > 10) {
+        battle.commandSelected(g.gx, g.gy);
+        useGame.getState().setToast("Grupo a avançar.");
+      }
+      commanding = null;
+      dragging = false;
+      moved = 0;
+      return;
+    }
+    if (!dragging) return;
+    dragging = false;
+    if (moved > 12) return;
     tap(sx, sy);
   }
 

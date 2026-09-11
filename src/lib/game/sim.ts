@@ -3,7 +3,7 @@ import {
   BREAD_PACK,
   BREAD_PACK_BUY_GOLD,
   BREAD_PACK_SELL_GOLD,
-  BREAD_UPKEEP_PER_TROOP_DAY,
+  BREAD_UPKEEP_PER_TROOP_HOUR,
   BUILDINGS,
   COUNTY_MAX,
   DAILY_ATTACK_CAP,
@@ -11,15 +11,15 @@ import {
   GENERAL_MAX_LEVEL,
   GENERAL_UNLOCK_COUNTY,
   GOLD_NAME_PL,
-  LOOT_BANDS,
-  LOOT_CAP,
   NIEN_COST_GOLD,
   NIEN_SELL_GOLD,
+  PASS_BOOST_MS,
   PASS_LEVELS,
   PASS_STARS_PER_LEVEL,
   REFERRAL_GOLD,
   SPEED_TRAIN_GOLD,
   TROOPS,
+  allianceSlots,
   armyCapacity,
   brtDayKey,
   campUpgradeGold,
@@ -27,10 +27,13 @@ import {
   dailyAttackCap,
   dailyNienSendCap,
   defenderCap,
+  freePassReward,
   generalCardsFor,
   goldWord,
   isHero,
-  passCostNiens,
+  lootCapForCounty,
+  lootForStars,
+  passCostWithDiscount,
   passReward,
   passSeasonKey,
   passWindow,
@@ -43,9 +46,9 @@ import {
   troopUpgradeGold,
   upgradeCost,
   wallCap,
-  warWindow,
   weeklyPrize,
   type BuildingType,
+  type PassExtra,
   type ResourceKind,
   type Tradable,
   type TroopType,
@@ -53,7 +56,6 @@ import {
 } from "./constants";
 import type { ArmyCounts, BuildingInst, SaveState, TrainingJob } from "./types";
 import { canPlace, canPlaceWall, countType, nid, snapPlace, wallRow } from "./world";
-import { pairWar, warChest } from "./bots";
 
 export type LedgerEntry = {
   type: string;
@@ -82,19 +84,14 @@ export function producerKind(t: BuildingType): "gold" | "bread" | null {
   return null;
 }
 
-export function storedAmount(b: BuildingInst, now = Date.now()): number {
+export function storedAmount(b: BuildingInst, now = Date.now(), boosted = false): number {
   if (b.type !== "mine" && b.type !== "farm") return 0;
   const t0 = b.lastCollect ?? now;
   const elapsed = Math.max(0, (now - t0) / 1000);
-  return Math.floor(Math.min(storageCap(b.level), productionPerSec(b.level) * elapsed));
+  return Math.floor(Math.min(storageCap(b.level), productionPerSec(b.level, boosted) * elapsed));
 }
 
-export function lootForStars(stars: number): number {
-  const n = Math.max(0, Math.min(3, Math.floor(stars)));
-  let gold = 0;
-  for (let i = 0; i < n; i++) gold += LOOT_BANDS[i]?.gold ?? 0;
-  return Math.min(LOOT_CAP, gold);
-}
+export { lootForStars, lootCapForCounty };
 
 export function kindField(kind: ResourceKind): keyof Pick<SaveState, "gold" | "bread" | "niens" | "troopCards" | "generalCards"> {
   if (kind === "troopCards") return "troopCards";
@@ -139,45 +136,20 @@ export function settle(s: SaveState, now = Date.now()): { save: SaveState; ledge
   const dtMs = Math.min(8 * 3600_000, Math.max(0, now - (s.lastTick || now)));
   const trained = applyTraining(s, dtMs);
   const season = passSeasonKey(now).key;
-  const pass = s.pass?.season === season ? s.pass : { season, purchased: false, stars: 0, claimed: [] };
+  const pass =
+    s.pass?.season === season
+      ? {
+          season,
+          purchased: !!s.pass.purchased,
+          stars: Number(s.pass.stars ?? 0),
+          claimed: Array.isArray(s.pass.claimed) ? s.pass.claimed : [],
+          claimedFree: Array.isArray(s.pass.claimedFree) ? s.pass.claimedFree : [],
+          extrasClaimed: Array.isArray(s.pass.extrasClaimed) ? s.pass.extrasClaimed : [],
+        }
+      : { season, purchased: false, stars: 0, claimed: [], claimedFree: [], extrasClaimed: [] };
 
-  const win = warWindow(now);
-  const week = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(now));
-
-  let war = s.war;
-  if (win.open && s.alliance) {
-    if (!war || war.week !== week) {
-      const pair = pairWar(s.alliance.id, week);
-      war = {
-        week,
-        foeId: pair.foeId,
-        foeName: pair.foeName,
-        chest: warChest(week + s.alliance.id),
-        ourStars: 0,
-        theirStars: 0,
-        attacks: {},
-        sittingOut: pair.sittingOut,
-        resolved: false,
-      };
-    }
-  }
-
-  let gold = s.gold;
-  if (war && !win.open && !war.resolved) {
-    const won = !war.sittingOut && war.ourStars > war.theirStars;
-    const members = Math.max(1, s.alliance?.members.length ?? 1);
-    const share = won ? Math.floor(war.chest / members) : 0;
-    if (share) {
-      pushLedger(ledger, { ...s, gold }, "war_chest", "gold", share, "war");
-      gold += share;
-    }
-    war = { ...war, resolved: true };
-  }
+  const war = s.war;
+  const gold = s.gold;
 
   const troopsNow =
     trained.army.infantry +
@@ -187,7 +159,7 @@ export function settle(s: SaveState, now = Date.now()): { save: SaveState; ledge
     trained.army.generaless +
     trained.army.defender +
     trained.jobs.length;
-  const upkeep = troopsNow * BREAD_UPKEEP_PER_TROOP_DAY * (dtMs / 86400_000);
+  const upkeep = troopsNow * BREAD_UPKEEP_PER_TROOP_HOUR * (dtMs / 3600_000);
   let bread = s.bread;
   if (upkeep > 0) {
     const spend = Math.min(bread, upkeep);
@@ -222,7 +194,7 @@ export function collectBuilding(s: SaveState, id: string, now = Date.now()): { s
   if (!b) throw new GameError("Construção não encontrada.");
   const kind = producerKind(b.type);
   if (!kind) throw new GameError("Isto não produz recursos.");
-  const amt = storedAmount(b, now);
+  const amt = storedAmount(b, now, (s.boostUntil ?? 0) > now);
   if (amt < 1) throw new GameError("Ainda está a produzir.");
   const buildings = s.buildings.map((x) => (x.id === id ? { ...x, lastCollect: now } : x));
   const ledger: LedgerEntry[] = [];
@@ -245,12 +217,12 @@ export function collectAllBuildings(s: SaveState, now = Date.now()): { save: Sav
   let bread = 0;
   const buildings = s.buildings.map((b) => {
     if (b.type === "mine") {
-      const amt = storedAmount(b, now);
+      const amt = storedAmount(b, now, (s.boostUntil ?? 0) > now);
       gold += amt;
       return amt > 0 ? { ...b, lastCollect: now } : b;
     }
     if (b.type === "farm") {
-      const amt = storedAmount(b, now);
+      const amt = storedAmount(b, now, (s.boostUntil ?? 0) > now);
       bread += amt;
       return amt > 0 ? { ...b, lastCollect: now } : b;
     }
@@ -568,7 +540,7 @@ export function upgradeCountySim(s: SaveState): { save: SaveState; ledger: Ledge
       buildings: s.buildings.map((b) => (b.type === "castle" ? { ...b, level: next } : b)),
     },
     ledger,
-    toast: `Condado nível ${next}.`,
+    toast: `Condado nível ${next}. Saque máximo +5%.`,
   };
 }
 
@@ -633,14 +605,14 @@ export function buyPassSim(s: SaveState, now = Date.now()): { save: SaveState; l
   const win = passWindow(now);
   if (!win.active) throw new GameError("O passe abre no dia 1. Fevereiro dura 27 dias.");
   if (s.pass.purchased) throw new GameError("Passe já selado nesta temporada.");
-  const cost = passCostNiens(s.pass.season);
+  const cost = passCostWithDiscount(s.pass.season, !!s.passDiscount);
   if (s.niens < cost) throw new GameError(`Precisa de ${cost} Niens.`);
   const ledger: LedgerEntry[] = [];
   pushLedger(ledger, s, "buy_pass", "niens", -cost, s.pass.season);
   return {
-    save: { ...s, niens: s.niens - cost, pass: { ...s.pass, purchased: true } },
+    save: { ...s, niens: s.niens - cost, pass: { ...s.pass, purchased: true }, passDiscount: false },
     ledger,
-    toast: "Passe de Batalha selado.",
+    toast: s.passDiscount ? `Passe selado com 45% de desconto · ${cost} Niens.` : "Passe de Batalha selado.",
   };
 }
 
@@ -667,6 +639,64 @@ export function claimPassSim(s: SaveState, level: number): { save: SaveState; le
     },
     ledger,
     toast: `Nível ${level}: ${r.label}`,
+  };
+}
+
+export function claimFreePassSim(s: SaveState, level: number): { save: SaveState; ledger: LedgerEntry[]; toast: string } {
+  const reached = Math.min(PASS_LEVELS, Math.floor(s.pass.stars / PASS_STARS_PER_LEVEL));
+  const claimedFree = s.pass.claimedFree ?? [];
+  if (level > reached || claimedFree.includes(level)) throw new GameError("Este nível ainda não está disponível.");
+  const r = freePassReward(level);
+  const ledger: LedgerEntry[] = [];
+  if (r.gold) pushLedger(ledger, s, "claim_pass_free", "gold", r.gold, `pass-free:${level}`);
+  if (r.bread) pushLedger(ledger, s, "claim_pass_free", "bread", r.bread, `pass-free:${level}`);
+  if (r.troopCards) pushLedger(ledger, s, "claim_pass_free", "troopCards", r.troopCards, `pass-free:${level}`);
+  if (r.generalCards) pushLedger(ledger, s, "claim_pass_free", "generalCards", r.generalCards, `pass-free:${level}`);
+  return {
+    save: {
+      ...s,
+      gold: s.gold + r.gold,
+      bread: s.bread + r.bread,
+      troopCards: s.troopCards + r.troopCards,
+      generalCards: s.generalCards + r.generalCards,
+      pass: { ...s.pass, claimedFree: [...claimedFree, level] },
+    },
+    ledger,
+    toast: `Trilha grátis Nv.${level}: ${r.label}`,
+  };
+}
+
+export function claimPassExtraSim(
+  s: SaveState,
+  extra: PassExtra,
+  now = Date.now(),
+): { save: SaveState; ledger: LedgerEntry[]; toast: string } {
+  if (!s.pass.purchased) throw new GameError("Compre o passe primeiro.");
+  const reached = Math.min(PASS_LEVELS, Math.floor(s.pass.stars / PASS_STARS_PER_LEVEL));
+  if (reached < PASS_LEVELS && !s.pass.claimed.includes(PASS_LEVELS)) {
+    throw new GameError("Chega ao nível 50 do passe pago para resgatar os cupons.");
+  }
+  const extras = s.pass.extrasClaimed ?? [];
+  if (extras.includes(extra)) throw new GameError("Este cupom já foi resgatado.");
+  if (extra === "boost") {
+    return {
+      save: {
+        ...s,
+        boostUntil: now + PASS_BOOST_MS,
+        pass: { ...s.pass, extrasClaimed: [...extras, "boost"] },
+      },
+      ledger: [],
+      toast: "Boost +40% em minas e fazendas por 30 dias. Já está ativo.",
+    };
+  }
+  return {
+    save: {
+      ...s,
+      passDiscount: true,
+      pass: { ...s.pass, extrasClaimed: [...extras, "discount"] },
+    },
+    ledger: [],
+    toast: "Pergaminho de 45% no próximo passe. Usa-o na compra.",
   };
 }
 
@@ -701,9 +731,14 @@ export function skipPassSim(s: SaveState, now = Date.now()): { save: SaveState; 
   };
 }
 
-export function foundAllianceSim(s: SaveState, name: string): { save: SaveState; ledger: LedgerEntry[]; toast: string } {
+export function foundAllianceSim(
+  s: SaveState,
+  name: string,
+  minLevel = 3,
+): { save: SaveState; ledger: LedgerEntry[]; toast: string } {
   if (s.alliance) throw new GameError("Já tens aliança.");
   if (s.gold < ALLIANCE_FOUND_GOLD) throw new GameError(`Precisa de 5.000.000 de ${GOLD_NAME_PL}.`);
+  const req = minLevel === 5 ? 5 : 3;
   const id = `AL-${s.player.id.slice(4, 8)}`;
   const ledger: LedgerEntry[] = [];
   pushLedger(ledger, s, "found_alliance", "gold", -ALLIANCE_FOUND_GOLD, id);
@@ -719,10 +754,15 @@ export function foundAllianceSim(s: SaveState, name: string): { save: SaveState;
           { id: "CDN-ALDRIC", nick: "Sir Aldric" },
           { id: "CDN-ISOLDE", nick: "Dama Isolde" },
         ],
+        minLevel: req,
+        level: 1,
+        xp: 0,
+        leaderId: s.player.id,
+        slots: allianceSlots(1),
       },
     },
     ledger,
-    toast: "Aliança fundada. Chat liberado.",
+    toast: `Aliança fundada. Entrada a partir do condado ${req}.`,
   };
 }
 
@@ -768,12 +808,14 @@ export function applyRaidFinish(
     startedArmy: ArmyCounts;
     goldTaken: number;
     defenderNick: string;
+    defenderLevel?: number;
     now?: number;
   },
 ): { save: SaveState; ledger: LedgerEntry[] } {
   const now = input.now ?? Date.now();
   const stars = Math.max(0, Math.min(3, Math.floor(input.stars)));
-  const goldTaken = Math.max(0, Math.min(lootForStars(stars), LOOT_CAP, Math.floor(input.goldTaken)));
+  const lv = Math.max(1, input.defenderLevel ?? s.countyLevel);
+  const goldTaken = Math.max(0, Math.min(lootForStars(stars, lv), Math.floor(input.goldTaken)));
   const army: ArmyCounts = {
     infantry: clampSurvivor("infantry", input.survivors, input.startedArmy),
     archers: clampSurvivor("archers", input.survivors, input.startedArmy),
@@ -787,7 +829,7 @@ export function applyRaidFinish(
   if (win.open) weekStars += stars;
   const ledger: LedgerEntry[] = [];
   if (goldTaken) pushLedger(ledger, s, "raid_loot", "gold", goldTaken, input.defenderNick);
-  const pass = s.pass.purchased ? { ...s.pass, stars: s.pass.stars + stars } : s.pass;
+  const pass = { ...s.pass, stars: s.pass.stars + stars };
   return {
     save: {
       ...s,

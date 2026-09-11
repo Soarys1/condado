@@ -1,8 +1,25 @@
 import type { DocumentData, DocumentReference, Transaction } from "firebase-admin/firestore";
 import { getAdminFirestore } from "../../firebase-admin.server";
-import { SHIELD_MS, rankingWindow, weeklyPrize, type BuildingType, type ResourceKind, type Tradable, type TroopType, type WallDir } from "../constants";
+import {
+  ALLIANCE_FOUND_GOLD,
+  ALLIANCE_WAR_CHEST,
+  SHIELD_MS,
+  allianceSlots,
+  applyAllianceXp,
+  duelGold,
+  lootCapForCounty,
+  lootForStars,
+  rankingWindow,
+  warWindow,
+  weeklyPrize,
+  type BuildingType,
+  type ResourceKind,
+  type Tradable,
+  type TroopType,
+  type WallDir,
+} from "../constants";
 import { defaultSave, migrateCloud, toSave } from "../save";
-import type { ArmyCounts, ChatMsg, Lord, MarketOffer, SaveState, TransferRecord } from "../types";
+import type { AllianceState, ArmyCounts, ChatMsg, Lord, MarketOffer, SaveState, TransferRecord } from "../types";
 import { botWeekBoard, findNick } from "../bots";
 import { makeId } from "../world";
 import {
@@ -12,15 +29,15 @@ import {
   buyBreadPackSim,
   buyNienSim,
   buyPassSim,
+  claimFreePassSim,
+  claimPassExtraSim,
   claimPassSim,
   collectAllBuildings,
   collectBuilding,
   creditResource,
   demolishBuilding,
-  foundAllianceSim,
   grantReferralSim,
   kindField,
-  lootForStars,
   placeBuilding,
   registerAttack,
   rotateWalls,
@@ -65,6 +82,11 @@ type ActionResult = {
   lootGold?: number;
   sessionId?: string;
   lookup?: Record<string, unknown>;
+  foes?: Lord[];
+  duelGold?: number;
+  foeArmy?: ArmyCounts;
+  foeLevels?: SaveState["troopLevels"];
+  foeCamp?: number;
 };
 
 const RATE: Record<string, { n: number; windowMs: number }> = {
@@ -79,7 +101,23 @@ const RATE: Record<string, { n: number; windowMs: number }> = {
   collectAll: { n: 10, windowMs: 10_000 },
   claimWeekly: { n: 4, windowMs: 60_000 },
   sendChat: { n: 8, windowMs: 10_000 },
+  foundAlliance: { n: 3, windowMs: 60_000 },
+  joinAlliance: { n: 6, windowMs: 60_000 },
+  startAllianceDuel: { n: 6, windowMs: 60_000 },
 };
+
+const FAST_ACTIONS = new Set([
+  "collect",
+  "collectAll",
+  "train",
+  "upgrade",
+  "placeBuilding",
+  "speedTrain",
+  "rotateWall",
+  "demolish",
+  "upgradeType",
+  "upgradeWallRow",
+]);
 
 function db() {
   return getAdminFirestore();
@@ -344,6 +382,7 @@ const READ_ONLY = new Set([
   "peekPlayer",
   "listRaidTargets",
   "adminLookup",
+  "listAllianceFoes",
 ]);
 
 export async function handleGameAction(
@@ -368,8 +407,9 @@ export async function handleGameAction(
       const patch = ratePatch(rateSnap.data(), action);
       const out = await dispatch(tx, player, action, payload, requestId);
       tx.set(rateRef, patch, { merge: true });
-      tx.set(reqRef, toFirestore({ result: out, action, userId: player.uid, at: new Date().toISOString() }));
-      writeAudit(tx, player.uid, action, requestId, true);
+      const stored = FAST_ACTIONS.has(action) ? slimResult(out) : out;
+      tx.set(reqRef, toFirestore({ result: stored, action, userId: player.uid, at: new Date().toISOString() }));
+      if (!FAST_ACTIONS.has(action)) writeAudit(tx, player.uid, action, requestId, true);
       return out;
     });
     return result;
@@ -409,8 +449,28 @@ async function dispatch(
       return syncProfile(write(), player, requestId);
     case "rename":
       return rename(write(), player, String(payload.nick ?? ""), requestId);
+    case "collect":
+      return mutateFast(write(), player, requestId, (p) => collectBuilding(withoutMeta(p), String(payload.id ?? "")));
+    case "collectAll":
+      return mutateFast(write(), player, requestId, (p) => collectAllBuildings(withoutMeta(p)));
+    case "upgrade":
+      return mutateFast(write(), player, requestId, (p) => upgradeBuilding(withoutMeta(p), String(payload.id ?? "")));
+    case "upgradeType":
+      return mutateFast(write(), player, requestId, (p) => upgradeAllOfType(withoutMeta(p), payload.type as BuildingType));
+    case "upgradeWallRow":
+      return mutateFast(write(), player, requestId, (p) => upgradeWallRowSim(withoutMeta(p), String(payload.id ?? "")));
+    case "demolish":
+      return mutateFast(write(), player, requestId, (p) => demolishBuilding(withoutMeta(p), String(payload.id ?? "")));
+    case "rotateWall":
+      return mutateFast(write(), player, requestId, (p) =>
+        rotateWalls(withoutMeta(p), String(payload.id ?? ""), Array.isArray(payload.rowIds) ? payload.rowIds.map(String) : undefined),
+      );
+    case "train":
+      return mutateFast(write(), player, requestId, (p) => trainTroop(withoutMeta(p), payload.type as TroopType));
+    case "speedTrain":
+      return mutateFast(write(), player, requestId, (p) => speedTrainJob(withoutMeta(p), String(payload.id ?? "")));
     case "placeBuilding":
-      return mutate(write(), player, requestId, (p) =>
+      return mutateFast(write(), player, requestId, (p) =>
         placeBuilding(withoutMeta(p), {
           type: payload.type as BuildingType,
           gx: Number(payload.gx),
@@ -419,26 +479,6 @@ async function dispatch(
           movingId: typeof payload.movingId === "string" ? payload.movingId : null,
         }),
       );
-    case "collect":
-      return mutate(write(), player, requestId, (p) => collectBuilding(withoutMeta(p), String(payload.id ?? "")));
-    case "collectAll":
-      return mutate(write(), player, requestId, (p) => collectAllBuildings(withoutMeta(p)));
-    case "upgrade":
-      return mutate(write(), player, requestId, (p) => upgradeBuilding(withoutMeta(p), String(payload.id ?? "")));
-    case "upgradeType":
-      return mutate(write(), player, requestId, (p) => upgradeAllOfType(withoutMeta(p), payload.type as BuildingType));
-    case "upgradeWallRow":
-      return mutate(write(), player, requestId, (p) => upgradeWallRowSim(withoutMeta(p), String(payload.id ?? "")));
-    case "demolish":
-      return mutate(write(), player, requestId, (p) => demolishBuilding(withoutMeta(p), String(payload.id ?? "")));
-    case "rotateWall":
-      return mutate(write(), player, requestId, (p) =>
-        rotateWalls(withoutMeta(p), String(payload.id ?? ""), Array.isArray(payload.rowIds) ? payload.rowIds.map(String) : undefined),
-      );
-    case "train":
-      return mutate(write(), player, requestId, (p) => trainTroop(withoutMeta(p), payload.type as TroopType));
-    case "speedTrain":
-      return mutate(write(), player, requestId, (p) => speedTrainJob(withoutMeta(p), String(payload.id ?? "")));
     case "buyNien":
       return mutate(write(), player, requestId, (p) => buyNienSim(withoutMeta(p)));
     case "sellNien":
@@ -457,10 +497,28 @@ async function dispatch(
       return mutate(write(), player, requestId, (p) => buyPassSim(withoutMeta(p)));
     case "claimPass":
       return mutate(write(), player, requestId, (p) => claimPassSim(withoutMeta(p), Number(payload.level)));
+    case "claimFreePass":
+      return mutate(write(), player, requestId, (p) => claimFreePassSim(withoutMeta(p), Number(payload.level)));
+    case "claimPassExtra":
+      return mutate(write(), player, requestId, (p) =>
+        claimPassExtraSim(withoutMeta(p), payload.extra === "discount" ? "discount" : "boost"),
+      );
     case "skipPass":
       return mutate(write(), player, requestId, (p) => skipPassSim(withoutMeta(p)));
     case "foundAlliance":
-      return mutate(write(), player, requestId, (p) => foundAllianceSim(withoutMeta(p), String(payload.name ?? "")));
+      return foundAllianceAction(write(), player, payload, requestId);
+    case "joinAlliance":
+      return joinAllianceAction(write(), player, String(payload.allianceId ?? ""), requestId);
+    case "leaveAlliance":
+      return leaveAllianceAction(write(), player, requestId);
+    case "recruitAlliance":
+      return recruitAllianceAction(write(), player, requestId);
+    case "listAllianceFoes":
+      return listAllianceFoesAction(player);
+    case "startAllianceDuel":
+      return startAllianceDuelAction(write(), player, String(payload.targetId ?? ""), requestId);
+    case "finishAllianceDuel":
+      return finishAllianceDuelAction(write(), player, payload, requestId);
     case "sendAllianceChat":
       return sendAlliance(write(), player, String(payload.text ?? ""), requestId);
     case "setPrefs":
@@ -518,6 +576,42 @@ async function mutate(
   };
   commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...(r.ledger ?? [])], prep.creditRefs);
   return { save: withoutMeta(profile), toast: r.toast };
+}
+
+async function prepareFast(tx: Transaction, uid: string): Promise<Prepared> {
+  const loaded = await loadProfile(tx, uid);
+  const base = settled(loaded);
+  return { profile: base.profile, ledger: base.ledger, creditRefs: [] };
+}
+
+async function mutateFast(
+  tx: Transaction,
+  player: PlayerAuth,
+  requestId: string,
+  fn: (p: Profile) => { save: SaveState; ledger?: LedgerEntry[]; toast?: string },
+): Promise<ActionResult> {
+  const prep = await prepareFast(tx, player.uid);
+  const r = fn(prep.profile);
+  const profile: Profile = {
+    ...prep.profile,
+    ...r.save,
+    userId: player.uid,
+    appliedTransferIds: prep.profile.appliedTransferIds,
+    appliedRaidIds: prep.profile.appliedRaidIds,
+    accountEmail: prep.profile.accountEmail,
+  };
+  writeProfile(tx, profileRef(player.uid), profile);
+  writeLedger(tx, player.uid, profile.player.id, requestId, [...prep.ledger, ...(r.ledger ?? [])]);
+  return { save: slimSave(withoutMeta(profile)), toast: r.toast };
+}
+
+function slimSave(s: SaveState): SaveState {
+  return { ...s, chat: [], allianceChat: [], ledger: [], raids: s.raids.slice(-6) };
+}
+
+function slimResult(out: ActionResult): ActionResult {
+  if (!out.save) return { toast: out.toast };
+  return { save: slimSave(out.save), toast: out.toast };
 }
 
 async function createProfile(
@@ -578,8 +672,33 @@ async function syncProfile(tx: Transaction, player: PlayerAuth, requestId: strin
   const snap = await tx.get(ref);
   if (!snap.exists) return { save: null, admin: isAdmin(player.email) };
   const prep = await preparePlayer(tx, player.uid);
-  commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
-  return { save: withoutMeta(prep.profile), admin: isAdmin(player.email) };
+  let profile = prep.profile;
+  const extra: LedgerEntry[] = [];
+  if (profile.alliance) {
+    const asnap = await tx.get(allianceRef(profile.alliance.id));
+    if (asnap.exists) {
+      let a = allianceFromDoc(asnap.id, asnap.data() as DocumentData);
+      const payout = await readAlliancePayout(tx, a);
+      a = payout.next;
+      const mine = payout.rows.find((row) => row.uid === player.uid);
+      if (mine) {
+        extra.push(...mine.ledger);
+        profile = { ...profile, gold: mine.profile.gold };
+      }
+      if (payout.settled) {
+        writeAlliancePayout(tx, payout.rows, requestId, player.uid);
+        tx.set(allianceRef(a.id), { resolved: true, xp: a.xp, level: a.level, warDay: a.warDay }, { merge: true });
+      }
+      profile = {
+        ...profile,
+        alliance: allianceStateOf(a),
+        war: warFromAlliance(a),
+        allianceChat: a.chat.map((m) => ({ ...m, self: m.fromId === profile.player.id })),
+      };
+    }
+  }
+  commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...extra], prep.creditRefs);
+  return { save: withoutMeta(profile), admin: isAdmin(player.email) };
 }
 
 async function rename(tx: Transaction, player: PlayerAuth, nickRaw: string, requestId: string): Promise<ActionResult> {
@@ -645,26 +764,6 @@ async function setPrefs(
 ): Promise<ActionResult> {
   const p = await loadProfile(tx, player.uid);
   const profile: Profile = { ...p, muted: Boolean(payload.muted ?? p.muted) };
-  writeProfile(tx, profileRef(player.uid), profile);
-  writeLedger(tx, player.uid, profile.player.id, requestId, []);
-  return { save: withoutMeta(profile) };
-}
-
-async function sendAlliance(tx: Transaction, player: PlayerAuth, textRaw: string, requestId: string): Promise<ActionResult> {
-  const text = textRaw.trim().slice(0, 160);
-  if (!text) throw new GameError("Mensagem vazia.");
-  const p = await loadProfile(tx, player.uid);
-  if (!p.alliance) throw new GameError("Sem aliança.");
-  const msg: ChatMsg = {
-    id: makeId("m"),
-    fromId: p.player.id,
-    fromNick: p.player.nick,
-    text,
-    at: Date.now(),
-    self: true,
-    channel: "alliance",
-  };
-  const profile: Profile = { ...p, allianceChat: [...p.allianceChat, msg].slice(-40) };
   writeProfile(tx, profileRef(player.uid), profile);
   writeLedger(tx, player.uid, profile.player.id, requestId, []);
   return { save: withoutMeta(profile) };
@@ -937,7 +1036,7 @@ async function listTargetsAction(player: PlayerAuth): Promise<ActionResult> {
         nick: String(data.nick ?? "Senhor"),
         title: `Condado Nv.${level}`,
         rank: level,
-        lootGold: Math.min(8400, Number(data.gold ?? 0)),
+        lootGold: Math.min(lootCapForCounty(level), Number(data.gold ?? 0)),
         lootBread: 0,
         countyLevel: level,
         real: true,
@@ -969,7 +1068,7 @@ async function startRaidAction(tx: Transaction, player: PlayerAuth, targetId: st
     throw new GameError("Guerra de aliança: no máximo 2 ataques por base.");
   }
   me = { ...me, ...registerAttack(withoutMeta(me), dest.player.id, warOn) };
-  const lootGold = Math.min(lootForStars(3), Math.max(0, dest.gold));
+  const lootGold = Math.min(lootForStars(3, dest.countyLevel), Math.max(0, dest.gold));
   const sessionId = makeId("RD");
   commitPrepared(tx, player.uid, me, requestId, prep.ledger, prep.creditRefs);
   tx.set(col("condado_raid_sessions").doc(sessionId), {
@@ -979,6 +1078,7 @@ async function startRaidAction(tx: Transaction, player: PlayerAuth, targetId: st
     defenderNick: dest.player.nick,
     startedArmy: me.army,
     lootCap: lootGold,
+    defenderLevel: dest.countyLevel,
     buildings: dest.buildings,
     createdAt: Date.now(),
     open: true,
@@ -1006,7 +1106,8 @@ async function finishRaidAction(
   if (session.attackerUid !== player.uid) throw new GameError("Ataque inválido.");
   if (!session.open) throw new GameError("Este ataque já foi resolvido.");
   const stars = Math.max(0, Math.min(3, Math.floor(Number(payload.stars ?? 0))));
-  const goldTaken = Math.min(Number(session.lootCap ?? 0), lootForStars(stars));
+  const defLevel = Number(session.defenderLevel ?? 1);
+  const goldTaken = Math.min(Number(session.lootCap ?? 0), lootForStars(stars, defLevel));
   const survivors = (payload.survivors ?? {}) as ArmyCounts;
   const startedArmy = session.startedArmy as ArmyCounts;
   const prep = await preparePlayer(tx, player.uid);
@@ -1018,6 +1119,7 @@ async function finishRaidAction(
     startedArmy,
     goldTaken,
     defenderNick: String(session.defenderNick ?? "Senhor"),
+    defenderLevel: defLevel,
   });
   const me: Profile = {
     ...prep.profile,
@@ -1147,3 +1249,604 @@ async function adminLookup(player: PlayerAuth, playerIdRaw: string): Promise<Act
     },
   };
 }
+
+type AllianceDoc = {
+  id: string;
+  name: string;
+  leaderId: string;
+  leaderUid: string;
+  minLevel: number;
+  level: number;
+  xp: number;
+  members: Array<{ id: string; nick: string; uid: string }>;
+  chat: ChatMsg[];
+  warDay: string;
+  foeId: string | null;
+  foeName: string;
+  ourPoints: number;
+  theirPoints: number;
+  participants: string[];
+  sittingOut: boolean;
+  resolved: boolean;
+};
+
+function allianceRef(id: string) {
+  return col("condado_alliances").doc(id);
+}
+
+function allianceFromDoc(id: string, data: DocumentData): AllianceDoc {
+  return {
+    id,
+    name: String(data.name ?? "Aliança"),
+    leaderId: String(data.leaderId ?? ""),
+    leaderUid: String(data.leaderUid ?? ""),
+    minLevel: Number(data.minLevel ?? 3) === 5 ? 5 : 3,
+    level: Math.max(1, Number(data.level ?? 1)),
+    xp: Math.max(0, Number(data.xp ?? 0)),
+    members: Array.isArray(data.members)
+      ? data.members.map((m: { id?: string; nick?: string; uid?: string }) => ({
+          id: String(m.id ?? ""),
+          nick: String(m.nick ?? "Senhor"),
+          uid: String(m.uid ?? ""),
+        }))
+      : [],
+    chat: Array.isArray(data.chat) ? (data.chat as ChatMsg[]).slice(-40) : [],
+    warDay: String(data.warDay ?? ""),
+    foeId: (data.foeId as string | null) ?? null,
+    foeName: String(data.foeName ?? ""),
+    ourPoints: Number(data.ourPoints ?? 0),
+    theirPoints: Number(data.theirPoints ?? 0),
+    participants: Array.isArray(data.participants) ? data.participants.map(String) : [],
+    sittingOut: !!data.sittingOut,
+    resolved: !!data.resolved,
+  };
+}
+
+function allianceStateOf(a: AllianceDoc): AllianceState {
+  return {
+    id: a.id,
+    name: a.name,
+    members: a.members.map((m) => ({ id: m.id, nick: m.nick, uid: m.uid })),
+    minLevel: a.minLevel,
+    level: a.level,
+    xp: a.xp,
+    leaderId: a.leaderId,
+    slots: allianceSlots(a.level),
+  };
+}
+
+function warFromAlliance(a: AllianceDoc) {
+  return {
+    week: a.warDay,
+    foeId: a.foeId,
+    foeName: a.foeName,
+    chest: ALLIANCE_WAR_CHEST,
+    ourStars: a.ourPoints,
+    theirStars: a.theirPoints,
+    attacks: {} as Record<string, number>,
+    sittingOut: a.sittingOut,
+    resolved: a.resolved,
+    participants: a.participants,
+  };
+}
+
+type PayoutRow = { uid: string; profile: Profile; ledger: LedgerEntry[]; share: number };
+
+async function readAlliancePayout(
+  tx: Transaction,
+  a: AllianceDoc,
+): Promise<{ next: AllianceDoc; rows: PayoutRow[]; settled: boolean }> {
+  const win = warWindow();
+  if (!a.warDay || a.warDay === win.key || a.resolved) {
+    return { next: a, rows: [], settled: false };
+  }
+  const won = !a.sittingOut && a.ourPoints > a.theirPoints;
+  let xp = a.xp;
+  let level = a.level;
+  if (won) {
+    const grown = applyAllianceXp(a.level, a.xp, 1000);
+    xp = grown.xp;
+    level = grown.level;
+  }
+  const rows: PayoutRow[] = [];
+  const parts = a.participants.filter(Boolean);
+  const share = won && parts.length ? Math.floor(ALLIANCE_WAR_CHEST / parts.length) : 0;
+  if (share) {
+    for (const pid of parts) {
+      const member = a.members.find((m) => m.id === pid);
+      let uid = member?.uid ? String(member.uid) : "";
+      if (!uid) {
+        const idx = await tx.get(col("condado_player_index").doc(pid));
+        uid = idx.exists ? String(idx.data()?.userId ?? "") : "";
+      }
+      if (!uid) continue;
+      const snap = await tx.get(profileRef(uid));
+      if (!snap.exists) continue;
+      const p = profileFromDoc(uid, snap.data() as DocumentData);
+      rows.push({
+        uid,
+        profile: { ...p, gold: p.gold + share },
+        ledger: [
+          {
+            type: "alliance_war_chest",
+            currency: "gold",
+            amount: share,
+            balanceBefore: p.gold,
+            balanceAfter: p.gold + share,
+            source: a.id,
+          },
+        ],
+        share,
+      });
+    }
+  }
+  return { next: { ...a, xp, level, resolved: true }, rows, settled: true };
+}
+
+function writeAlliancePayout(tx: Transaction, rows: PayoutRow[], requestId: string, exceptUid?: string) {
+  for (const row of rows) {
+    if (exceptUid && row.uid === exceptUid) continue;
+    writeProfile(tx, profileRef(row.uid), row.profile);
+    writeLedger(tx, row.uid, row.profile.player.id, requestId, row.ledger);
+  }
+}
+
+async function foundAllianceAction(
+  tx: Transaction,
+  player: PlayerAuth,
+  payload: Record<string, unknown>,
+  requestId: string,
+): Promise<ActionResult> {
+  const name = String(payload.name ?? "").trim().replace(/\s+/g, " ").slice(0, 22);
+  if (name.length < 3) throw new GameError("O nome da aliança precisa de ao menos 3 letras.");
+  const minLevel = Number(payload.minLevel) === 5 ? 5 : 3;
+  const prep = await preparePlayer(tx, player.uid);
+  if (prep.profile.alliance) throw new GameError("Já tens aliança.");
+  if (prep.profile.gold < ALLIANCE_FOUND_GOLD) throw new GameError(`Precisa de 5.000.000 de Libras.`);
+  const nameRef = col("condado_alliance_names").doc(name.toLowerCase());
+  const taken = await tx.get(nameRef);
+  if (taken.exists) throw new GameError("Este nome de aliança já está em uso.");
+  const id = makeId("AL");
+  const aref = allianceRef(id);
+  const member = { id: prep.profile.player.id, nick: prep.profile.player.nick, uid: player.uid };
+  const doc: AllianceDoc = {
+    id,
+    name,
+    leaderId: prep.profile.player.id,
+    leaderUid: player.uid,
+    minLevel,
+    level: 1,
+    xp: 0,
+    members: [member],
+    chat: [],
+    warDay: "",
+    foeId: null,
+    foeName: "",
+    ourPoints: 0,
+    theirPoints: 0,
+    participants: [],
+    sittingOut: false,
+    resolved: true,
+  };
+  const gold = prep.profile.gold - ALLIANCE_FOUND_GOLD;
+  const profile: Profile = {
+    ...prep.profile,
+    gold,
+    alliance: allianceStateOf(doc),
+    allianceChat: [],
+  };
+  const ledger: LedgerEntry[] = [
+    {
+      type: "found_alliance",
+      currency: "gold",
+      amount: -ALLIANCE_FOUND_GOLD,
+      balanceBefore: prep.profile.gold,
+      balanceAfter: gold,
+      source: id,
+    },
+  ];
+  commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...ledger], prep.creditRefs);
+  tx.set(nameRef, { allianceId: id, name });
+  tx.set(aref, { ...doc, createdAt: new Date().toISOString() });
+  return { save: withoutMeta(profile), toast: `Aliança ${name} fundada. Entrada a partir do condado ${minLevel}.` };
+}
+
+async function joinAllianceAction(
+  tx: Transaction,
+  player: PlayerAuth,
+  allianceIdRaw: string,
+  requestId: string,
+): Promise<ActionResult> {
+  const allianceId = allianceIdRaw.trim();
+  if (!allianceId) throw new GameError("Aliança inválida.");
+  const prep = await preparePlayer(tx, player.uid);
+  if (prep.profile.alliance) throw new GameError("Já tens aliança.");
+  const aref = allianceRef(allianceId);
+  const asnap = await tx.get(aref);
+  if (!asnap.exists) throw new GameError("Aliança não encontrada.");
+  const a = allianceFromDoc(allianceId, asnap.data() as DocumentData);
+  if (prep.profile.countyLevel < a.minLevel) {
+    throw new GameError(`Esta aliança pede condado nível ${a.minLevel}.`);
+  }
+  if (a.members.length >= allianceSlots(a.level)) throw new GameError("Aliança lotada.");
+  if (a.members.some((m) => m.id === prep.profile.player.id)) throw new GameError("Já estás nesta aliança.");
+  a.members.push({ id: prep.profile.player.id, nick: prep.profile.player.nick, uid: player.uid });
+  const profile: Profile = {
+    ...prep.profile,
+    alliance: allianceStateOf(a),
+    allianceChat: a.chat,
+    war: warFromAlliance(a),
+  };
+  commitPrepared(tx, player.uid, profile, requestId, prep.ledger, prep.creditRefs);
+  tx.set(aref, { members: a.members }, { merge: true });
+  return { save: withoutMeta(profile), toast: `Entraste em ${a.name}.` };
+}
+
+async function leaveAllianceAction(
+  tx: Transaction,
+  player: PlayerAuth,
+  requestId: string,
+): Promise<ActionResult> {
+  const prep = await preparePlayer(tx, player.uid);
+  if (!prep.profile.alliance) throw new GameError("Sem aliança.");
+  const aref = allianceRef(prep.profile.alliance.id);
+  const asnap = await tx.get(aref);
+  const profile: Profile = { ...prep.profile, alliance: null, war: null, allianceChat: [] };
+  commitPrepared(tx, player.uid, profile, requestId, prep.ledger, prep.creditRefs);
+  if (asnap.exists) {
+    const a = allianceFromDoc(asnap.id, asnap.data() as DocumentData);
+    const members = a.members.filter((m) => m.id !== prep.profile.player.id);
+    if (!members.length) {
+      tx.delete(aref);
+      tx.delete(col("condado_alliance_names").doc(a.name.toLowerCase()));
+    } else {
+      const leaderId = a.leaderId === prep.profile.player.id ? members[0]!.id : a.leaderId;
+      const leaderUid = a.leaderId === prep.profile.player.id ? members[0]!.uid : a.leaderUid;
+      tx.set(aref, { members, leaderId, leaderUid }, { merge: true });
+    }
+  }
+  return { save: withoutMeta(profile), toast: "Saíste da aliança." };
+}
+
+async function recruitAllianceAction(
+  tx: Transaction,
+  player: PlayerAuth,
+  requestId: string,
+): Promise<ActionResult> {
+  const p = await loadProfile(tx, player.uid);
+  if (!p.alliance) throw new GameError("Sem aliança.");
+  if (p.alliance.leaderId !== p.player.id) throw new GameError("Só o fundador envia recrutamento.");
+  const now = Date.now();
+  tx.set(col("condado_chat").doc(), {
+    fromUserId: player.uid,
+    fromPlayerId: p.player.id,
+    fromId: p.player.id,
+    fromNick: p.player.nick,
+    text: `Recruta: ${p.alliance.name} · condado ${p.alliance.minLevel}+ · ${p.alliance.members.length}/${p.alliance.slots} vagas`,
+    at: now,
+    createdAt: new Date(now).toISOString(),
+    channel: "global",
+    recruitAllianceId: p.alliance.id,
+    recruitMinLevel: p.alliance.minLevel,
+  });
+  writeLedger(tx, player.uid, p.player.id, requestId, []);
+  return { save: withoutMeta(p), toast: "Pedido de recrutamento no chat global." };
+}
+
+async function sendAlliance(
+  tx: Transaction,
+  player: PlayerAuth,
+  textRaw: string,
+  requestId: string,
+): Promise<ActionResult> {
+  const text = textRaw.trim().slice(0, 160);
+  if (!text) throw new GameError("Mensagem vazia.");
+  const p = await loadProfile(tx, player.uid);
+  if (!p.alliance) throw new GameError("Sem aliança.");
+  const aref = allianceRef(p.alliance.id);
+  const asnap = await tx.get(aref);
+  if (!asnap.exists) throw new GameError("Aliança não encontrada.");
+  const a = allianceFromDoc(asnap.id, asnap.data() as DocumentData);
+  const msg: ChatMsg = {
+    id: makeId("m"),
+    fromId: p.player.id,
+    fromNick: p.player.nick,
+    text,
+    at: Date.now(),
+    self: true,
+    channel: "alliance",
+  };
+  const chat = [...a.chat, { ...msg, self: false }].slice(-40);
+  const profile: Profile = { ...p, allianceChat: [...p.allianceChat, msg].slice(-40), alliance: allianceStateOf({ ...a, chat }) };
+  writeProfile(tx, profileRef(player.uid), profile);
+  tx.set(aref, { chat }, { merge: true });
+  writeLedger(tx, player.uid, p.player.id, requestId, []);
+  return { save: withoutMeta(profile) };
+}
+
+async function pairAllianceWar(tx: Transaction, a: AllianceDoc): Promise<{ next: AllianceDoc; foe?: AllianceDoc; queueRef: DocumentReference; waiting: string[] }> {
+  const win = warWindow();
+  const qref = col("condado_war_queue").doc(win.key);
+  const qsnap = await tx.get(qref);
+  const waiting: string[] = Array.isArray(qsnap.data()?.waiting) ? qsnap.data()!.waiting.map(String) : [];
+  if (a.warDay === win.key && !a.resolved) {
+    let foe: AllianceDoc | undefined;
+    if (a.foeId) {
+      const foeSnap = await tx.get(allianceRef(a.foeId));
+      if (foeSnap.exists) foe = allianceFromDoc(foeSnap.id, foeSnap.data() as DocumentData);
+    }
+    return { next: a, foe, queueRef: qref, waiting };
+  }
+  const filtered = waiting.filter((id) => id !== a.id);
+  if (!filtered.length) {
+    const next: AllianceDoc = {
+      ...a,
+      warDay: win.key,
+      foeId: null,
+      foeName: "",
+      ourPoints: 0,
+      theirPoints: 0,
+      participants: [],
+      sittingOut: true,
+      resolved: false,
+    };
+    return { next, queueRef: qref, waiting: [...filtered, a.id] };
+  }
+  const foeId = filtered[0]!;
+  const foeSnap = await tx.get(allianceRef(foeId));
+  if (!foeSnap.exists) {
+    const next: AllianceDoc = {
+      ...a,
+      warDay: win.key,
+      foeId: null,
+      foeName: "",
+      ourPoints: 0,
+      theirPoints: 0,
+      participants: [],
+      sittingOut: true,
+      resolved: false,
+    };
+    return { next, queueRef: qref, waiting: [...filtered.slice(1), a.id] };
+  }
+  const foe = allianceFromDoc(foeId, foeSnap.data() as DocumentData);
+  const next: AllianceDoc = {
+    ...a,
+    warDay: win.key,
+    foeId: foe.id,
+    foeName: foe.name,
+    ourPoints: 0,
+    theirPoints: 0,
+    participants: [],
+    sittingOut: false,
+    resolved: false,
+  };
+  return { next, foe, queueRef: qref, waiting: filtered.slice(1) };
+}
+
+async function listAllianceFoesAction(player: PlayerAuth): Promise<ActionResult> {
+  const meSnap = await profileRef(player.uid).get();
+  if (!meSnap.exists) return { foes: [] };
+  const me = profileFromDoc(player.uid, meSnap.data() as DocumentData);
+  if (!me.alliance) return { foes: [] };
+  const aSnap = await allianceRef(me.alliance.id).get();
+  if (!aSnap.exists) return { foes: [] };
+  const a = allianceFromDoc(aSnap.id, aSnap.data() as DocumentData);
+  if (!a.foeId || a.sittingOut) return { foes: [], save: { ...withoutMeta(me), alliance: allianceStateOf(a), war: warFromAlliance(a) } };
+  const foeSnap = await allianceRef(a.foeId).get();
+  if (!foeSnap.exists) return { foes: [] };
+  const foe = allianceFromDoc(foeSnap.id, foeSnap.data() as DocumentData);
+  const foes: Lord[] = [];
+  for (const m of foe.members) {
+    if (!m.uid) continue;
+    const ps = await profileRef(m.uid).get();
+    const level = ps.exists ? Number(ps.data()?.countyLevel ?? 1) : 1;
+    foes.push({
+      id: m.id,
+      nick: m.nick,
+      title: `Aliança ${foe.name}`,
+      rank: level,
+      lootGold: 0,
+      lootBread: 0,
+      allianceId: foe.id,
+      countyLevel: level,
+      real: true,
+    });
+  }
+  return { foes, save: { ...withoutMeta(me), alliance: allianceStateOf(a), war: warFromAlliance(a), allianceChat: a.chat } };
+}
+
+async function startAllianceDuelAction(
+  tx: Transaction,
+  player: PlayerAuth,
+  targetId: string,
+  requestId: string,
+): Promise<ActionResult> {
+  const prep = await preparePlayer(tx, player.uid);
+  if (!prep.profile.alliance) throw new GameError("Sem aliança.");
+  const armyN =
+    prep.profile.army.infantry +
+    prep.profile.army.archers +
+    prep.profile.army.cavalry +
+    prep.profile.army.general +
+    prep.profile.army.generaless +
+    prep.profile.army.defender;
+  if (armyN <= 0) throw new GameError("Sem tropas no acampamento.");
+  const aref = allianceRef(prep.profile.alliance.id);
+  const asnap = await tx.get(aref);
+  if (!asnap.exists) throw new GameError("Aliança não encontrada.");
+  let a = allianceFromDoc(asnap.id, asnap.data() as DocumentData);
+  const win = warWindow();
+  const payout = await readAlliancePayout(tx, a);
+  a = payout.next;
+  const mine = payout.rows.find((row) => row.uid === player.uid);
+  let baseProfile: Profile = mine ? { ...prep.profile, gold: mine.profile.gold } : prep.profile;
+  const extraLedger = mine ? mine.ledger : [];
+  const paired = await pairAllianceWar(tx, a);
+  a = paired.next;
+  const idx = await tx.get(col("condado_player_index").doc(targetId));
+  if (!idx.exists) throw new GameError("Alvo não encontrado.");
+  const toUid = String(idx.data()?.userId ?? "");
+  const destSnap = await tx.get(profileRef(toUid));
+  if (!destSnap.exists) throw new GameError("Alvo não encontrado.");
+  const dest = profileFromDoc(toUid, destSnap.data() as DocumentData);
+  if (payout.settled) writeAlliancePayout(tx, payout.rows, requestId, player.uid);
+  if (a.sittingOut || !a.foeId) {
+    tx.set(paired.queueRef, { waiting: paired.waiting, day: win.key }, { merge: true });
+    tx.set(aref, {
+      warDay: a.warDay,
+      foeId: a.foeId,
+      foeName: a.foeName,
+      ourPoints: a.ourPoints,
+      theirPoints: a.theirPoints,
+      participants: a.participants,
+      sittingOut: a.sittingOut,
+      resolved: a.resolved,
+      xp: a.xp,
+      level: a.level,
+    }, { merge: true });
+    const waitingProfile: Profile = { ...baseProfile, alliance: allianceStateOf(a), war: warFromAlliance(a) };
+    commitPrepared(tx, player.uid, waitingProfile, requestId, [...prep.ledger, ...extraLedger], prep.creditRefs);
+    return { save: withoutMeta(waitingProfile), toast: "À espera de um rival para a guerra de hoje. Tenta de novo em instantes." };
+  }
+  if (dest.alliance?.id !== a.foeId) throw new GameError("Este senhor não está na aliança rival.");
+  const used = baseProfile.war?.attacks[dest.player.id] ?? 0;
+  if (used >= 2) throw new GameError("No máximo 2 duelos por rival neste dia.");
+  const sessionId = makeId("AW");
+  const war = {
+    ...warFromAlliance(a),
+    attacks: { ...(baseProfile.war?.attacks ?? {}), [dest.player.id]: used + 1 },
+  };
+  const profile: Profile = { ...baseProfile, alliance: allianceStateOf(a), war };
+  tx.set(paired.queueRef, { waiting: paired.waiting, day: win.key }, { merge: true });
+  tx.set(aref, {
+    warDay: a.warDay,
+    foeId: a.foeId,
+    foeName: a.foeName,
+    ourPoints: a.ourPoints,
+    theirPoints: a.theirPoints,
+    participants: a.participants,
+    sittingOut: false,
+    resolved: false,
+    xp: a.xp,
+    level: a.level,
+  }, { merge: true });
+  if (paired.foe) {
+    tx.set(allianceRef(paired.foe.id), {
+      warDay: win.key,
+      foeId: a.id,
+      foeName: a.name,
+      sittingOut: false,
+      resolved: false,
+    }, { merge: true });
+  }
+  commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...extraLedger], prep.creditRefs);
+  tx.set(col("condado_raid_sessions").doc(sessionId), {
+    kind: "alliance",
+    attackerUid: player.uid,
+    defenderUid: toUid,
+    defenderId: dest.player.id,
+    defenderNick: dest.player.nick,
+    allianceId: a.id,
+    foeAllianceId: a.foeId,
+    startedArmy: prep.profile.army,
+    foeArmy: dest.army,
+    foeLevels: dest.troopLevels,
+    foeCamp: dest.campLevel,
+    createdAt: Date.now(),
+    open: true,
+  });
+  return {
+    save: withoutMeta(profile),
+    sessionId,
+    nick: dest.player.nick,
+    foeArmy: dest.army,
+    foeLevels: dest.troopLevels,
+    foeCamp: dest.campLevel,
+  };
+}
+
+async function finishAllianceDuelAction(
+  tx: Transaction,
+  player: PlayerAuth,
+  payload: Record<string, unknown>,
+  requestId: string,
+): Promise<ActionResult> {
+  const sessionId = String(payload.sessionId ?? "");
+  const sessionRef = col("condado_raid_sessions").doc(sessionId);
+  const sessionSnap = await tx.get(sessionRef);
+  if (!sessionSnap.exists) throw new GameError("Duelo inválido.");
+  const session = sessionSnap.data() as DocumentData;
+  if (session.attackerUid !== player.uid || session.kind !== "alliance") throw new GameError("Duelo inválido.");
+  if (!session.open) throw new GameError("Este duelo já foi resolvido.");
+  const won = Boolean(payload.won);
+  const retreated = Boolean(payload.retreated);
+  const prep = await preparePlayer(tx, player.uid);
+  const aref = allianceRef(String(session.allianceId));
+  const asnap = await tx.get(aref);
+  const foeRef = allianceRef(String(session.foeAllianceId));
+  const foeSnap = await tx.get(foeRef);
+  const bonus = won && !retreated ? duelGold(sessionId) : 0;
+  const ourAdd = won && !retreated ? 3 : 1;
+  const theirAdd = won && !retreated ? 1 : 3;
+  let a = asnap.exists ? allianceFromDoc(asnap.id, asnap.data() as DocumentData) : null;
+  if (a) {
+    const participants = a.participants.includes(prep.profile.player.id)
+      ? a.participants
+      : [...a.participants, prep.profile.player.id];
+    a = { ...a, ourPoints: a.ourPoints + ourAdd, theirPoints: a.theirPoints + theirAdd, participants };
+    tx.set(
+      aref,
+      { ourPoints: a.ourPoints, theirPoints: a.theirPoints, participants },
+      { merge: true },
+    );
+  }
+  if (foeSnap.exists) {
+    const foe = allianceFromDoc(foeSnap.id, foeSnap.data() as DocumentData);
+    tx.set(
+      foeRef,
+      { ourPoints: foe.ourPoints + theirAdd, theirPoints: foe.theirPoints + ourAdd },
+      { merge: true },
+    );
+  }
+  const startedArmy = session.startedArmy as ArmyCounts;
+  const survivors = (payload.survivors ?? {}) as ArmyCounts;
+  const army = {
+    infantry: prep.profile.army.infantry - (startedArmy.infantry ?? 0) + Math.min(startedArmy.infantry ?? 0, Math.max(0, survivors.infantry ?? 0)),
+    archers: prep.profile.army.archers - (startedArmy.archers ?? 0) + Math.min(startedArmy.archers ?? 0, Math.max(0, survivors.archers ?? 0)),
+    cavalry: prep.profile.army.cavalry - (startedArmy.cavalry ?? 0) + Math.min(startedArmy.cavalry ?? 0, Math.max(0, survivors.cavalry ?? 0)),
+    general: Math.min(1, prep.profile.army.general - (startedArmy.general ?? 0) + Math.min(startedArmy.general ?? 0, Math.max(0, survivors.general ?? 0))),
+    generaless: Math.min(1, prep.profile.army.generaless - (startedArmy.generaless ?? 0) + Math.min(startedArmy.generaless ?? 0, Math.max(0, survivors.generaless ?? 0))),
+    defender: prep.profile.army.defender - (startedArmy.defender ?? 0) + Math.min(startedArmy.defender ?? 0, Math.max(0, survivors.defender ?? 0)),
+  };
+  const ledger: LedgerEntry[] = [];
+  if (bonus) {
+    ledger.push({
+      type: "alliance_duel",
+      currency: "gold",
+      amount: bonus,
+      balanceBefore: prep.profile.gold,
+      balanceAfter: prep.profile.gold + bonus,
+      source: String(session.defenderNick ?? "duelo"),
+    });
+  }
+  const used = Math.max(prep.profile.war?.attacks[String(session.defenderId)] ?? 0, 1);
+  const profile: Profile = {
+    ...prep.profile,
+    army,
+    gold: prep.profile.gold + bonus,
+    alliance: a ? allianceStateOf(a) : prep.profile.alliance,
+    war: a
+      ? {
+          ...warFromAlliance(a),
+          attacks: { ...(prep.profile.war?.attacks ?? {}), [String(session.defenderId)]: used },
+        }
+      : prep.profile.war,
+  };
+  commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...ledger], prep.creditRefs);
+  tx.set(sessionRef, { open: false, won, bonus, resolvedAt: Date.now() }, { merge: true });
+  const toast = won && !retreated
+    ? `Vitória no campo. +3 pontos e ${bonus.toLocaleString("pt")} Libras.`
+    : "Duelo encerrado. +1 ponto para o rival.";
+  return { save: withoutMeta(profile), toast, duelGold: bonus };
+}
+

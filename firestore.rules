@@ -71,6 +71,18 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /condado_alliances/{id} {
+      allow read, write: if false;
+    }
+
+    match /condado_alliance_names/{id} {
+      allow read, write: if false;
+    }
+
+    match /condado_war_queue/{id} {
+      allow read, write: if false;
+    }
+
     match /usuarios/{uid} {
       allow read, write: if false;
     }

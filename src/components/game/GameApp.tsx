@@ -26,10 +26,12 @@ import {
 } from "lucide-react";
 import {
   ALLIANCE_FOUND_GOLD,
+  ALLIANCE_WAR_CHEST,
+  allianceSlots,
   BREAD_PACK,
   BREAD_PACK_BUY_GOLD,
   BREAD_PACK_SELL_GOLD,
-  BREAD_UPKEEP_PER_TROOP_DAY,
+  BREAD_UPKEEP_PER_TROOP_HOUR,
   BUILD_ORDER,
   BUILDINGS,
   COLLECT_READY,
@@ -58,7 +60,8 @@ import {
   generalCardsFor,
   goldWord,
   isHero,
-  passCostNiens,
+  passCostWithDiscount,
+  freePassReward,
   passReward,
   passWindow,
   rankingWindow,
@@ -77,9 +80,9 @@ import {
   type Tradable,
   type TroopType,
 } from "@/lib/game/constants";
-import { ALLIANCES, lordsOfAlliance } from "@/lib/game/bots";
+import { lordsOfAlliance } from "@/lib/game/bots";
 import { battle, raidTarget, useGame } from "@/lib/game/store";
-import { flushCloud, persist, loadSave } from "@/lib/game/save";
+import { flushCloud, persist, wipeSave } from "@/lib/game/save";
 import { createRuntime } from "@/lib/game/render";
 import { formatRes, formatTime, countType } from "@/lib/game/world";
 import {
@@ -94,7 +97,6 @@ import { loadAssets } from "@/lib/game/assets";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { auth } from "@/lib/firebase";
 import { setBearerToken, signOut } from "@/lib/auth/client";
-import { UserButton } from "@/lib/auth/gates";
 import {
   claimWeekly,
   playAction,
@@ -118,18 +120,7 @@ export function GameApp() {
   useEffect(() => {
     if (isPending) return;
     if (!user) {
-      const local = loadSave();
-      if (local) {
-        useGame.setState({
-          ...local,
-          hydrated: true,
-          screen: "village",
-          nickDraft: local.player.nick,
-          sheet: null,
-        });
-      } else {
-        useGame.setState({ hydrated: true, screen: "splash" });
-      }
+      useGame.setState({ hydrated: true, screen: "splash", needsCounty: false, bootError: null });
       return;
     }
     void hydrateFromCloud();
@@ -366,6 +357,7 @@ function HUD() {
   const collectAll = useGame((s) => s.collectAll);
   const countyLevel = useGame((s) => s.countyLevel);
   const shieldUntil = useGame((s) => s.shieldUntil);
+  const boostUntil = useGame((s) => s.boostUntil);
   const movingId = useGame((s) => s.movingId);
   const cancelMove = useGame((s) => s.cancelMove);
   const [, bump] = useState(0);
@@ -381,15 +373,20 @@ function HUD() {
   return (
     <>
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 pt-[max(0.6rem,env(safe-area-inset-top))]">
-        <div className="pointer-events-auto mx-auto flex max-w-3xl items-center gap-2 px-3">
+        <div className="pointer-events-auto mx-auto flex max-w-3xl flex-wrap items-center gap-2 px-3">
           <Pill icon={<Coins className="size-3.5" />} label={formatRes(gold)} tone="gold" title={GOLD_NAME_PL} />
           <Pill icon={<Wheat className="size-3.5" />} label={formatRes(bread)} tone="bread" />
           <Pill icon={<Gem className="size-3.5" />} label={formatRes(niens)} tone="niens" />
+          {boostUntil > Date.now() && (
+            <span className="hidden rounded-md border border-niens/40 px-2 py-1 text-[0.65rem] text-niens sm:inline">
+              +40%
+            </span>
+          )}
           {screen === "village" && (
             <button
               type="button"
               onClick={collectAll}
-              className="hidden h-9 items-center rounded-md border border-line bg-panel/80 px-2.5 text-xs text-parchment-dim sm:flex"
+              className="flex h-11 shrink-0 items-center rounded-md border border-line bg-panel/80 px-3 text-xs text-parchment-dim"
             >
               Coletar
             </button>
@@ -695,7 +692,7 @@ function ArmySheet() {
     <div className="space-y-3">
       <p className="text-sm text-parchment-dim">
         Capacidade {used}/{cap}. Defensores {army.defender}/{defenderCap(campLevel)}. Cada tropa,
-        incluindo generais, consome {BREAD_UPKEEP_PER_TROOP_DAY} pães por dia.
+        incluindo generais, consome {BREAD_UPKEEP_PER_TROOP_HOUR} pães por hora.
       </p>
       {hasCamp && (
         <button
@@ -780,6 +777,15 @@ function ChatSheet() {
           >
             <p className="font-display text-[0.7rem] text-niens">{m.fromNick}</p>
             <p className="text-sm leading-snug">{m.text}</p>
+            {m.recruitAllianceId && (
+              <button
+                type="button"
+                onClick={() => useGame.getState().joinAlliance(m.recruitAllianceId!)}
+                className="mt-2 h-10 w-full rounded-md border border-niens/40 text-xs"
+              >
+                Pedir entrada · Nv.{m.recruitMinLevel ?? 3}+
+              </button>
+            )}
           </div>
         ))}
         <div ref={end} />
@@ -1181,8 +1187,8 @@ function InfoSheet() {
           {countyLevel >= COUNTY_MAX
             ? "Condado no máximo"
             : countyCost.niens
-              ? `Avançar condado · ${countyCost.niens} Niens`
-              : `Avançar condado · ${formatRes(countyCost.gold)} ${GOLD_NAME_PL}`}
+              ? `Avançar condado · saque +5% · ${countyCost.niens} Niens`
+              : `Avançar condado · saque +5% · ${formatRes(countyCost.gold)} ${GOLD_NAME_PL}`}
         </button>
       )}
       {b.type !== "castle" && (
@@ -1425,7 +1431,11 @@ function ProfileSheet() {
             <button
               type="button"
               className="h-10 w-full rounded-md border border-line text-sm"
-              onClick={() => void signOut("/")}
+              onClick={() => {
+                wipeSave();
+                useGame.getState().resetGame();
+                void signOut("/");
+              }}
             >
               Sair da conta
             </button>
@@ -1496,7 +1506,6 @@ function ProfileSheet() {
         <MessageCircle className="size-4" />
         Grupo no WhatsApp
       </a>
-      <UserButton />
     </div>
   );
 }
@@ -1572,18 +1581,29 @@ function PassSheet() {
   const pass = useGame((s) => s.pass);
   const buyPass = useGame((s) => s.buyPass);
   const claimPass = useGame((s) => s.claimPass);
+  const claimPassFree = useGame((s) => s.claimPassFree);
+  const claimPassExtra = useGame((s) => s.claimPassExtra);
   const skipPass = useGame((s) => s.skipPass);
   const niens = useGame((s) => s.niens);
+  const passDiscount = useGame((s) => s.passDiscount);
+  const boostUntil = useGame((s) => s.boostUntil);
   const win = passWindow();
-  const cost = passCostNiens(pass.season);
+  const cost = passCostWithDiscount(pass.season, !!passDiscount);
   const reached = Math.min(PASS_LEVELS, Math.floor(pass.stars / PASS_STARS_PER_LEVEL));
   const levels = Array.from({ length: PASS_LEVELS }, (_, i) => i + 1);
+  const extras = pass.extrasClaimed ?? [];
+  const canExtras = pass.purchased && (reached >= PASS_LEVELS || pass.claimed.includes(PASS_LEVELS));
   return (
     <div className="space-y-3">
       <p className="text-sm text-parchment-dim">
-        Temporada {pass.season}. O primeiro passe é setembro. Dia 1, 30 dias (fevereiro 27). 50
-        níveis, 6 estrelas cada.
+        Temporada {pass.season}. 50 níveis, 6 estrelas cada. A trilha grátis dá cerca de metade.
+        O passe sobe 1 Nien por mês.
       </p>
+      {boostUntil > Date.now() && (
+        <p className="text-xs text-niens">
+          Boost +40% nas minas e fazendas até {new Date(boostUntil).toLocaleDateString("pt-BR")}.
+        </p>
+      )}
       {!win.active && <p className="text-sm text-iron">Passe em espera até 1º do mês.</p>}
       {!pass.purchased ? (
         <button
@@ -1591,7 +1611,7 @@ function PassSheet() {
           onClick={buyPass}
           className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink"
         >
-          Selar passe · {cost} Niens {niens < cost ? "(faltam gemas)" : ""}
+          Selar passe · {cost} Niens {passDiscount ? "(45% de desconto)" : ""} {niens < cost ? "(faltam gemas)" : ""}
         </button>
       ) : (
         <>
@@ -1604,35 +1624,76 @@ function PassSheet() {
             disabled={!win.active}
             className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm disabled:opacity-40"
           >
-            Pular 1 nível · 1 Nien {niens < 1 ? "(faltam gemas)" : "e recebe o prêmio"}
+            Pular 1 nível · 1 Nien {niens < 1 ? "(faltam gemas)" : "e recebe o prêmio pago"}
           </button>
         </>
       )}
+      {canExtras && (
+        <div className="space-y-2 rounded-md border border-niens/30 bg-ink-2 p-3">
+          <p className="text-xs uppercase tracking-[0.18em] text-parchment-dim">Cupons do nível 50</p>
+          <button
+            type="button"
+            disabled={extras.includes("boost")}
+            onClick={() => claimPassExtra("boost")}
+            className="h-11 w-full rounded-md border border-line text-sm disabled:opacity-40"
+          >
+            {extras.includes("boost")
+              ? "Boost 30 dias já resgatado"
+              : "Resgatar boost +40% minas e fazendas · 30 dias"}
+          </button>
+          <button
+            type="button"
+            disabled={extras.includes("discount")}
+            onClick={() => claimPassExtra("discount")}
+            className="h-11 w-full rounded-md border border-line text-sm disabled:opacity-40"
+          >
+            {extras.includes("discount")
+              ? "Pergaminho de desconto já resgatado"
+              : "Resgatar pergaminho · 45% no próximo passe"}
+          </button>
+        </div>
+      )}
       <div className="max-h-[48dvh] space-y-1 overflow-y-auto">
         {levels.map((lv) => {
-          const r = passReward(lv);
+          const paid = passReward(lv);
+          const free = freePassReward(lv);
           const claimed = pass.claimed.includes(lv);
-          const ready = pass.purchased && lv <= reached && !claimed;
+          const claimedFree = (pass.claimedFree ?? []).includes(lv);
+          const readyPaid = pass.purchased && lv <= reached && !claimed;
+          const readyFree = lv <= reached && !claimedFree;
           return (
-            <div
-              key={lv}
-              className="flex items-center justify-between rounded-md border border-line px-3 py-2 text-sm"
-            >
-              <span>
-                Nv.{lv} · {r.label}
-              </span>
-              {claimed ? (
-                <span className="text-xs text-parchment-dim">feito</span>
-              ) : (
-                <button
-                  type="button"
-                  disabled={!ready}
-                  onClick={() => claimPass(lv)}
-                  className="text-xs text-niens disabled:opacity-30"
-                >
-                  Receber
-                </button>
-              )}
+            <div key={lv} className="rounded-md border border-line px-3 py-2 text-sm">
+              <p className="font-display text-xs text-parchment-dim">Nv.{lv}</p>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span className="text-xs">Grátis · {free.label}</span>
+                {claimedFree ? (
+                  <span className="text-xs text-parchment-dim">feito</span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!readyFree}
+                    onClick={() => claimPassFree(lv)}
+                    className="text-xs text-niens disabled:opacity-30"
+                  >
+                    Receber
+                  </button>
+                )}
+              </div>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span className="text-xs">Pago · {paid.label}</span>
+                {claimed ? (
+                  <span className="text-xs text-parchment-dim">feito</span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!readyPaid}
+                    onClick={() => claimPass(lv)}
+                    className="text-xs text-niens disabled:opacity-30"
+                  >
+                    Receber
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}
@@ -1645,18 +1706,45 @@ function AllianceSheet() {
   const alliance = useGame((s) => s.alliance);
   const foundAlliance = useGame((s) => s.foundAlliance);
   const sendAllianceChat = useGame((s) => s.sendAllianceChat);
+  const recruitAlliance = useGame((s) => s.recruitAlliance);
+  const leaveAlliance = useGame((s) => s.leaveAlliance);
+  const startAllianceDuel = useGame((s) => s.startAllianceDuel);
   const allianceChat = useGame((s) => s.allianceChat);
   const war = useGame((s) => s.war);
   const gold = useGame((s) => s.gold);
+  const player = useGame((s) => s.player);
+  const countyLevel = useGame((s) => s.countyLevel);
+  const raidTargets = useGame((s) => s.raidTargets);
   const [name, setName] = useState("");
+  const [minLevel, setMinLevel] = useState(3);
   const [text, setText] = useState("");
+  const [foes, setFoes] = useState<typeof raidTargets>([]);
   const win = warWindow();
+  useEffect(() => {
+    if (!alliance) return;
+    void playAction("listAllianceFoes")
+      .then((r) => {
+        if (r.foes) setFoes(r.foes);
+        if (r.save) {
+          useGame.setState({
+            alliance: r.save.alliance ?? alliance,
+            war: r.save.war ?? war,
+            allianceChat: r.save.allianceChat?.length ? r.save.allianceChat : allianceChat,
+          });
+        }
+      })
+      .catch(() => {
+        /* offline */
+      });
+  }, [alliance?.id]);
   if (!alliance) {
     return (
       <div className="space-y-3">
         <p className="text-sm text-parchment-dim">
-          Fundar custa {formatRes(ALLIANCE_FOUND_GOLD)} {GOLD_NAME_PL} e libera o chat. Guerra: sábados 8h–23h
-          de Brasília. Pares de alianças; ímpar fica de fora.
+          Fundar custa {formatRes(ALLIANCE_FOUND_GOLD)} {GOLD_NAME_PL}. Escolhe o nome e o nível
+          mínimo (3 ou 5). Guerra dura 1 dia: duelos no campo, 3 pontos na vitória, 1 na derrota.
+          A aliança com mais pontos leva {formatRes(ALLIANCE_WAR_CHEST)} {GOLD_NAME_PL} repartidos
+          pelos que lutaram.
         </p>
         <input
           value={name}
@@ -1664,45 +1752,77 @@ function AllianceSheet() {
           placeholder="Nome da aliança"
           className="h-11 w-full rounded-md border border-line bg-ink px-3 text-sm"
         />
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setMinLevel(3)}
+            className={`h-11 rounded-md border text-sm ${minLevel === 3 ? "border-niens bg-ink-2" : "border-line"}`}
+          >
+            Entrada Nv.3
+          </button>
+          <button
+            type="button"
+            onClick={() => setMinLevel(5)}
+            className={`h-11 rounded-md border text-sm ${minLevel === 5 ? "border-niens bg-ink-2" : "border-line"}`}
+          >
+            Entrada Nv.5
+          </button>
+        </div>
         <button
           type="button"
-          onClick={() => foundAlliance(name)}
+          onClick={() => foundAlliance(name, minLevel)}
           className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink"
         >
           Fundar · {formatRes(ALLIANCE_FOUND_GOLD)}{" "}
           {gold < ALLIANCE_FOUND_GOLD ? `(faltam ${GOLD_NAME_PL.toLowerCase()})` : ""}
         </button>
-        <p className="text-xs text-parchment-dim">
-          Alianças do reino: {ALLIANCES.map((a) => a.name).join(", ")}
-        </p>
       </div>
     );
   }
+  const slots = alliance.slots || allianceSlots(alliance.level || 1);
+  const leader = alliance.leaderId === player.id;
   return (
     <div className="space-y-3">
       <p className="font-display">{alliance.name}</p>
       <p className="text-xs text-parchment-dim">
-        {alliance.members.map((m) => m.nick).join(" · ")}
+        Nv.{alliance.level || 1} · {alliance.xp ?? 0} XP · {alliance.members.length}/{slots} vagas ·
+        entrada condado {alliance.minLevel || 1}+
       </p>
+      <p className="text-xs text-parchment-dim">{alliance.members.map((m) => m.nick).join(" · ")}</p>
       {war && (
         <div className="rounded-md border border-line bg-ink-2 p-3 text-sm">
           {war.sittingOut ? (
-            <p>Sábado ímpar — sem guerra até surgir outra aliança.</p>
+            <p>À espera de um rival neste dia de guerra.</p>
           ) : (
             <>
               <p>
                 Guerra vs {war.foeName} {win.open ? "aberta" : "encerrada"}
               </p>
               <p className="text-parchment-dim">
-                Nós {war.ourStars} · Eles {war.theirStars} · Cofre {formatRes(war.chest)}
+                Nós {war.ourStars} · Eles {war.theirStars} · Cofre {formatRes(war.chest || ALLIANCE_WAR_CHEST)}
               </p>
-              <p className="text-xs text-parchment-dim">Máx. 2 ataques por base inimiga.</p>
+              <p className="text-xs text-parchment-dim">Duelo no campo. Máx. 2 por rival. Recuar dá 1 ponto ao inimigo.</p>
             </>
           )}
         </div>
       )}
-      {!war && <p className="text-xs text-parchment-dim">A guerra abre sábado, 8h de Brasília.</p>}
-      <div className="max-h-48 space-y-2 overflow-y-auto">
+      {foes.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-[0.18em] text-parchment-dim">Campo de guerra</p>
+          {foes.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => startAllianceDuel(f)}
+              className="flex h-11 w-full items-center justify-between rounded-md border border-line bg-ink-2 px-3 text-sm"
+            >
+              <span>{f.nick}</span>
+              <span className="text-xs text-parchment-dim">Duelar</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="max-h-40 space-y-2 overflow-y-auto">
         {allianceChat.map((m) => (
           <div key={m.id} className={`rounded-md px-3 py-2 ${m.self ? "bg-moss/20" : "bg-ink-2"}`}>
             <p className="font-display text-[0.7rem] text-niens">{m.fromNick}</p>
@@ -1724,13 +1844,25 @@ function AllianceSheet() {
           className="h-11 flex-1 rounded-md border border-line bg-ink px-3 text-sm"
           placeholder="Chat da aliança"
         />
-        <button
-          type="submit"
-          className="h-11 rounded-md bg-parchment px-3 font-display text-sm text-ink"
-        >
+        <button type="submit" className="h-11 rounded-md bg-parchment px-3 font-display text-sm text-ink">
           Enviar
         </button>
       </form>
+      {leader && (
+        <button
+          type="button"
+          onClick={recruitAlliance}
+          className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm"
+        >
+          Recrutar no chat global
+        </button>
+      )}
+      <button type="button" onClick={leaveAlliance} className="h-11 w-full rounded-md border border-line text-sm">
+        Sair da aliança
+      </button>
+      <p className="text-xs text-parchment-dim">
+        Teu condado Nv.{countyLevel}. XP de guerra: 1000 por vitória. Nv.2 pede 4000 XP, depois dobra até 7.
+      </p>
     </div>
   );
 }
@@ -1963,7 +2095,7 @@ function BattleHUD() {
       {screen === "battle" && (
         <div className="pointer-events-auto absolute inset-x-0 bottom-0 pb-[max(0.6rem,env(safe-area-inset-bottom))]">
           <p className="mb-2 text-center text-xs text-parchment-dim">
-            Bordas douradas: mais tropas. Toque uma construção para focar.
+            Toca um grupo e arrasta para enviar. Bordas douradas: mais tropas.
           </p>
           <div className="mx-auto flex max-w-xl gap-1 overflow-x-auto px-3">
             {TROOP_ORDER.map((t) => (

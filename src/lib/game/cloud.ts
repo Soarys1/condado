@@ -48,6 +48,10 @@ export type GameActionResult = {
   sessionId?: string;
   lookup?: Record<string, unknown>;
   error?: string;
+  foes?: Lord[];
+  foeArmy?: SaveState["army"];
+  foeLevels?: SaveState["troopLevels"];
+  foeCamp?: number;
 };
 
 async function playAction(action: string, payload: Record<string, unknown> = {}, requestId?: string): Promise<GameActionResult> {
@@ -264,6 +268,8 @@ export function listenGlobalChat(onRows: (rows: ChatMsg[]) => void): Unsubscribe
             at: Number(r.at ?? (Date.parse(String(r.createdAt ?? "")) || Date.now())),
             self: r.fromUserId === auth.currentUser?.uid,
             channel: "global" as const,
+            recruitAllianceId: r.recruitAllianceId ? String(r.recruitAllianceId) : undefined,
+            recruitMinLevel: r.recruitMinLevel ? Number(r.recruitMinLevel) : undefined,
           };
         })
         .filter((m) => m.text)

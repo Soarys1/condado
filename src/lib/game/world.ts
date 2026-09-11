@@ -17,13 +17,13 @@ export function makeId(prefix: string): string {
 export function starterVillage(): BuildingInst[] {
   const now = Date.now();
   return [
-    { id: nid("c"), type: "castle", gx: 14, gy: 14, level: 1 },
-    { id: nid("m"), type: "mine", gx: 10, gy: 13, level: 1, lastCollect: now },
-    { id: nid("f"), type: "farm", gx: 19, gy: 13, level: 1, lastCollect: now },
-    { id: nid("w"), type: "wall", gx: 14, gy: 12, level: 1, dir: "h" },
-    { id: nid("w"), type: "wall", gx: 15, gy: 12, level: 1, dir: "h" },
-    { id: nid("w"), type: "wall", gx: 16, gy: 12, level: 1, dir: "h" },
-    { id: nid("w"), type: "wall", gx: 13, gy: 12, level: 1, dir: "v" },
+    { id: nid("c"), type: "castle", gx: 20, gy: 20, level: 1 },
+    { id: nid("m"), type: "mine", gx: 16, gy: 19, level: 1, lastCollect: now },
+    { id: nid("f"), type: "farm", gx: 25, gy: 19, level: 1, lastCollect: now },
+    { id: nid("w"), type: "wall", gx: 20, gy: 18, level: 1, dir: "h" },
+    { id: nid("w"), type: "wall", gx: 21, gy: 18, level: 1, dir: "h" },
+    { id: nid("w"), type: "wall", gx: 22, gy: 18, level: 1, dir: "h" },
+    { id: nid("w"), type: "wall", gx: 19, gy: 18, level: 1, dir: "v" },
   ];
 }
 

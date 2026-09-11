@@ -80,7 +80,7 @@ export function findPath(
 
   let foundI = -1;
   let guard = 0;
-  while (open.length && guard++ < 4000) {
+  while (open.length && guard++ < 9000) {
     const cur = open.pop()!;
     const cx = cur.i % GRID;
     const cy = (cur.i / GRID) | 0;
@@ -157,7 +157,7 @@ function lineClear(x0: number, y0: number, x1: number, y1: number, blocked: bool
   let err = dx - dy;
   let x = x0;
   let y = y0;
-  for (let n = 0; n < 80; n++) {
+  for (let n = 0; n < 140; n++) {
     if (!(x === x0 && y === y0) && !(x === x1 && y === y1)) {
       if (blocked[y]?.[x]) return false;
     }

@@ -1,9 +1,10 @@
 export const SAVE_KEY = "condado.save.v3";
-export const SAVE_VERSION = 5;
+export const SAVE_VERSION = 6;
 
-export const GRID = 32;
+export const GRID = 44;
 export const TILE_W = 68;
 export const TILE_H = 34;
+export const CASTLE_START = 20;
 
 export const PREP_MS = 120_000;
 export const BATTLE_MS = 240_000;
@@ -14,8 +15,8 @@ export const STORAGE_CAP_MINUTES = 8 * 60;
 export const BASE_ARMY_CAP = 30;
 export const CAMP_CAP = 40;
 
-export const NIEN_COST_GOLD = 450_000;
-export const NIEN_SELL_GOLD = 150_000;
+export const NIEN_COST_GOLD = 550_000;
+export const NIEN_SELL_GOLD = 165_000;
 export const SPEED_TRAIN_GOLD = 2_500;
 
 export const LOOT_BANDS = [
@@ -24,6 +25,7 @@ export const LOOT_BANDS = [
   { at: 0.99, gold: 3000 },
 ] as const;
 export const LOOT_CAP = 8400;
+export const LOOT_PER_COUNTY = 0.05;
 
 export const SHIELD_MS = 60 * 60 * 1000;
 export const REFERRAL_GOLD = 300_000;
@@ -32,6 +34,9 @@ export const DEFENDER_COST = 5_000;
 export const PASS_LEVELS = 50;
 export const PASS_STARS_PER_LEVEL = 6;
 export const PASS_BASE_NIENS = 15;
+export const PASS_BOOST_MULT = 1.4;
+export const PASS_BOOST_MS = 30 * 24 * 3600_000;
+export const PASS_DISCOUNT = 0.45;
 export const WALL_BASE_CAP = 200;
 export const WALL_PER_LEVEL = 55;
 export const COUNTY_MAX = 15;
@@ -44,12 +49,25 @@ export const WHATSAPP_GROUP = "https://chat.whatsapp.com/H5SSZINqtk0HOMPBjhTrqk?
 /** Display name of the gold resource. Internal field stays `gold`. */
 export const GOLD_NAME = "Libra";
 export const GOLD_NAME_PL = "Libras";
-export const BREAD_UPKEEP_PER_TROOP_DAY = 20;
+export const BREAD_UPKEEP_PER_TROOP_HOUR = 20;
+/** @deprecated use BREAD_UPKEEP_PER_TROOP_HOUR */
+export const BREAD_UPKEEP_PER_TROOP_DAY = BREAD_UPKEEP_PER_TROOP_HOUR;
 export const DAILY_ATTACK_CAP = 12;
 export const WAR_ATTACK_CAP = 2;
 export const BREAD_PACK = 1000;
 export const BREAD_PACK_BUY_GOLD = 2_400;
 export const BREAD_PACK_SELL_GOLD = 900;
+
+export const ALLIANCE_MAX_LEVEL = 7;
+export const ALLIANCE_SLOTS_BASE = 30;
+export const ALLIANCE_SLOTS_STEP = 10;
+export const ALLIANCE_XP_WIN = 1000;
+export const ALLIANCE_XP_BASE = 4000;
+export const ALLIANCE_WAR_CHEST = 50_000_000;
+export const ALLIANCE_DUEL_MIN = 70_000;
+export const ALLIANCE_DUEL_MAX = 100_000;
+export const ALLIANCE_DUEL_WIN_POINTS = 3;
+export const ALLIANCE_DUEL_LOSS_POINTS = 1;
 
 export type BuildingType =
   | "castle"
@@ -67,6 +85,7 @@ export type TroopType = "infantry" | "archers" | "cavalry" | "general" | "genera
 export type ResourceKind = "gold" | "bread" | "niens" | "troopCards" | "generalCards";
 export type Tradable = "gold" | "bread" | "niens";
 export type WallDir = "h" | "v";
+export type PassExtra = "boost" | "discount";
 
 export interface BuildingDef {
   type: BuildingType;
@@ -227,7 +246,7 @@ export const TROOPS: Record<TroopType, TroopDef> = {
     hp: 150,
     dps: 14,
     speed: 1.05,
-    range: 0.72,
+    range: 1.05,
     trainMs: 6_000,
     prefer: "nearest",
     ignoreWalls: false,
@@ -301,8 +320,8 @@ export const TROOPS: Record<TroopType, TroopDef> = {
     costGold: 5_000,
     hp: 220,
     dps: 16,
-    speed: 1.0,
-    range: 0.8,
+    speed: 1.05,
+    range: 1.05,
     trainMs: 10_000,
     prefer: "nearest",
     ignoreWalls: false,
@@ -359,8 +378,9 @@ export function upgradeCost(type: BuildingType, level: number): number {
   return base * 2 ** (level - 1);
 }
 
-export function productionPerSec(level: number): number {
-  return (PROD_PER_MIN * level) / 60;
+export function productionPerSec(level: number, boosted = false): number {
+  const base = (PROD_PER_MIN * level) / 60;
+  return boosted ? base * PASS_BOOST_MULT : base;
 }
 
 export function storageCap(level: number): number {
@@ -417,6 +437,20 @@ export function scaledTroop(type: TroopType, level: number, campLevel = 1): { hp
   return { hp: Math.round(d.hp * mul), dps: Math.round(d.dps * mul), speed: d.speed };
 }
 
+export function lootCapForCounty(countyLevel: number): number {
+  const lv = Math.max(1, Math.min(COUNTY_MAX, Math.floor(countyLevel || 1)));
+  return Math.round(LOOT_CAP * (1 + LOOT_PER_COUNTY) ** (lv - 1));
+}
+
+export function lootForStars(stars: number, countyLevel = 1): number {
+  const n = Math.max(0, Math.min(3, Math.floor(stars)));
+  const cap = lootCapForCounty(countyLevel);
+  const scale = cap / LOOT_CAP;
+  let gold = 0;
+  for (let i = 0; i < n; i++) gold += Math.round((LOOT_BANDS[i]?.gold ?? 0) * scale);
+  return Math.min(cap, gold);
+}
+
 export function passSeasonKey(now = Date.now()): { year: number; month: number; key: string } {
   const d = new Date(now);
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -451,7 +485,22 @@ export function passCostNiens(seasonKey: string): number {
   return PASS_BASE_NIENS + Math.max(0, idx);
 }
 
-export function passReward(level: number): { gold: number; bread: number; niens: number; troopCards: number; generalCards: number; label: string } {
+export function passCostWithDiscount(seasonKey: string, hasScroll: boolean): number {
+  const base = passCostNiens(seasonKey);
+  if (!hasScroll) return base;
+  return Math.max(1, Math.ceil(base * (1 - PASS_DISCOUNT)));
+}
+
+export type PassPrize = {
+  gold: number;
+  bread: number;
+  niens: number;
+  troopCards: number;
+  generalCards: number;
+  label: string;
+};
+
+export function passReward(level: number): PassPrize {
   if (level === 48) return { gold: 0, bread: 0, niens: 0, troopCards: 12, generalCards: 0, label: "12 cartas de tropa" };
   if (level === 49) return { gold: 0, bread: 0, niens: 0, troopCards: 0, generalCards: 6, label: "6 cartas de general" };
   if (level === 50) return { gold: 500_000, bread: 500_000, niens: 1, troopCards: 0, generalCards: 0, label: `1 Nien + 500k ${GOLD_NAME_PL} + 500k pão` };
@@ -459,25 +508,62 @@ export function passReward(level: number): { gold: number; bread: number; niens:
   return { gold: 5000 + level * 800, bread: 0, niens: 0, troopCards: 0, generalCards: 0, label: `${5000 + level * 800} ${GOLD_NAME_PL}` };
 }
 
-export function warWindow(now = Date.now()): { open: boolean; start: number; end: number } {
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Sao_Paulo",
-    weekday: "short",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  const parts = Object.fromEntries(fmt.formatToParts(new Date(now)).map((p) => [p.type, p.value]));
-  const open = parts.weekday === "Sat" && Number(parts.hour) >= 8 && Number(parts.hour) < 23;
-  const y = Number(parts.year);
-  const m = Number(parts.month);
-  const d = Number(parts.day);
-  const start = new Date(`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}T08:00:00-03:00`).getTime();
-  const end = new Date(`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}T23:00:00-03:00`).getTime();
-  return { open, start, end };
+export function freePassReward(level: number): PassPrize {
+  if (level === 48) return { gold: 0, bread: 0, niens: 0, troopCards: 6, generalCards: 0, label: "6 cartas de tropa" };
+  if (level === 49) return { gold: 0, bread: 0, niens: 0, troopCards: 0, generalCards: 3, label: "3 cartas de general" };
+  if (level === 50) {
+    return {
+      gold: 100_000,
+      bread: 100_000,
+      niens: 0,
+      troopCards: 3,
+      generalCards: 0,
+      label: `3 cartas de tropa + 100k ${GOLD_NAME_PL} + 100k pão`,
+    };
+  }
+  if (level % 2 === 0) {
+    const bread = Math.round((4000 + level * 600) / 2);
+    return { gold: 0, bread, niens: 0, troopCards: 0, generalCards: 0, label: `${bread} pão` };
+  }
+  const gold = Math.round((5000 + level * 800) / 2);
+  return { gold, bread: 0, niens: 0, troopCards: 0, generalCards: 0, label: `${gold} ${GOLD_NAME_PL}` };
+}
+
+export function allianceSlots(level: number): number {
+  const lv = Math.max(1, Math.min(ALLIANCE_MAX_LEVEL, Math.floor(level || 1)));
+  return ALLIANCE_SLOTS_BASE + ALLIANCE_SLOTS_STEP * (lv - 1);
+}
+
+export function allianceXpToNext(level: number): number {
+  if (level < 1 || level >= ALLIANCE_MAX_LEVEL) return 0;
+  return ALLIANCE_XP_BASE * 2 ** (level - 1);
+}
+
+export function applyAllianceXp(level: number, xp: number, gained: number): { level: number; xp: number } {
+  let lv = Math.max(1, Math.min(ALLIANCE_MAX_LEVEL, Math.floor(level || 1)));
+  let cur = Math.max(0, Math.floor(xp || 0)) + Math.max(0, Math.floor(gained));
+  while (lv < ALLIANCE_MAX_LEVEL) {
+    const need = allianceXpToNext(lv);
+    if (cur < need) break;
+    cur -= need;
+    lv += 1;
+  }
+  return { level: lv, xp: cur };
+}
+
+export function duelGold(seed: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
+  const t = (h >>> 0) / 4294967296;
+  const span = ALLIANCE_DUEL_MAX - ALLIANCE_DUEL_MIN;
+  return Math.round((ALLIANCE_DUEL_MIN + t * span) / 1000) * 1000;
+}
+
+export function warWindow(now = Date.now()): { open: boolean; start: number; end: number; key: string } {
+  const key = brtDayKey(now);
+  const start = new Date(`${key}T00:00:00-03:00`).getTime();
+  const end = start + 24 * 3600_000;
+  return { open: now >= start && now < end, start, end, key };
 }
 
 function pad2(n: number) {

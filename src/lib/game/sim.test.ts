@@ -14,8 +14,9 @@ import {
   trainTroop,
   upgradeBuilding,
   upgradeCountySim,
+  settle,
 } from "./sim";
-import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP } from "./constants";
+import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT } from "./constants";
 
 describe("economia pura", () => {
   it("recolha de mina usa timestamp, não tick", () => {
@@ -78,6 +79,9 @@ describe("economia pura", () => {
     assert.equal(lootForStars(3), 8400);
     assert.equal(lootForStars(99), LOOT_CAP);
     assert.equal(lootForStars(-4), 0);
+    assert.equal(lootForStars(3, 2), lootCapForCounty(2));
+    assert.ok(lootCapForCounty(2) > LOOT_CAP);
+    assert.equal(lootCapForCounty(1), LOOT_CAP);
   });
 
   it("finish raid ignora ouro pedido acima do teto das estrelas", () => {
@@ -155,5 +159,62 @@ describe("economia pura", () => {
     const r2 = upgradeCountySim(r.save);
     assert.equal(r2.save.countyLevel, 3);
     assert.equal(r2.save.buildings.find((b) => b.type === "castle")?.level, 3);
+  });
+
+  it("treino recusa segundo general", () => {
+    const save = defaultSave("Teste");
+    save.buildings.push({ id: "b-bar", type: "barracks", gx: 8, gy: 8, level: 1 });
+    save.army.general = 1;
+    save.bread = 5000;
+    assert.throws(() => trainTroop(save, "general"), GameError);
+  });
+
+  it("trilha grátis do passe 50 não dá Nien", () => {
+    const r = freePassReward(50);
+    assert.equal(r.niens, 0);
+    assert.equal(r.troopCards, 3);
+    assert.equal(r.gold, 100_000);
+    assert.equal(r.bread, 100_000);
+  });
+
+  it("passe sobe 1 Nien por mês a partir de setembro 2026", () => {
+    assert.equal(passCostNiens("2026-09"), 15);
+    assert.equal(passCostNiens("2026-10"), 16);
+    assert.equal(passCostNiens("2026-11"), 17);
+    assert.equal(passCostWithDiscount("2026-09", true), Math.ceil(15 * 0.55));
+  });
+
+  it("boost de passe só aumenta mina e fazenda", () => {
+    assert.equal(productionPerSec(1, true), productionPerSec(1) * PASS_BOOST_MULT);
+  });
+
+  it("settle da nuvem não paga cofre de guerra", () => {
+    const save = defaultSave("Teste");
+    save.alliance = {
+      id: "AL-X",
+      name: "X",
+      members: [{ id: save.player.id, nick: save.player.nick }],
+      minLevel: 3,
+      level: 1,
+      xp: 0,
+      leaderId: save.player.id,
+      slots: 30,
+    };
+    save.war = {
+      week: "2000-01-01",
+      foeId: "AL-Y",
+      foeName: "Y",
+      chest: 50_000_000,
+      ourStars: 9,
+      theirStars: 1,
+      attacks: {},
+      sittingOut: false,
+      resolved: false,
+      participants: [save.player.id],
+    };
+    save.lastTick = Date.now();
+    const r = settle(save, Date.now());
+    assert.equal(r.save.gold, save.gold);
+    assert.equal(r.save.war?.resolved, false);
   });
 });

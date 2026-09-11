@@ -1,4 +1,4 @@
-import type { BuildingType, ResourceKind, Tradable, TroopType, WallDir } from "./constants";
+import type { BuildingType, PassExtra, ResourceKind, Tradable, TroopType, WallDir } from "./constants";
 
 export type GameScreen =
   | "splash"
@@ -52,6 +52,8 @@ export interface ChatMsg {
   at: number;
   self?: boolean;
   channel?: "global" | "alliance";
+  recruitAllianceId?: string;
+  recruitMinLevel?: number;
 }
 
 export interface RaidLog {
@@ -116,12 +118,25 @@ export interface BattlePassState {
   purchased: boolean;
   stars: number;
   claimed: number[];
+  claimedFree: number[];
+  extrasClaimed: PassExtra[];
+}
+
+export interface AllianceMember {
+  id: string;
+  nick: string;
+  uid?: string;
 }
 
 export interface AllianceState {
   id: string;
   name: string;
-  members: Array<{ id: string; nick: string }>;
+  members: AllianceMember[];
+  minLevel: number;
+  level: number;
+  xp: number;
+  leaderId: string;
+  slots: number;
 }
 
 export interface WarState {
@@ -134,6 +149,7 @@ export interface WarState {
   attacks: Record<string, number>;
   sittingOut: boolean;
   resolved: boolean;
+  participants: string[];
 }
 
 export interface SaveState {
@@ -174,6 +190,8 @@ export interface SaveState {
   attacksReceivedDay: string;
   attacksReceived: number;
   attacksByTarget: Record<string, { day: string; count: number }>;
+  boostUntil: number;
+  passDiscount: boolean;
 }
 
 export type SheetId =

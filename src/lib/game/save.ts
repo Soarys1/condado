@@ -50,6 +50,8 @@ const SAVE_FIELDS: (keyof SaveState)[] = [
   "attacksReceivedDay",
   "attacksReceived",
   "attacksByTarget",
+  "boostUntil",
+  "passDiscount",
 ];
 
 export function defaultSave(nick = "Senhor", referredBy: string | null = null): SaveState {
@@ -81,7 +83,7 @@ export function defaultSave(nick = "Senhor", referredBy: string | null = null): 
     referredBy,
     referralClaimed: false,
     inviteCopied: false,
-    pass: { season, purchased: false, stars: 0, claimed: [] },
+    pass: { season, purchased: false, stars: 0, claimed: [], claimedFree: [], extrasClaimed: [] },
     alliance: null,
     war: null,
     weekStars: 0,
@@ -93,6 +95,8 @@ export function defaultSave(nick = "Senhor", referredBy: string | null = null): 
     attacksReceivedDay: "",
     attacksReceived: 0,
     attacksByTarget: {},
+    boostUntil: 0,
+    passDiscount: false,
   };
 }
 
@@ -142,13 +146,58 @@ function migrate(s: SaveState): SaveState {
   const countyLevel = Math.max(1, Number(s.countyLevel ?? base.countyLevel ?? 1));
   const buildings = Array.isArray(s.buildings) && s.buildings.length ? s.buildings : base.buildings;
   const season = passSeasonKey(now).key;
-  const pass = s.pass?.season === season ? s.pass : { season, purchased: false, stars: 0, claimed: [] };
+  const passRaw = s.pass;
+  const pass =
+    passRaw?.season === season
+      ? {
+          season,
+          purchased: !!passRaw.purchased,
+          stars: Number(passRaw.stars ?? 0),
+          claimed: Array.isArray(passRaw.claimed) ? passRaw.claimed.map(Number) : [],
+          claimedFree: Array.isArray(passRaw.claimedFree) ? passRaw.claimedFree.map(Number) : [],
+          extrasClaimed: Array.isArray(passRaw.extrasClaimed)
+            ? passRaw.extrasClaimed.filter((x): x is "boost" | "discount" => x === "boost" || x === "discount")
+            : [],
+        }
+      : { season, purchased: false, stars: 0, claimed: [], claimedFree: [], extrasClaimed: [] };
+  const alliance = s.alliance
+    ? {
+        id: String(s.alliance.id),
+        name: String(s.alliance.name ?? "Aliança"),
+        members: Array.isArray(s.alliance.members) ? s.alliance.members : [],
+        minLevel: Math.max(1, Number(s.alliance.minLevel ?? 1)),
+        level: Math.max(1, Number(s.alliance.level ?? 1)),
+        xp: Math.max(0, Number(s.alliance.xp ?? 0)),
+        leaderId: String(s.alliance.leaderId ?? s.player?.id ?? ""),
+        slots: Math.max(30, Number(s.alliance.slots ?? 30)),
+      }
+    : null;
+  const war = s.war
+    ? {
+        week: String(s.war.week ?? ""),
+        foeId: s.war.foeId ?? null,
+        foeName: String(s.war.foeName ?? ""),
+        chest: Number(s.war.chest ?? 0),
+        ourStars: Number(s.war.ourStars ?? 0),
+        theirStars: Number(s.war.theirStars ?? 0),
+        attacks: s.war.attacks ?? {},
+        sittingOut: !!s.war.sittingOut,
+        resolved: !!s.war.resolved,
+        participants: Array.isArray(s.war.participants) ? s.war.participants.map(String) : [],
+      }
+    : null;
   return {
     ...base,
     ...s,
     version: SAVE_VERSION,
     player: { ...base.player, ...s.player, id: s.player?.id || base.player.id },
-    army: { ...base.army, ...s.army, defender: s.army?.defender ?? 0 },
+    army: {
+      ...base.army,
+      ...s.army,
+      defender: s.army?.defender ?? 0,
+      general: Math.min(1, Number(s.army?.general ?? 0)),
+      generaless: Math.min(1, Number(s.army?.generaless ?? 0)),
+    },
     troopLevels: { ...base.troopLevels, ...s.troopLevels },
     troopCards: s.troopCards ?? 2,
     generalCards: s.generalCards ?? 0,
@@ -163,8 +212,8 @@ function migrate(s: SaveState): SaveState {
     referralClaimed: s.referralClaimed ?? false,
     inviteCopied: s.inviteCopied ?? false,
     pass,
-    alliance: s.alliance ?? null,
-    war: s.war ?? null,
+    alliance,
+    war,
     weekStars: s.weekStars ?? 0,
     weekKey: s.weekKey ?? "",
     weekClaimed: s.weekClaimed ?? null,
@@ -186,6 +235,8 @@ function migrate(s: SaveState): SaveState {
     attacksReceivedDay: s.attacksReceivedDay ?? "",
     attacksReceived: s.attacksReceived ?? 0,
     attacksByTarget: s.attacksByTarget ?? {},
+    boostUntil: Number(s.boostUntil ?? 0),
+    passDiscount: Boolean(s.passDiscount),
   };
 }
 

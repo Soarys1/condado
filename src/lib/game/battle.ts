@@ -22,6 +22,8 @@ import { sfxArrow, sfxBoom, sfxHit, sfxHorn } from "./audio";
 import type { ArmyCounts, BuildingInst, TroopLevels } from "./types";
 
 export type BattlePhase = "prep" | "fight" | "ended";
+export type BattleMode = "raid" | "field";
+export type TroopSide = "atk" | "def";
 
 export interface BattleBuilding {
   id: string;
@@ -55,6 +57,9 @@ export interface BattleTroop {
   cooldown: number;
   alive: boolean;
   repath: number;
+  side: TroopSide;
+  waypoint: { x: number; y: number } | null;
+  foeId: string | null;
 }
 
 export interface Projectile {
@@ -71,6 +76,7 @@ export interface Projectile {
   aoe: number;
   fromDefense: boolean;
   dead: boolean;
+  side?: TroopSide;
 }
 
 export interface FloatingNum {
@@ -92,6 +98,7 @@ export interface BattleResult {
   casualties: number;
   elapsed: number;
   retreated: boolean;
+  fieldWin: boolean;
 }
 
 let uid = 1;
@@ -120,31 +127,57 @@ export class Battle {
   result: BattleResult | null = null;
   spectator = false;
   focusId: string | null = null;
+  mode: BattleMode = "raid";
+  selected = new Set<string>();
+  lootCap = LOOT_CAP;
   private blocked: boolean[][] = [];
   private occupied: Set<string> = new Set();
   private armyLeft: ArmyCounts;
+  private foeArmy: ArmyCounts;
   private heroesUsed = new Set<TroopType>();
   private lastBand = 0;
   private sfxGate = 0;
   private stats: Record<TroopType, { hp: number; dps: number; speed: number }>;
+  private foeStats: Record<TroopType, { hp: number; dps: number; speed: number }>;
 
   constructor(
     layout: BuildingInst[],
     army: ArmyCounts,
     _lootGold: number,
-    opts?: { spectator?: boolean; levels?: TroopLevels; campLevel?: number },
+    opts?: {
+      spectator?: boolean;
+      levels?: TroopLevels;
+      campLevel?: number;
+      mode?: BattleMode;
+      lootCap?: number;
+      foeArmy?: ArmyCounts;
+      foeLevels?: TroopLevels;
+      foeCamp?: number;
+    },
   ) {
     this.armyLeft = {
       infantry: army.infantry || 0,
       archers: army.archers || 0,
       cavalry: army.cavalry || 0,
-      general: army.general || 0,
-      generaless: army.generaless || 0,
+      general: Math.min(1, army.general || 0),
+      generaless: Math.min(1, army.generaless || 0),
       defender: army.defender || 0,
     };
+    this.foeArmy = {
+      infantry: opts?.foeArmy?.infantry || 0,
+      archers: opts?.foeArmy?.archers || 0,
+      cavalry: opts?.foeArmy?.cavalry || 0,
+      general: Math.min(1, opts?.foeArmy?.general || 0),
+      generaless: Math.min(1, opts?.foeArmy?.generaless || 0),
+      defender: opts?.foeArmy?.defender || 0,
+    };
     this.spectator = !!opts?.spectator;
+    this.mode = opts?.mode ?? "raid";
+    this.lootCap = Math.max(0, Math.floor(opts?.lootCap ?? LOOT_CAP));
     const lv = opts?.levels;
     const camp = opts?.campLevel ?? 1;
+    const flv = opts?.foeLevels;
+    const fcamp = opts?.foeCamp ?? 1;
     this.stats = {
       infantry: scaledTroop("infantry", lv?.infantry ?? 1),
       archers: scaledTroop("archers", lv?.archers ?? 1),
@@ -152,6 +185,14 @@ export class Battle {
       general: scaledTroop("general", lv?.general ?? 1),
       generaless: scaledTroop("generaless", lv?.generaless ?? 1),
       defender: scaledTroop("defender", 1, camp),
+    };
+    this.foeStats = {
+      infantry: scaledTroop("infantry", flv?.infantry ?? 1),
+      archers: scaledTroop("archers", flv?.archers ?? 1),
+      cavalry: scaledTroop("cavalry", flv?.cavalry ?? 1),
+      general: scaledTroop("general", flv?.general ?? 1),
+      generaless: scaledTroop("generaless", flv?.generaless ?? 1),
+      defender: scaledTroop("defender", 1, fcamp),
     };
     this.buildings = layout.map((b) => {
       const def = BUILDINGS[b.type];
@@ -202,24 +243,36 @@ export class Battle {
     }
   }
 
-  remainingOf(type: TroopType): number {
-    return this.armyLeft[type];
+  remainingOf(type: TroopType, side: TroopSide = "atk"): number {
+    return side === "atk" ? this.armyLeft[type] : this.foeArmy[type];
   }
 
-  canDeploy(type: TroopType, gx: number, gy: number): boolean {
+  private deployEdge(gx: number, gy: number, side: TroopSide): boolean {
+    if (this.mode === "field") {
+      if (side === "atk") return gx <= 2 && gy >= 0 && gy < GRID;
+      return gx >= GRID - 3 && gy >= 0 && gy < GRID;
+    }
+    return isEdgeTile(gx, gy);
+  }
+
+  canDeploy(type: TroopType, gx: number, gy: number, side: TroopSide = "atk"): boolean {
     if (this.phase !== "prep" && this.phase !== "fight") return false;
     if (this.spectator) return false;
-    if (this.armyLeft[type] <= 0) return false;
-    if (isHero(type) && this.heroesUsed.has(type)) return false;
-    if (!isEdgeTile(gx, gy)) return false;
+    if (side === "atk" && this.armyLeft[type] <= 0) return false;
+    if (side === "def" && this.foeArmy[type] <= 0) return false;
+    if (isHero(type)) {
+      const used = this.troops.some((t) => t.alive && t.side === side && t.type === type);
+      if (used) return false;
+    }
+    if (!this.deployEdge(gx, gy, side)) return false;
     if (gx < 0 || gy < 0 || gx >= GRID || gy >= GRID) return false;
     if (this.occupied.has(`${gx},${gy}`)) return false;
     return true;
   }
 
-  deploy(type: TroopType, gx: number, gy: number): boolean {
-    if (!this.canDeploy(type, gx, gy)) return false;
-    const st = this.stats[type];
+  deploy(type: TroopType, gx: number, gy: number, side: TroopSide = "atk"): boolean {
+    if (!this.canDeploy(type, gx, gy, side)) return false;
+    const st = side === "atk" ? this.stats[type] : this.foeStats[type];
     this.troops.push({
       id: nid(),
       type,
@@ -231,13 +284,17 @@ export class Battle {
       targetId: null,
       path: [],
       pathI: 0,
-      facing: 0,
+      facing: side === "atk" ? 0 : Math.PI,
       cooldown: 0,
       alive: true,
       repath: 0,
+      side,
+      waypoint: null,
+      foeId: null,
     });
-    this.armyLeft[type] = Math.max(0, this.armyLeft[type] - 1);
-    if (isHero(type)) this.heroesUsed.add(type);
+    if (side === "atk") this.armyLeft[type] = Math.max(0, this.armyLeft[type] - 1);
+    else this.foeArmy[type] = Math.max(0, this.foeArmy[type] - 1);
+    if (isHero(type) && side === "atk") this.heroesUsed.add(type);
     if (this.phase === "fight") {
       const placed = this.troops[this.troops.length - 1];
       if (placed) {
@@ -249,39 +306,43 @@ export class Battle {
   }
 
   autoDeploy() {
-    const order: TroopType[] = [
-      "infantry",
-      "archers",
-      "defender",
-      "cavalry",
-      "general",
-      "generaless",
-    ];
+    this.autoDeploySide("atk", this.armyLeft);
+    if (this.mode === "field") this.autoDeploySide("def", this.foeArmy);
+    this.startFight();
+  }
+
+  private autoDeploySide(side: TroopSide, bag: ArmyCounts) {
+    const order: TroopType[] = ["infantry", "archers", "defender", "cavalry", "general", "generaless"];
     for (const type of order) {
-      let guard = 80;
-      while (this.armyLeft[type] > 0 && guard-- > 0) {
+      let guard = 120;
+      while (bag[type] > 0 && guard-- > 0) {
         const gx =
-          Math.random() < 0.5
-            ? Math.random() < 0.5
-              ? 1
-              : GRID - 2
-            : 2 + Math.floor(Math.random() * (GRID - 4));
-        const gy =
-          gx <= 2 || gx >= GRID - 3
-            ? 2 + Math.floor(Math.random() * (GRID - 4))
+          side === "def" && this.mode === "field"
+            ? GRID - 2
             : Math.random() < 0.5
-              ? 1
-              : GRID - 2;
-        if (!this.deploy(type, gx, gy)) continue;
+              ? Math.random() < 0.5
+                ? 1
+                : GRID - 2
+              : 2 + Math.floor(Math.random() * (GRID - 4));
+        const gy =
+          this.mode === "field" && (side === "atk" || side === "def")
+            ? 2 + Math.floor(Math.random() * (GRID - 4))
+            : gx <= 2 || gx >= GRID - 3
+              ? 2 + Math.floor(Math.random() * (GRID - 4))
+              : Math.random() < 0.5
+                ? 1
+                : GRID - 2;
+        const useGx = side === "atk" && this.mode === "field" ? 1 : gx;
+        if (!this.deploy(type, useGx, gy, side)) continue;
       }
     }
-    this.startFight();
   }
 
   startFight() {
     if (this.phase !== "prep") return;
     this.phase = "fight";
     this.prepLeft = 0;
+    if (this.mode === "field") this.autoDeploySide("def", this.foeArmy);
     for (const t of this.troops) {
       if (!t.alive) continue;
       t.repath = 0;
@@ -300,6 +361,48 @@ export class Battle {
     this.end(true);
   }
 
+  pickAt(wx: number, wy: number): BattleTroop | null {
+    let best: BattleTroop | null = null;
+    let bd = 1.15;
+    for (const t of this.troops) {
+      if (!t.alive || t.side !== "atk") continue;
+      const d = Math.hypot(t.x - wx, t.y - wy);
+      if (d < bd) {
+        bd = d;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  selectGroup(t: BattleTroop) {
+    this.selected.clear();
+    for (const o of this.troops) {
+      if (!o.alive || o.side !== "atk") continue;
+      if (o.type !== t.type) continue;
+      if (Math.hypot(o.x - t.x, o.y - t.y) > 2.6) continue;
+      this.selected.add(o.id);
+    }
+    if (!this.selected.size) this.selected.add(t.id);
+  }
+
+  commandSelected(x: number, y: number) {
+    const tx = Math.min(GRID - 0.2, Math.max(0.2, x));
+    const ty = Math.min(GRID - 0.2, Math.max(0.2, y));
+    for (const t of this.troops) {
+      if (!t.alive || !this.selected.has(t.id)) continue;
+      t.waypoint = { x: tx, y: ty };
+      t.path = [];
+      t.pathI = 0;
+      t.repath = 0;
+      t.goalId = null;
+    }
+  }
+
+  clearSelection() {
+    this.selected.clear();
+  }
+
   tick(dt: number) {
     const d = Math.min(dt, 0.1);
     this.shake = Math.max(0, this.shake - d * 2.4);
@@ -309,6 +412,7 @@ export class Battle {
       f.y -= d * 1.1;
       return f.life > 0;
     });
+    if (this.particles.length > 64) this.particles.splice(0, this.particles.length - 64);
     this.particles = this.particles.filter((p) => {
       p.life -= d;
       p.x += p.vx * d;
@@ -325,44 +429,53 @@ export class Battle {
     if (this.phase !== "fight") return;
 
     this.fightLeft = Math.max(0, this.fightLeft - d * 1000);
-    this.grantBands();
+    if (this.mode === "raid") this.grantBands();
 
     for (const t of this.troops) {
       if (!t.alive) continue;
       this.tickTroop(t, d);
     }
-    for (const b of this.buildings) {
-      if (!b.alive) continue;
-      this.tickDefense(b, d);
+    if (this.mode === "raid") {
+      for (const b of this.buildings) {
+        if (!b.alive) continue;
+        this.tickDefense(b, d);
+      }
     }
     this.tickProjectiles(d);
 
+    if (this.mode === "field") {
+      const atkLeft = this.troops.some((t) => t.alive && t.side === "atk") || this.reserveCount("atk") > 0;
+      const defLeft = this.troops.some((t) => t.alive && t.side === "def") || this.reserveCount("def") > 0;
+      if (this.fightLeft <= 0 || !atkLeft || !defLeft) this.end(false);
+      return;
+    }
+
     const buildingsLeft = this.buildings.filter((b) => b.alive && b.type !== "wall");
-    const troopsLeft = this.troops.some((t) => t.alive);
-    const reserves =
-      this.armyLeft.infantry +
-      this.armyLeft.archers +
-      this.armyLeft.cavalry +
-      this.armyLeft.general +
-      this.armyLeft.generaless +
-      this.armyLeft.defender;
-    if (this.fightLeft <= 0 || buildingsLeft.length === 0 || (!troopsLeft && reserves <= 0)) {
+    const troopsLeft = this.troops.some((t) => t.alive && t.side === "atk");
+    if (this.fightLeft <= 0 || buildingsLeft.length === 0 || (!troopsLeft && this.reserveCount("atk") <= 0)) {
       this.end(false);
     }
   }
 
+  private reserveCount(side: TroopSide): number {
+    const a = side === "atk" ? this.armyLeft : this.foeArmy;
+    return a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender;
+  }
+
   private grantBands() {
+    const scale = this.lootCap / LOOT_CAP;
     while (this.lastBand < LOOT_BANDS.length) {
       const band = LOOT_BANDS[this.lastBand]!;
       if (this.destruction < band.at - 1e-6) break;
       this.lastBand += 1;
-      this.goldLoot = Math.min(LOOT_CAP, this.goldLoot + band.gold);
+      const gold = Math.round(band.gold * scale);
+      this.goldLoot = Math.min(this.lootCap, this.goldLoot + gold);
       const castle = this.buildings.find((b) => b.type === "castle");
       const sign = this.spectator ? "−" : "+";
       this.float(
-        castle?.cx ?? 14,
-        (castle?.cy ?? 14) - 1.2,
-        `${sign}${band.gold} ${GOLD_NAME} (${Math.round(band.at * 100)}%)`,
+        castle?.cx ?? 20,
+        (castle?.cy ?? 20) - 1.2,
+        `${sign}${gold} ${GOLD_NAME} (${Math.round(band.at * 100)}%)`,
         "#e4c15a",
       );
     }
@@ -370,20 +483,45 @@ export class Battle {
 
   private tickTroop(t: BattleTroop, dt: number) {
     const def = TROOPS[t.type];
-    const st = this.stats[t.type];
+    const st = t.side === "atk" ? this.stats[t.type] : this.foeStats[t.type];
     t.repath -= dt;
 
-    if (this.focusId && !this.spectator) {
-      const focused = this.buildings.find(
-        (b) => b.id === this.focusId && b.alive && b.type !== "wall",
-      );
-      if (focused && Math.hypot(focused.cx - t.x, focused.cy - t.y) <= 7.5) {
+    if (t.waypoint) {
+      const wd = Math.hypot(t.waypoint.x - t.x, t.waypoint.y - t.y);
+      if (wd < 0.35) {
+        t.waypoint = null;
+        t.path = [];
+      } else {
+        const nearbyWall = this.nearestWallInRange(t, Math.max(def.range, 1.15));
+        if (nearbyWall && !def.ignoreWalls && this.tileBlockedToward(t, t.waypoint.x, t.waypoint.y)) {
+          this.strike(t, nearbyWall, dt);
+          return;
+        }
+        if (this.mode === "field") {
+          const foe = this.closestFoe(t, def.range + 0.55);
+          if (foe) {
+            this.strikeTroop(t, foe, dt);
+            return;
+          }
+        }
+        this.walk(t, t.waypoint.x, t.waypoint.y, st.speed, dt, def.ignoreWalls);
+        return;
+      }
+    }
+
+    if (this.mode === "field") {
+      this.tickFieldTroop(t, dt, def, st);
+      return;
+    }
+
+    if (this.focusId && t.side === "atk" && !this.spectator) {
+      const focused = this.buildings.find((b) => b.id === this.focusId && b.alive && b.type !== "wall");
+      if (focused && Math.hypot(focused.cx - t.x, focused.cy - t.y) <= 8.5) {
         t.goalId = focused.id;
       }
     }
 
-    let goal =
-      this.buildings.find((b) => b.id === t.goalId && b.alive && b.type !== "wall") ?? null;
+    let goal = this.buildings.find((b) => b.id === t.goalId && b.alive && b.type !== "wall") ?? null;
     if (!goal) {
       goal = this.pickGoal(t);
       t.goalId = goal?.id ?? null;
@@ -393,13 +531,20 @@ export class Battle {
     }
     if (!goal) return;
 
-    const beforeX = t.x;
-    const beforeY = t.y;
-
+    const meleeReach = Math.max(def.range, 1.05);
     if (this.inRange(t, goal, def.range)) {
       t.path = [];
       this.strike(t, goal, dt);
       return;
+    }
+
+    const nearWall = this.nearestWallInRange(t, meleeReach);
+    if (nearWall && !def.ignoreWalls && !def.shootOverWalls) {
+      const blockedToGoal = this.tileBlockedToward(t, goal.cx, goal.cy);
+      if (blockedToGoal || this.inRange(t, nearWall, meleeReach)) {
+        this.strike(t, nearWall, dt);
+        return;
+      }
     }
 
     if (def.ignoreWalls) {
@@ -410,7 +555,7 @@ export class Battle {
 
     let breach =
       this.buildings.find((b) => b.id === t.targetId && b.alive && b.type === "wall") ?? null;
-    if (breach && this.inRange(t, breach, Math.max(def.range, 0.85))) {
+    if (breach && this.inRange(t, breach, meleeReach)) {
       this.strike(t, breach, dt);
       return;
     }
@@ -419,7 +564,7 @@ export class Battle {
       const planned = this.planRoute(t, goal);
       t.path = planned.path;
       t.pathI = 0;
-      t.repath = 0.7 + Math.random() * 0.4;
+      t.repath = 1.05 + Math.random() * 0.45;
       if (planned.breach) {
         t.targetId = planned.breach.id;
         breach = planned.breach;
@@ -429,22 +574,74 @@ export class Battle {
       }
     }
 
-    if (breach && this.inRange(t, breach, Math.max(def.range, 0.9))) {
+    if (breach && this.inRange(t, breach, meleeReach)) {
       this.strike(t, breach, dt);
       return;
     }
 
+    const beforeX = t.x;
+    const beforeY = t.y;
     const step = t.path[t.pathI];
     if (!step) {
-      this.steer(t, goal.cx, goal.cy, st.speed, dt);
+      const wall = this.pickBreachWall(t, goal) ?? nearWall;
+      if (wall) {
+        t.targetId = wall.id;
+        if (this.inRange(t, wall, meleeReach)) {
+          this.strike(t, wall, dt);
+          return;
+        }
+        this.walk(t, wall.cx, wall.cy, st.speed, dt, false);
+      } else {
+        this.walk(t, goal.cx, goal.cy, st.speed, dt, false);
+      }
     } else {
       const reached = this.steer(t, step[0] + 0.5, step[1] + 0.5, st.speed, dt);
       if (reached) t.pathI += 1;
     }
 
-    if (Math.hypot(t.x - beforeX, t.y - beforeY) < 0.002) {
-      this.steer(t, goal.cx, goal.cy, Math.max(st.speed, 0.8), dt);
+    if (Math.hypot(t.x - beforeX, t.y - beforeY) < 0.004) {
+      const wall = this.nearestWallInRange(t, meleeReach + 0.4) ?? this.pickBreachWall(t, goal);
+      if (wall) {
+        t.targetId = wall.id;
+        this.strike(t, wall, dt);
+      }
     }
+  }
+
+  private tickFieldTroop(
+    t: BattleTroop,
+    dt: number,
+    def: (typeof TROOPS)[TroopType],
+    st: { hp: number; dps: number; speed: number },
+  ) {
+    const foe = this.closestFoe(t, 99);
+    if (!foe) return;
+    if (this.inTroopRange(t, foe, def.range)) {
+      this.strikeTroop(t, foe, dt);
+      return;
+    }
+    this.steer(t, foe.x, foe.y, st.speed, dt);
+    if (this.inTroopRange(t, foe, def.range)) this.strikeTroop(t, foe, dt);
+  }
+
+  private walk(t: BattleTroop, tx: number, ty: number, speed: number, dt: number, ignoreWalls: boolean) {
+    if (ignoreWalls) {
+      this.steer(t, tx, ty, speed, dt);
+      return;
+    }
+    if (t.path.length === 0 || t.pathI >= t.path.length || t.repath <= 0) {
+      const p = findPath(t.x, t.y, tx, ty, this.blocked);
+      t.path = p;
+      t.pathI = 0;
+      t.repath = 0.9;
+    }
+    const step = t.path[t.pathI];
+    if (!step) {
+      this.steer(t, tx, ty, speed, dt);
+      return;
+    }
+    const reached = this.steer(t, step[0] + 0.5, step[1] + 0.5, speed, dt);
+    if (reached) t.pathI += 1;
   }
 
   private planRoute(
@@ -456,7 +653,7 @@ export class Battle {
     const spots = this.approachSpots(t, goal, def.range);
     let best: Array<[number, number]> = [];
     let bestCost = Infinity;
-    for (const [sx, sy] of spots.slice(0, 8)) {
+    for (const [sx, sy] of spots.slice(0, 6)) {
       const p = findPath(t.x, t.y, sx + 0.5, sy + 0.5, this.blocked);
       if (!p.length) continue;
       const c = pathCost(p);
@@ -465,14 +662,14 @@ export class Battle {
         best = p;
       }
     }
-    const tooFar = best.length > 0 && bestCost > Math.max(direct * 2.6, direct + 10);
+    const tooFar = best.length > 0 && bestCost > Math.max(direct * 3.2, direct + 14);
     if (best.length && !tooFar) return { path: best, breach: null };
 
     if (def.shootOverWalls && direct <= def.range + goal.size + 1.5) {
       return { path: [], breach: null };
     }
 
-    const wall = this.pickBreachWall(t, goal);
+    const wall = this.pickBreachWall(t, goal) ?? this.nearestWallInRange(t, 8);
     if (wall) {
       const wp = findPath(t.x, t.y, wall.cx, wall.cy, this.blocked);
       return { path: wp.length ? wp : [[Math.floor(wall.cx), Math.floor(wall.cy)]], breach: wall };
@@ -502,7 +699,7 @@ export class Battle {
         ) {
           if (this.blocked[y]?.[x]) continue;
           const d = Math.hypot(x + 0.5 - goal.cx, y + 0.5 - goal.cy);
-          if (d <= range + goal.size * 0.35 && d > 0.6) ranged.push([x, y]);
+          if (d <= range + goal.size * 0.45 && d > 0.6) ranged.push([x, y]);
         }
       }
     }
@@ -534,10 +731,10 @@ export class Battle {
       const gy = goal.cy - t.y;
       const gl = Math.hypot(gx, gy) || 1;
       const toward = (dx * gx + dy * gy) / gl;
-      if (toward < -0.15) continue;
+      if (toward < -0.55) continue;
       const dist = Math.hypot(dx, dy);
       const line = Math.abs(dx * gy - dy * gx) / gl;
-      const s = dist * 0.55 + line * 1.35;
+      const s = dist * 0.45 + line * 1.1;
       if (s < score) {
         score = s;
         best = b;
@@ -546,13 +743,54 @@ export class Battle {
     return best;
   }
 
+  private nearestWallInRange(t: BattleTroop, range: number): BattleBuilding | null {
+    let best: BattleBuilding | null = null;
+    let bd = range;
+    for (const b of this.buildings) {
+      if (!b.alive || b.type !== "wall") continue;
+      const d = Math.hypot(b.cx - t.x, b.cy - t.y);
+      if (d <= bd) {
+        bd = d;
+        best = b;
+      }
+    }
+    return best;
+  }
+
+  private tileBlockedToward(t: BattleTroop, tx: number, ty: number): boolean {
+    const dist = Math.hypot(tx - t.x, ty - t.y) || 1;
+    const nx = t.x + ((tx - t.x) / dist) * 0.7;
+    const ny = t.y + ((ty - t.y) / dist) * 0.7;
+    const gx = Math.floor(nx);
+    const gy = Math.floor(ny);
+    return !!this.blocked[gy]?.[gx];
+  }
+
   private inRange(t: BattleTroop, b: BattleBuilding, range: number): boolean {
-    return Math.hypot(b.cx - t.x, b.cy - t.y) <= range + b.size * 0.35;
+    return Math.hypot(b.cx - t.x, b.cy - t.y) <= range + b.size * 0.55 + 0.12;
+  }
+
+  private inTroopRange(t: BattleTroop, o: BattleTroop, range: number): boolean {
+    return Math.hypot(o.x - t.x, o.y - t.y) <= range + 0.5;
+  }
+
+  private closestFoe(t: BattleTroop, range: number): BattleTroop | null {
+    let best: BattleTroop | null = null;
+    let bd = range;
+    for (const o of this.troops) {
+      if (!o.alive || o.side === t.side) continue;
+      const d = Math.hypot(o.x - t.x, o.y - t.y);
+      if (d < bd) {
+        bd = d;
+        best = o;
+      }
+    }
+    return best;
   }
 
   private strike(t: BattleTroop, target: BattleBuilding, dt: number) {
     const def = TROOPS[t.type];
-    const st = this.stats[t.type];
+    const st = t.side === "atk" ? this.stats[t.type] : this.foeStats[t.type];
     t.facing = Math.atan2(target.cy - t.y, target.cx - t.x);
     t.cooldown -= dt;
     if (t.cooldown > 0) return;
@@ -569,6 +807,7 @@ export class Battle {
         dmg: st.dps,
         aoe: 0,
         fromDefense: false,
+        side: t.side,
       });
       t.cooldown = 1;
       if (this.sfxGate <= 0) {
@@ -581,6 +820,42 @@ export class Battle {
       if (this.sfxGate <= 0) {
         sfxHit();
         this.sfxGate = 0.16;
+      }
+    }
+  }
+
+  private strikeTroop(t: BattleTroop, target: BattleTroop, dt: number) {
+    const def = TROOPS[t.type];
+    const st = t.side === "atk" ? this.stats[t.type] : this.foeStats[t.type];
+    t.facing = Math.atan2(target.y - t.y, target.x - t.x);
+    t.cooldown -= dt;
+    if (t.cooldown > 0) return;
+    if (def.range > 1.4) {
+      this.spawnProj({
+        kind: "arrow",
+        x: t.x,
+        y: t.y,
+        z: 0.45,
+        tz: 0.25,
+        tx: target.x,
+        ty: target.y,
+        speed: 8,
+        dmg: st.dps,
+        aoe: 0,
+        fromDefense: t.side === "def",
+        side: t.side,
+      });
+      t.cooldown = 1;
+      if (this.sfxGate <= 0) {
+        sfxArrow();
+        this.sfxGate = 0.12;
+      }
+    } else {
+      this.hurtTroop(target, st.dps, t.x, t.y);
+      t.cooldown = 1;
+      if (this.sfxGate <= 0) {
+        sfxHit();
+        this.sfxGate = 0.14;
       }
     }
   }
@@ -691,7 +966,7 @@ export class Battle {
     let best: BattleTroop | null = null;
     let bd = range;
     for (const t of this.troops) {
-      if (!t.alive) continue;
+      if (!t.alive || t.side !== "atk") continue;
       const d = Math.hypot(t.x - x, t.y - y);
       if (d < bd) {
         bd = d;
@@ -731,6 +1006,18 @@ export class Battle {
   }
 
   private impact(p: Projectile) {
+    if (this.mode === "field") {
+      const side = p.side ?? (p.fromDefense ? "def" : "atk");
+      for (const t of this.troops) {
+        if (!t.alive || t.side === side) continue;
+        const d = Math.hypot(t.x - p.x, t.y - p.y);
+        if (d <= Math.max(0.55, p.aoe)) {
+          const fall = p.aoe > 0 ? 1 - d / (p.aoe + 0.01) : 1;
+          this.hurtTroop(t, p.dmg * Math.max(0.4, fall), p.x, p.y);
+        }
+      }
+      return;
+    }
     if (!p.fromDefense && p.dmg > 0) {
       const b = this.buildings.find(
         (bb) => bb.alive && Math.hypot(bb.cx - p.x, bb.cy - p.y) < bb.size * 0.85,
@@ -740,7 +1027,7 @@ export class Battle {
     }
     if (p.fromDefense && p.dmg > 0) {
       for (const t of this.troops) {
-        if (!t.alive) continue;
+        if (!t.alive || t.side !== "atk") continue;
         const d = Math.hypot(t.x - p.x, t.y - p.y);
         if (d <= Math.max(0.55, p.aoe)) {
           const fall = p.aoe > 0 ? 1 - d / (p.aoe + 0.01) : 1;
@@ -748,7 +1035,7 @@ export class Battle {
         }
       }
       if (p.kind === "boulder") {
-        this.burst(p.x, p.y, "#c45a2a", 10);
+        this.burst(p.x, p.y, "#c45a2a", 8);
         this.shake = Math.min(1, this.shake + 0.28);
         sfxBoom();
       }
@@ -764,7 +1051,7 @@ export class Battle {
       b.alive = false;
       if (b.type === "castle") this.shake = 1;
       else this.shake = Math.min(1, this.shake + 0.22);
-      this.burst(b.cx, b.cy, "#6a5340", 18);
+      this.burst(b.cx, b.cy, "#6a5340", 12);
       this.rebuildBlocked();
       for (const t of this.troops) {
         if (t.targetId === b.id || t.goalId === b.id) {
@@ -787,14 +1074,16 @@ export class Battle {
     if (t.hp <= 0) {
       t.hp = 0;
       t.alive = false;
-      this.burst(t.x, t.y, "#7a3030", 8);
+      this.selected.delete(t.id);
+      this.burst(t.x, t.y, "#7a3030", 6);
     }
     void hx;
     void hy;
   }
 
   private burst(x: number, y: number, color: string, n: number) {
-    for (let i = 0; i < n; i++) {
+    const count = Math.min(n, 8);
+    for (let i = 0; i < count; i++) {
       const a = Math.random() * Math.PI * 2;
       const s = 1.2 + Math.random() * 2.4;
       this.particles.push({
@@ -817,6 +1106,39 @@ export class Battle {
   private end(retreated: boolean) {
     if (this.phase === "ended") return;
     this.phase = "ended";
+    if (this.mode === "field") {
+      const atkAlive = this.troops.some((t) => t.alive && t.side === "atk");
+      const defAlive = this.troops.some((t) => t.alive && t.side === "def");
+      const fieldWin = !retreated && atkAlive && !defAlive;
+      const survivors: ArmyCounts = {
+        infantry: 0,
+        archers: 0,
+        cavalry: 0,
+        general: 0,
+        generaless: 0,
+        defender: 0,
+      };
+      let casualties = 0;
+      for (const t of this.troops) {
+        if (t.side !== "atk") continue;
+        if (t.alive) survivors[t.type] += 1;
+        else casualties += 1;
+      }
+      this.result = {
+        stars: fieldWin ? 3 : 0,
+        destruction: fieldWin ? 1 : defAlive ? 0 : 0.5,
+        niens: 0,
+        gold: 0,
+        bread: 0,
+        castleDown: fieldWin,
+        survivors,
+        casualties,
+        elapsed: (BATTLE_MS - this.fightLeft) / 1000,
+        retreated,
+        fieldWin,
+      };
+      return;
+    }
     const nonWall = this.buildings.filter((b) => b.type !== "wall");
     const destroyed = nonWall.filter((b) => !b.alive).length;
     const destruction = nonWall.length ? destroyed / nonWall.length : 1;
@@ -826,7 +1148,7 @@ export class Battle {
     if (castleDown) stars += 1;
     if (destruction >= 0.999) stars = 3;
     if (retreated) stars = Math.min(stars, 2);
-    if (destruction >= 0.99) this.goldLoot = LOOT_CAP;
+    if (destruction >= 0.99) this.goldLoot = this.lootCap;
     const survivors: ArmyCounts = {
       infantry: 0,
       archers: 0,
@@ -837,6 +1159,7 @@ export class Battle {
     };
     let casualties = 0;
     for (const t of this.troops) {
+      if (t.side !== "atk") continue;
       if (t.alive) survivors[t.type] += 1;
       else casualties += 1;
     }
@@ -844,17 +1167,24 @@ export class Battle {
       stars,
       destruction,
       niens: 0,
-      gold: Math.min(LOOT_CAP, this.goldLoot),
+      gold: Math.min(this.lootCap, this.goldLoot),
       bread: 0,
       castleDown,
       survivors,
       casualties,
       elapsed: (BATTLE_MS - this.fightLeft) / 1000,
       retreated,
+      fieldWin: false,
     };
   }
 
   get destruction(): number {
+    if (this.mode === "field") {
+      const defs = this.troops.filter((t) => t.side === "def");
+      if (!defs.length) return 1;
+      const lost = defs.filter((t) => !t.alive).length;
+      return lost / defs.length;
+    }
     const nonWall = this.buildings.filter((b) => b.type !== "wall");
     if (!nonWall.length) return 1;
     const lost = nonWall.reduce((s, b) => s + (1 - b.hp / b.maxHp), 0);

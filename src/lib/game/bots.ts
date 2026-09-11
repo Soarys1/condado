@@ -1,12 +1,13 @@
+import { lootCapForCounty } from "./constants";
 import type { ArmyCounts, ChatMsg, Lord } from "./types";
 
 export const LORDS: Lord[] = [
-  { id: "CDN-ALDRIC", nick: "Sir Aldric", title: "Escudeiro", rank: 0, lootGold: 8400, lootBread: 0, allianceId: "AL-CORVO" },
-  { id: "CDN-MARELA", nick: "Marela do Vale", title: "Capitã", rank: 1, lootGold: 8400, lootBread: 0, allianceId: "AL-ROSA" },
-  { id: "CDN-RODRIGO", nick: "Rodrigo Caldeira", title: "Celador", rank: 2, lootGold: 8400, lootBread: 0, allianceId: "AL-VALE" },
-  { id: "CDN-ISOLDE", nick: "Dama Isolde", title: "Baronesa", rank: 3, lootGold: 8400, lootBread: 0, allianceId: "AL-TORRE" },
-  { id: "CDN-FERNAN", nick: "Fernão Negro", title: "Marechal", rank: 4, lootGold: 8400, lootBread: 0, allianceId: "AL-CORVO" },
-  { id: "CDN-BEATRIZ", nick: "Beatriz da Torre", title: "Duquesa", rank: 5, lootGold: 8400, lootBread: 0, allianceId: "AL-ROSA" },
+  { id: "CDN-ALDRIC", nick: "Sir Aldric", title: "Escudeiro", rank: 0, lootGold: lootCapForCounty(1), lootBread: 0, allianceId: "AL-CORVO" },
+  { id: "CDN-MARELA", nick: "Marela do Vale", title: "Capitã", rank: 1, lootGold: lootCapForCounty(2), lootBread: 0, allianceId: "AL-ROSA" },
+  { id: "CDN-RODRIGO", nick: "Rodrigo Caldeira", title: "Celador", rank: 2, lootGold: lootCapForCounty(3), lootBread: 0, allianceId: "AL-VALE" },
+  { id: "CDN-ISOLDE", nick: "Dama Isolde", title: "Baronesa", rank: 3, lootGold: lootCapForCounty(4), lootBread: 0, allianceId: "AL-TORRE" },
+  { id: "CDN-FERNAN", nick: "Fernão Negro", title: "Marechal", rank: 4, lootGold: lootCapForCounty(5), lootBread: 0, allianceId: "AL-CORVO" },
+  { id: "CDN-BEATRIZ", nick: "Beatriz da Torre", title: "Duquesa", rank: 5, lootGold: lootCapForCounty(6), lootBread: 0, allianceId: "AL-ROSA" },
 ];
 
 export const ALLIANCES = [
@@ -18,10 +19,10 @@ export const ALLIANCES = [
 
 const CHAT_POOL = [
   "Alguém vende pão? As fazendas do norte secaram.",
-  "Niens não se saqueiam. Só o tesouro as vende — 450 mil libras.",
+  "Niens não se saqueiam. Só o tesouro as vende — 550 mil libras.",
   "O condado de Fernão está aberto. Muros fracos no flanco leste.",
   "Uma Nien vale um cofre. Libras, o reino gasta.",
-  "Guerra de aliança é sábado, 8h às 23h de Brasília.",
+  "Guerra de aliança dura um dia. Duelo no campo até o último soldado.",
   "As minas rendem pouco depois da geada.",
   "Quem atacar o meu castelo vai pagar em libras. Gemas ficam.",
   "Mercado justo. Cola o ID, vê o nick, escolhe o envio.",
@@ -41,7 +42,7 @@ export function seedChat(now = Date.now()): ChatMsg[] {
   return [
     { id: "m0", fromId: "CDN-HERALDO", fromNick: "Heraldo", text: "Bem-vindos. Niens são gemas. Libras se saqueiam. Gemas, não.", at: now - 120000, channel: "global" },
     { id: "m1", fromId: LORDS[0]!.id, fromNick: LORDS[0]!.nick, text: "Procuro ataque honrado. Libras altas. Niens no cofre.", at: now - 80000, channel: "global" },
-    { id: "m2", fromId: LORDS[3]!.id, fromNick: LORDS[3]!.nick, text: "Guerra sábado. Pares de alianças. Ímpar espera.", at: now - 35000, channel: "global" },
+    { id: "m2", fromId: LORDS[3]!.id, fromNick: LORDS[3]!.nick, text: "Guerra de aliança dura um dia. Duelo no campo.", at: now - 35000, channel: "global" },
   ];
 }
 

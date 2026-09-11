@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import {
   ALLIANCE_FOUND_GOLD,
+  ALLIANCE_WAR_CHEST,
   BREAD_PACK,
   BREAD_PACK_BUY_GOLD,
   BREAD_PACK_SELL_GOLD,
-  BREAD_UPKEEP_PER_TROOP_DAY,
+  BREAD_UPKEEP_PER_TROOP_HOUR,
   BUILDINGS,
   COUNTY_MAX,
   DAILY_ATTACK_CAP,
@@ -12,7 +13,6 @@ import {
   GENERAL_MAX_LEVEL,
   GENERAL_UNLOCK_COUNTY,
   GOLD_NAME_PL,
-  LOOT_CAP,
   NIEN_COST_GOLD,
   NIEN_SELL_GOLD,
   PASS_LEVELS,
@@ -22,6 +22,7 @@ import {
   SPEED_TRAIN_GOLD,
   TROOPS,
   WAR_ATTACK_CAP,
+  allianceSlots,
   armyCapacity,
   brtDayKey,
   campUpgradeGold,
@@ -29,10 +30,12 @@ import {
   dailyAttackCap,
   dailyNienSendCap,
   defenderCap,
+  freePassReward,
   generalCardsFor,
   goldWord,
   isHero,
-  passCostNiens,
+  lootCapForCounty,
+  passCostWithDiscount,
   passReward,
   passSeasonKey,
   passWindow,
@@ -47,13 +50,14 @@ import {
   warWindow,
   rankingWindow,
   type BuildingType,
+  type PassExtra,
   type ResourceKind,
   type Tradable,
   type TroopType,
   type WallDir,
 } from "./constants";
 import { Battle } from "./battle";
-import { ALLIANCES, botArmy, findLord, findNick, LORDS, lordsOfAlliance, pairWar, randomChat, warChest } from "./bots";
+import { ALLIANCES, botArmy, findLord, findNick, LORDS, lordsOfAlliance, pairWar, randomChat } from "./bots";
 import { defaultSave, flushCloud, loadSave, persist, setCloudSync, wipeSave } from "./save";
 import type {
   BuildingInst,
@@ -95,6 +99,7 @@ import {
 export let battle: Battle | null = null;
 export let raidTarget: Lord | null = null;
 let raidSessionId: string | null = null;
+let raidKind: "raid" | "alliance" = "raid";
 let lastPersist = 0;
 let lastIncomingAt = 0;
 
@@ -122,6 +127,11 @@ function applyServerSave(save: SaveState, extra?: { toast?: string | null; offer
     marchLord: cur.marchLord,
     lookup: cur.lookup,
     raidTargets: extra?.raidTargets ?? cur.raidTargets,
+    chat: save.chat?.length ? save.chat : cur.chat,
+    allianceChat: save.allianceChat?.length ? save.allianceChat : cur.allianceChat,
+    ledger: save.ledger?.length ? save.ledger : cur.ledger,
+    boostUntil: save.boostUntil ?? cur.boostUntil,
+    passDiscount: save.passDiscount ?? cur.passDiscount,
   });
   persist(save);
 }
@@ -219,7 +229,13 @@ interface GameStore extends SaveState {
   recruitDefender: () => boolean;
   buyPass: () => boolean;
   claimPass: (level: number) => boolean;
-  foundAlliance: (name: string) => boolean;
+  foundAlliance: (name: string, minLevel?: number) => boolean;
+  joinAlliance: (id: string) => boolean;
+  leaveAlliance: () => void;
+  recruitAlliance: () => void;
+  startAllianceDuel: (lord: Lord) => void;
+  claimPassFree: (level: number) => boolean;
+  claimPassExtra: (extra: PassExtra) => boolean;
   sendAllianceChat: (text: string) => void;
   setFocus: (id: string | null) => void;
   finishMarch: () => void;
@@ -246,11 +262,11 @@ function producerKind(t: BuildingType): "gold" | "bread" | null {
   return null;
 }
 
-function storedAmount(b: BuildingInst, now = Date.now()): number {
+function storedAmount(b: BuildingInst, now = Date.now(), boosted = false): number {
   if (b.type !== "mine" && b.type !== "farm") return 0;
   const t0 = b.lastCollect ?? now;
   const elapsed = Math.max(0, (now - t0) / 1000);
-  return Math.floor(Math.min(storageCap(b.level), productionPerSec(b.level) * elapsed));
+  return Math.floor(Math.min(storageCap(b.level), productionPerSec(b.level, boosted) * elapsed));
 }
 
 function wireCloudSync() {
@@ -419,10 +435,16 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   resetGame: () => {
+    chatUnsub?.();
+    chatUnsub = null;
+    liveChat = false;
+    setCloudSync(null);
     wipeSave();
     battle = null;
     raidTarget = null;
-    set({ ...defaultSave(), hydrated: true, screen: "splash", sheet: null });
+    raidSessionId = null;
+    raidKind = "raid";
+    set({ ...defaultSave(), hydrated: true, screen: "splash", sheet: null, toast: null, bootError: null, needsCounty: false });
   },
 
   tick: (now) => {
@@ -433,7 +455,7 @@ export const useGame = create<GameStore>((set, get) => ({
 
     const trained = applyTraining(s, dt * 1000);
     const season = passSeasonKey(now).key;
-    const pass = s.pass.season === season ? s.pass : { season, purchased: false, stars: 0, claimed: [] };
+    const pass = s.pass.season === season ? s.pass : { season, purchased: false, stars: 0, claimed: [], claimedFree: [], extrasClaimed: [] };
 
     if (isLive()) {
       set({ lastTick: now, army: trained.army, training: trained.jobs, pass });
@@ -464,12 +486,13 @@ export const useGame = create<GameStore>((set, get) => ({
           week,
           foeId: pair.foeId,
           foeName: pair.foeName,
-          chest: warChest(week + s.alliance.id),
+          chest: ALLIANCE_WAR_CHEST,
           ourStars: 0,
           theirStars: Math.floor(Math.random() * 8),
           attacks: {},
           sittingOut: pair.sittingOut,
           resolved: false,
+          participants: [],
         };
       } else if (!war.sittingOut && Math.random() < dt * 0.02) {
         war = { ...war, theirStars: war.theirStars + (Math.random() < 0.55 ? 1 : 2) };
@@ -480,14 +503,14 @@ export const useGame = create<GameStore>((set, get) => ({
     let toast: string | null = s.toast;
     if (war && !win.open && !war.resolved) {
       const won = !war.sittingOut && war.ourStars > war.theirStars;
-      const members = Math.max(1, s.alliance?.members.length ?? 1);
-      const share = won ? Math.floor(war.chest / members) : 0;
+      const n = Math.max(1, war.participants?.length || s.alliance?.members.length || 1);
+      const share = won ? Math.floor((war.chest || ALLIANCE_WAR_CHEST) / n) : 0;
       gold += share;
       war = { ...war, resolved: true };
       toast = won
         ? `Guerra vencida. +${share.toLocaleString("pt")} ${GOLD_NAME_PL} do cofre.`
         : war.sittingOut
-          ? "Sábado ímpar: a aliança ficou de fora."
+          ? "Neste dia a aliança ficou à espera de um rival."
           : "Guerra perdida. O cofre ficou com o rival.";
       chat = [
         ...chat,
@@ -511,12 +534,12 @@ export const useGame = create<GameStore>((set, get) => ({
       trained.army.defender +
       trained.jobs.length;
     let bread = s.bread;
-    const upkeep = troopsNow * BREAD_UPKEEP_PER_TROOP_DAY * (dt / 86400);
+    const upkeep = troopsNow * BREAD_UPKEEP_PER_TROOP_HOUR * (dt / 3600);
     if (upkeep > 0) {
       if (bread >= upkeep) bread -= upkeep;
       else {
         bread = 0;
-        if (!toast) toast = "Sem pão para a manutenção. Cada tropa gasta 20 pães por dia.";
+        if (!toast) toast = "Sem pão para a manutenção. Cada tropa gasta 20 pães por hora.";
       }
     }
 
@@ -555,7 +578,7 @@ export const useGame = create<GameStore>((set, get) => ({
     }
   },
 
-  storedOf: (b, now) => storedAmount(b, now),
+  storedOf: (b, now) => storedAmount(b, now, (get().boostUntil ?? 0) > Date.now()),
 
   setSheet: (sheet) => set({ sheet, placing: sheet === "build" ? get().placing : null }),
   setMuted: (muted) => {
@@ -660,16 +683,12 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   collect: (id) => {
-    if (isLive()) {
-      void liveAction("collect", { id }).then(() => sfxCoin()).catch(liveFail);
-      return;
-    }
     const s = get();
     const b = s.buildings.find((x) => x.id === id);
     if (!b) return;
     const kind = producerKind(b.type);
     if (!kind) return;
-    const amt = storedAmount(b);
+    const amt = storedAmount(b, Date.now(), (s.boostUntil ?? 0) > Date.now());
     if (amt < 1) {
       set({ toast: "Ainda está a produzir." });
       return;
@@ -679,25 +698,28 @@ export const useGame = create<GameStore>((set, get) => ({
     else set({ bread: s.bread + amt, buildings, toast: `+${amt} pão` });
     persist({ ...get() });
     sfxCoin();
+    if (isLive()) {
+      void liveAction("collect", { id }).catch((error) => {
+        if (error instanceof Error && /produzir|pronto para recolher/i.test(error.message)) return;
+        liveFail(error);
+      });
+    }
   },
 
   collectAll: () => {
-    if (isLive()) {
-      void liveAction("collectAll").then(() => sfxCoin()).catch(liveFail);
-      return;
-    }
     const s = get();
     let gold = 0;
     let bread = 0;
     const now = Date.now();
+    const boosted = (s.boostUntil ?? 0) > now;
     const buildings = s.buildings.map((b) => {
       if (b.type === "mine") {
-        const amt = storedAmount(b, now);
+        const amt = storedAmount(b, now, boosted);
         gold += amt;
         return amt > 0 ? { ...b, lastCollect: now } : b;
       }
       if (b.type === "farm") {
-        const amt = storedAmount(b, now);
+        const amt = storedAmount(b, now, boosted);
         bread += amt;
         return amt > 0 ? { ...b, lastCollect: now } : b;
       }
@@ -715,6 +737,12 @@ export const useGame = create<GameStore>((set, get) => ({
     });
     persist({ ...get() });
     sfxCoin();
+    if (isLive()) {
+      void liveAction("collectAll").catch((error) => {
+        if (error instanceof Error && /pronto para recolher/i.test(error.message)) return;
+        liveFail(error);
+      });
+    }
   },
 
   upgrade: (id) => {
@@ -866,6 +894,7 @@ export const useGame = create<GameStore>((set, get) => ({
           const r = await startRaid(lord.id);
           if (r.save) applyServerSave(r.save, { toast: r.toast ?? null });
           raidSessionId = r.sessionId ?? null;
+          raidKind = "raid";
           const target: Lord = {
             ...lord,
             nick: r.nick ?? lord.nick,
@@ -946,6 +975,7 @@ export const useGame = create<GameStore>((set, get) => ({
     battle = new Battle(layout, { ...s.army }, lord.lootGold, {
       levels: s.troopLevels,
       campLevel: s.campLevel,
+      lootCap: lord.lootGold || lootCapForCounty(lord.countyLevel ?? s.countyLevel),
     });
     const deployType: TroopType =
       s.army.infantry > 0
@@ -970,7 +1000,8 @@ export const useGame = create<GameStore>((set, get) => ({
     const type = s.deployType;
     const ok = battle.deploy(type, gx, gy);
     if (!ok) {
-      if (!isEdgeTile(gx, gy)) set({ toast: "Posicione nas bordas douradas." });
+      if (battle.mode === "field") set({ toast: "Neste campo, coloca as tropas na borda oeste." });
+      else if (!isEdgeTile(gx, gy)) set({ toast: "Posicione nas bordas douradas." });
       return false;
     }
     const army = { ...s.army };
@@ -1026,9 +1057,10 @@ export const useGame = create<GameStore>((set, get) => ({
       army.generaless += r.survivors.generaless;
       army.defender += r.survivors.defender;
     }
-    const pass = s.pass.purchased
-      ? { ...s.pass, stars: s.pass.stars + (battle.spectator ? 0 : r.stars) }
-      : s.pass;
+    const pass = {
+      ...s.pass,
+      stars: s.pass.stars + (battle.spectator || battle.mode === "field" ? 0 : r.stars),
+    };
     let war = s.war;
     if (
       !battle.spectator &&
@@ -1038,26 +1070,35 @@ export const useGame = create<GameStore>((set, get) => ({
       !war.sittingOut
     ) {
       const used = (war.attacks[raidTarget.id] ?? 0) + 1;
+      const winPts = battle.mode === "field" ? (r.fieldWin && !r.retreated ? 3 : 1) : r.stars;
+      const losePts = battle.mode === "field" ? (r.fieldWin && !r.retreated ? 1 : 3) : 0;
+      const parts = war.participants.includes(s.player.id) ? war.participants : [...war.participants, s.player.id];
       war = {
         ...war,
-        ourStars: war.ourStars + r.stars,
+        ourStars: war.ourStars + winPts,
+        theirStars: war.theirStars + losePts,
         attacks: { ...war.attacks, [raidTarget.id]: used },
+        participants: parts,
       };
     }
     const stolen = battle.spectator ? r.gold : 0;
     const win = rankingWindow();
     let weekStars = s.weekKey === win.key ? s.weekStars : 0;
     const weekKey = win.key;
-    if (!battle.spectator && win.open) weekStars += r.stars;
+    if (!battle.spectator && win.open && battle.mode !== "field") weekStars += r.stars;
+    let goldGain = battle.spectator ? 0 : r.gold;
+    if (!isLive() && battle.mode === "field" && r.fieldWin && !r.retreated) {
+      goldGain = 70_000 + Math.floor(Math.random() * 31) * 1000;
+    }
     const attackerNick = battle.spectator ? raidTarget.nick : s.player.nick;
     const defenderNick = battle.spectator ? s.player.nick : raidTarget.nick;
     const troopsLost = battle.spectator ? 0 : r.casualties;
     set({
       army,
-      gold: Math.max(0, s.gold + (battle.spectator ? 0 : r.gold) - stolen),
+      gold: Math.max(0, s.gold + goldGain - stolen),
       bread: s.bread,
       niens: s.niens,
-      stars: s.stars + (battle.spectator ? 0 : r.stars),
+      stars: s.stars + (battle.spectator || battle.mode === "field" ? 0 : r.stars),
       weekStars,
       weekKey,
       raidsWon: s.raidsWon + (r.stars > 0 && !battle.spectator ? 1 : 0),
@@ -1085,7 +1126,18 @@ export const useGame = create<GameStore>((set, get) => ({
     if (r.stars > 0 && !battle.spectator) sfxStar();
     if (!battle.spectator && raidTarget.real && isLive() && raidSessionId) {
       const session = raidSessionId;
+      const kind = raidKind;
       raidSessionId = null;
+      raidKind = "raid";
+      if (kind === "alliance") {
+        void liveAction("finishAllianceDuel", {
+          sessionId: session,
+          won: !!r.fieldWin,
+          retreated: !!r.retreated,
+          survivors: army,
+        }).catch(liveFail);
+        return;
+      }
       void finishRaid({
         sessionId: session,
         stars: r.stars,
@@ -1611,7 +1663,7 @@ export const useGame = create<GameStore>((set, get) => ({
       set({ toast: "Passe já selado nesta temporada." });
       return false;
     }
-    const cost = passCostNiens(s.pass.season);
+    const cost = passCostWithDiscount(s.pass.season, !!s.passDiscount);
     if (s.niens < cost) {
       set({ toast: `Precisa de ${cost} Niens.` });
       return false;
@@ -1619,7 +1671,8 @@ export const useGame = create<GameStore>((set, get) => ({
     set({
       niens: s.niens - cost,
       pass: { ...s.pass, purchased: true },
-      toast: "Passe de Batalha selado.",
+      passDiscount: false,
+      toast: s.passDiscount ? `Passe selado com 45% de desconto · ${cost} Niens.` : "Passe de Batalha selado.",
     });
     persist({ ...get() });
     sfxCoin();
@@ -1653,9 +1706,67 @@ export const useGame = create<GameStore>((set, get) => ({
     return true;
   },
 
-  foundAlliance: (name) => {
+  claimPassFree: (level) => {
     if (isLive()) {
-      void liveAction("foundAlliance", { name }).then(() => sfxStar()).catch(liveFail);
+      void liveAction("claimFreePass", { level }).then(() => sfxStar()).catch(liveFail);
+      return true;
+    }
+    const s = get();
+    const reached = Math.min(PASS_LEVELS, Math.floor(s.pass.stars / PASS_STARS_PER_LEVEL));
+    const claimedFree = s.pass.claimedFree ?? [];
+    if (level > reached || claimedFree.includes(level)) return false;
+    const r = freePassReward(level);
+    set({
+      gold: s.gold + r.gold,
+      bread: s.bread + r.bread,
+      troopCards: s.troopCards + r.troopCards,
+      generalCards: s.generalCards + r.generalCards,
+      pass: { ...s.pass, claimedFree: [...claimedFree, level] },
+      toast: `Trilha grátis Nv.${level}: ${r.label}`,
+    });
+    persist({ ...get() });
+    sfxStar();
+    return true;
+  },
+
+  claimPassExtra: (extra) => {
+    if (isLive()) {
+      void liveAction("claimPassExtra", { extra }).then(() => sfxStar()).catch(liveFail);
+      return true;
+    }
+    const s = get();
+    if (!s.pass.purchased) {
+      set({ toast: "Compre o passe primeiro." });
+      return false;
+    }
+    const reached = Math.min(PASS_LEVELS, Math.floor(s.pass.stars / PASS_STARS_PER_LEVEL));
+    if (reached < PASS_LEVELS && !s.pass.claimed.includes(PASS_LEVELS)) {
+      set({ toast: "Chega ao nível 50 do passe pago para resgatar os cupons." });
+      return false;
+    }
+    const extras = s.pass.extrasClaimed ?? [];
+    if (extras.includes(extra)) return false;
+    if (extra === "boost") {
+      set({
+        boostUntil: Date.now() + 30 * 24 * 3600_000,
+        pass: { ...s.pass, extrasClaimed: [...extras, "boost"] },
+        toast: "Boost +40% em minas e fazendas por 30 dias. Já está ativo.",
+      });
+    } else {
+      set({
+        passDiscount: true,
+        pass: { ...s.pass, extrasClaimed: [...extras, "discount"] },
+        toast: "Pergaminho de 45% no próximo passe. Usa-o na compra.",
+      });
+    }
+    persist({ ...get() });
+    sfxStar();
+    return true;
+  },
+
+  foundAlliance: (name, minLevel = 3) => {
+    if (isLive()) {
+      void liveAction("foundAlliance", { name, minLevel }).then(() => sfxStar()).catch(liveFail);
       return true;
     }
     const s = get();
@@ -1668,6 +1779,7 @@ export const useGame = create<GameStore>((set, get) => ({
       sfxError();
       return false;
     }
+    const req = minLevel === 5 ? 5 : 3;
     const id = `AL-${s.player.id.slice(4, 8)}`;
     set({
       gold: s.gold - ALLIANCE_FOUND_GOLD,
@@ -1679,12 +1791,128 @@ export const useGame = create<GameStore>((set, get) => ({
           { id: "CDN-ALDRIC", nick: "Sir Aldric" },
           { id: "CDN-ISOLDE", nick: "Dama Isolde" },
         ],
+        minLevel: req,
+        level: 1,
+        xp: 0,
+        leaderId: s.player.id,
+        slots: allianceSlots(1),
       },
-      toast: "Aliança fundada. Chat liberado.",
+      toast: `Aliança fundada. Entrada a partir do condado ${req}.`,
     });
     persist({ ...get() });
     sfxStar();
     return true;
+  },
+
+  joinAlliance: (id) => {
+    if (!id) return false;
+    if (isLive()) {
+      void liveAction("joinAlliance", { allianceId: id }).then(() => sfxStar()).catch(liveFail);
+      return true;
+    }
+    set({ toast: "Entra na tua conta para juntar-te a uma aliança." });
+    return false;
+  },
+
+  leaveAlliance: () => {
+    if (isLive()) {
+      void liveAction("leaveAlliance").then(() => sfxClick()).catch(liveFail);
+      return;
+    }
+    set({ alliance: null, war: null, allianceChat: [], toast: "Saíste da aliança." });
+    persist({ ...get() });
+  },
+
+  recruitAlliance: () => {
+    if (isLive()) {
+      void liveAction("recruitAlliance").then(() => sfxClick()).catch(liveFail);
+      return;
+    }
+    const s = get();
+    if (!s.alliance) return;
+    const msg = {
+      id: nid("m"),
+      fromId: s.player.id,
+      fromNick: s.player.nick,
+      text: `Recruta: ${s.alliance.name} · condado ${s.alliance.minLevel}+`,
+      at: Date.now(),
+      self: true,
+      channel: "global" as const,
+      recruitAllianceId: s.alliance.id,
+      recruitMinLevel: s.alliance.minLevel,
+    };
+    set({ chat: [...s.chat, msg].slice(-40), toast: "Pedido de recrutamento no chat." });
+    persist({ ...get() });
+  },
+
+  startAllianceDuel: (lord) => {
+    const s = get();
+    const armyN = s.army.infantry + s.army.archers + s.army.cavalry + s.army.general + s.army.generaless + s.army.defender;
+    if (armyN <= 0) {
+      set({ toast: "Sem tropas no acampamento." });
+      return;
+    }
+    raidTarget = lord;
+    const startField = (foeArmy = lord) => {
+      battle = new Battle([], { ...get().army }, 0, {
+        mode: "field",
+        levels: get().troopLevels,
+        campLevel: get().campLevel,
+        foeArmy: {
+          infantry: Math.max(4, Math.min(20, (foeArmy.rank || 1) * 3)),
+          archers: Math.max(2, Math.min(12, (foeArmy.rank || 1) * 2)),
+          cavalry: Math.max(0, Math.min(6, (foeArmy.rank || 1) - 1)),
+          general: 0,
+          generaless: 0,
+          defender: 2,
+        },
+      });
+      set({
+        screen: "prep",
+        sheet: null,
+        deployType: s.army.infantry > 0 ? "infantry" : s.army.archers > 0 ? "archers" : "defender",
+        marchLord: lord,
+        toast: "Campo de guerra. Coloca as tropas na borda oeste.",
+      });
+    };
+    if (isLive()) {
+      void liveAction("startAllianceDuel", { targetId: lord.id })
+        .then((r) => {
+          if (!r.sessionId) {
+            set({ toast: r.toast ?? "À espera de um rival para a guerra de hoje." });
+            return;
+          }
+          raidSessionId = r.sessionId;
+          raidKind = "alliance";
+          const saveArmy = r.save?.army;
+          const foe = r.foeArmy ?? {
+            infantry: Math.max(4, Math.min(24, (lord.countyLevel || 1) * 3)),
+            archers: Math.max(2, Math.min(14, (lord.countyLevel || 1) * 2)),
+            cavalry: Math.max(0, Math.min(8, (lord.countyLevel || 1))),
+            general: 0,
+            generaless: 0,
+            defender: 2,
+          };
+          battle = new Battle([], { ...(saveArmy ?? get().army) }, 0, {
+            mode: "field",
+            levels: get().troopLevels,
+            campLevel: get().campLevel,
+            foeArmy: foe,
+            foeLevels: r.foeLevels,
+            foeCamp: r.foeCamp,
+          });
+          set({
+            screen: "prep",
+            sheet: null,
+            deployType: "infantry",
+            marchLord: lord,
+            toast: r.toast ?? "Campo de guerra. Coloca as tropas na borda oeste.",
+          });
+        })
+        .catch(liveFail);
+      return;
+    }
+    startField();
   },
 
   sendAllianceChat: (text) => {
@@ -1753,10 +1981,11 @@ export const useGame = create<GameStore>((set, get) => ({
     if (received >= cap) return;
     const attacker = lord ?? LORDS[Math.floor(Math.random() * LORDS.length)]!;
     raidTarget = attacker;
-    battle = new Battle(s.buildings, botArmy(attacker.rank), LOOT_CAP, {
+    battle = new Battle(s.buildings, botArmy(attacker.rank), lootCapForCounty(s.countyLevel), {
       spectator: true,
       levels: s.troopLevels,
       campLevel: s.campLevel,
+      lootCap: lootCapForCounty(s.countyLevel),
     });
     lastIncomingAt = Date.now();
     set({
