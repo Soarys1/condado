@@ -24,17 +24,15 @@ function firebaseErrorMessage(error: unknown): string {
     "auth/email-already-in-use": "Este e-mail já possui uma conta. Use Entrar.",
     "auth/weak-password": "A senha precisa ter pelo menos 6 caracteres.",
     "auth/invalid-email": "Digite um e-mail válido.",
-    "auth/operation-not-allowed":
-      "Este método de login ainda não foi habilitado no Firebase Console.",
+    "auth/operation-not-allowed": "Este método de login ainda não está disponível.",
     "auth/popup-blocked": "O navegador bloqueou a janela de login. Tente novamente.",
-    "auth/popup-closed-by-user": "A janela do Google foi fechada.",
-    "auth/unauthorized-domain":
-      "Este domínio ainda não está nos domínios autorizados do Firebase (adicione vercel.app).",
+    "auth/popup-closed-by-user": "A janela de login foi fechada.",
+    "auth/unauthorized-domain": "Este site ainda não está autorizado para entrar. Tenta de novo em instantes.",
     "auth/account-exists-with-different-credential": "Este e-mail já usa outro método de login.",
     "auth/network-request-failed": "Falha de rede. Verifique sua conexão e tente novamente.",
     "auth/too-many-requests": "Muitas tentativas. Espere um minuto e tente de novo.",
   };
-  return messages[code] ?? (error instanceof Error ? error.message : "Não foi possível autenticar.");
+  return messages[code] ?? "Não foi possível autenticar.";
 }
 
 function AuthForm() {

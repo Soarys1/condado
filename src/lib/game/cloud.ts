@@ -1,36 +1,14 @@
 import {
-  addDoc,
   collection,
-  doc,
-  getDoc,
-  getDocs,
   limit,
   onSnapshot,
   orderBy,
   query,
-  where,
-  runTransaction,
-  setDoc,
-  type Transaction,
   type Unsubscribe,
 } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
-import {
-  LOOT_CAP,
-  REFERRAL_GOLD,
-  SHIELD_MS,
-  brtDayKey,
-  dailyNienSendCap,
-  marketOfferId,
-  rankingWindow,
-  weeklyPrize,
-  type ResourceKind,
-  type Tradable,
-} from "./constants";
-import { defaultSave, migrateCloud, toSave } from "./save";
-import type { ChatMsg, Lord, MarketOffer, RaidLog, SaveState } from "./types";
-import { botWeekBoard, findNick } from "./bots";
-import { makeId } from "./world";
+import type { ResourceKind, Tradable } from "./constants";
+import type { ChatMsg, Lord, MarketOffer, SaveState } from "./types";
 import { deviceFingerprint, getDeviceId } from "./device";
 
 export type RankRow = {
@@ -51,621 +29,145 @@ export type LedgerRow = {
   amount: number;
   incoming: boolean;
 };
-type Profile = SaveState & {
-  userId: string;
-  appliedTransferIds: string[];
-  appliedRaidIds: string[];
+
+export type GameActionResult = {
+  save?: SaveState;
+  toast?: string;
+  admin?: boolean;
+  offers?: MarketOffer[];
+  targets?: Lord[];
+  board?: RankRow[];
+  yourRank?: number;
+  claimed?: boolean;
+  week?: { key: string; open: boolean; claim: boolean; start: number; end: number };
+  rows?: LedgerRow[];
+  nick?: string | null;
+  id?: string;
+  buildings?: SaveState["buildings"];
+  lootGold?: number;
+  sessionId?: string;
+  lookup?: Record<string, unknown>;
+  error?: string;
 };
 
-const profilesCol = () => collection(db, "condado_profiles");
-const transfersCol = () => collection(db, "condado_transfers");
-const claimsCol = () => collection(db, "condado_week_claims");
-const nickIndexCol = () => collection(db, "condado_nick_index");
-const playerIndexCol = () => collection(db, "condado_player_index");
-const emailIndexCol = () => collection(db, "condado_email_index");
-const devicesCol = () => collection(db, "condado_devices");
-const marketCol = () => collection(db, "condado_market");
-const raidInboxCol = () => collection(db, "condado_raid_inbox");
-
-function savePlayerId(data: Record<string, unknown>): string {
-  const save = data.save as SaveState | undefined;
-  return String(save?.player?.id ?? "");
-}
-
-function requireUid(): string {
-  const uid = auth.currentUser?.uid;
-  if (!uid) throw new Error("Entre na tua conta para continuar.");
-  return uid;
-}
-
-function firestoreError(error: unknown, fallback: string): Error {
-  const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
-  if (code === "permission-denied") {
-    return new Error(
-      "O Firestore recusou o acesso. Confirme as regras publicadas e que está autenticado.",
-    );
-  }
-  if (code === "unavailable" || code === "deadline-exceeded") {
-    return new Error("Firestore indisponível. Tente novamente em instantes.");
-  }
-  if (error instanceof Error && error.message) return error;
-  return new Error(fallback);
-}
-
-function kindField(
-  kind: ResourceKind,
-): keyof Pick<Profile, "gold" | "bread" | "niens" | "troopCards" | "generalCards"> {
-  if (kind === "troopCards") return "troopCards";
-  if (kind === "generalCards") return "generalCards";
-  return kind;
-}
-
-function profileFromDoc(userId: string, data: Record<string, unknown>): Profile {
-  const raw = (data.save as SaveState | undefined) ?? defaultSave(String(data.nick ?? "Senhor"));
-  const save = migrateCloud({
-    ...raw,
-    player: {
-      ...raw.player,
-      id: String(data.playerId ?? raw.player.id),
-      nick: String(data.nick ?? raw.player.nick),
+async function playAction(action: string, payload: Record<string, unknown> = {}, requestId?: string): Promise<GameActionResult> {
+  const user = auth.currentUser;
+  if (!user) throw new Error("Entre na tua conta para continuar.");
+  const token = await user.getIdToken();
+  const res = await fetch("/api/game", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
     },
-  });
-  const applied = Array.isArray(data.appliedTransferIds)
-    ? (data.appliedTransferIds as unknown[]).map(String)
-    : [];
-  const appliedRaids = Array.isArray(data.appliedRaidIds)
-    ? (data.appliedRaidIds as unknown[]).map(String)
-    : [];
-  return {
-    ...save,
-    userId,
-    gold: Number(data.gold ?? save.gold) + Number(data.goldPending ?? 0),
-    bread: Number(data.bread ?? save.bread) + Number(data.breadPending ?? 0),
-    niens: Number(data.niens ?? save.niens) + Number(data.niensPending ?? 0),
-    troopCards: Number(data.troopCards ?? save.troopCards) + Number(data.troopCardsPending ?? 0),
-    generalCards: Number(data.generalCards ?? save.generalCards) + Number(data.generalCardsPending ?? 0),
-    countyLevel: Number(data.countyLevel ?? save.countyLevel),
-    weekStars: Number(data.weekStars ?? save.weekStars),
-    weekKey: String(data.weekKey ?? save.weekKey),
-    referredBy: (data.referredBy as string | null | undefined) ?? save.referredBy,
-    referralClaimed: Boolean(data.referralClaimed ?? save.referralClaimed),
-    shieldUntil: Number(data.shieldUntil ?? save.shieldUntil ?? 0),
-    appliedTransferIds: applied,
-    appliedRaidIds: appliedRaids,
-  };
-}
-
-function profilePayload(
-  save: SaveState,
-  extra?: Partial<{ appliedTransferIds: string[]; appliedRaidIds: string[]; accountEmail: string | null }>,
-) {
-  const clean = toSave(save);
-  return JSON.parse(
-    JSON.stringify({
-      save: {
-        ...clean,
-        chat: clean.chat.slice(-40),
-        allianceChat: clean.allianceChat.slice(-40),
-        raids: clean.raids.slice(-24),
-        ledger: clean.ledger.slice(0, 40),
-      },
-      playerId: clean.player.id,
-      nick: clean.player.nick,
-      gold: clean.gold,
-      bread: clean.bread,
-      niens: clean.niens,
-      troopCards: clean.troopCards,
-      generalCards: clean.generalCards,
-      goldPending: 0,
-      breadPending: 0,
-      niensPending: 0,
-      troopCardsPending: 0,
-      generalCardsPending: 0,
-      countyLevel: clean.countyLevel,
-      weekStars: clean.weekStars,
-      weekKey: clean.weekKey,
-      referredBy: clean.referredBy ?? null,
-      referralClaimed: clean.referralClaimed ?? false,
-      shieldUntil: clean.shieldUntil ?? 0,
-      appliedTransferIds: extra?.appliedTransferIds ?? [],
-      appliedRaidIds: extra?.appliedRaidIds ?? [],
-      accountEmail: extra?.accountEmail ?? auth.currentUser?.email?.toLowerCase() ?? null,
-      updatedAt: new Date().toISOString(),
+    body: JSON.stringify({
+      action,
+      requestId: requestId ?? (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`),
+      payload,
     }),
-  ) as Record<string, unknown>;
-}
-
-function withoutMeta(p: Profile): SaveState {
-  const { userId: _u, appliedTransferIds: _a, appliedRaidIds: _r, ...save } = p;
-  return toSave(save);
-}
-
-async function incomingTransfers(playerId: string) {
+  });
+  let data: GameActionResult = {};
   try {
-    const snap = await getDocs(query(transfersCol(), where("toPlayerId", "==", playerId)));
-    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    data = (await res.json()) as GameActionResult;
   } catch {
-    return [];
+    data = {};
   }
-}
-
-function applyIncoming(p: Profile, incoming: Array<{ id: string } & Record<string, unknown>>): Profile {
-  const seen = new Set(p.appliedTransferIds);
-  let gold = p.gold;
-  let bread = p.bread;
-  let niens = p.niens;
-  let troopCards = p.troopCards;
-  let generalCards = p.generalCards;
-  const applied = [...p.appliedTransferIds];
-  for (const row of incoming) {
-    if (seen.has(row.id)) continue;
-    if (row.chat || row.raid) continue;
-    if (String(row.fromPlayerId ?? "") === p.player.id) continue;
-    const kind = row.kind as ResourceKind;
-    const amount = Number(row.amount ?? 0);
-    if (amount <= 0) continue;
-    if (kind === "gold") gold += amount;
-    else if (kind === "bread") bread += amount;
-    else if (kind === "niens") niens += amount;
-    else if (kind === "troopCards") troopCards += amount;
-    else if (kind === "generalCards") generalCards += amount;
-    applied.push(row.id);
-    seen.add(row.id);
-  }
-  return {
-    ...p,
-    gold,
-    bread,
-    niens,
-    troopCards,
-    generalCards,
-    appliedTransferIds: applied.slice(-200),
-  };
-}
-
-async function incomingRaids(playerId: string) {
-  try {
-    const snap = await getDocs(query(raidInboxCol(), where("toPlayerId", "==", playerId)));
-    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-  } catch {
-    return [];
-  }
-}
-
-function applyRaids(p: Profile, incoming: Array<{ id: string } & Record<string, unknown>>): Profile {
-  const seen = new Set(p.appliedRaidIds);
-  let gold = p.gold;
-  let shieldUntil = p.shieldUntil;
-  const raids: RaidLog[] = [...p.raids];
-  const applied = [...p.appliedRaidIds];
-  for (const row of incoming) {
-    if (seen.has(row.id)) continue;
-    const goldTaken = Math.max(0, Number(row.goldTaken ?? 0));
-    gold = Math.max(0, gold - goldTaken);
-    shieldUntil = Math.max(shieldUntil, Date.now() + SHIELD_MS);
-    raids.unshift({
-      id: row.id,
-      at: Date.parse(String(row.createdAt ?? "")) || Date.now(),
-      attacker: String(row.fromNick ?? "Senhor"),
-      defender: p.player.nick,
-      gold: goldTaken,
-      bread: 0,
-      incoming: true,
-      destruction: Number(row.destruction ?? 0),
-      troopsLost: Number(row.troopsLost ?? 0),
-      stars: Number(row.stars ?? 0),
-    });
-    applied.push(row.id);
-    seen.add(row.id);
-  }
-  return {
-    ...p,
-    gold,
-    shieldUntil,
-    raids: raids.slice(0, 24),
-    appliedRaidIds: applied.slice(-200),
-  };
+  if (!res.ok) throw new Error(data.error || "Não foi possível concluir a ação.");
+  return data;
 }
 
 export async function syncAccountEmail() {
-  const uid = requireUid();
-  const email = auth.currentUser?.email?.trim().toLowerCase();
-  if (!email) throw new Error("Nenhum e-mail está vinculado a esta conta.");
-  const ref = doc(profilesCol(), uid);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) throw new Error("Crie o condado antes de vincular o e-mail.");
-  await setDoc(ref, { accountEmail: email, updatedAt: new Date().toISOString() }, { merge: true });
-  return { email };
+  const r = await playAction("syncAccountEmail");
+  return { email: auth.currentUser?.email ?? null, save: r.save };
 }
 
 export async function pullCloud() {
-  const uid = requireUid();
-  const ref = doc(profilesCol(), uid);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) return { save: null as SaveState | null };
-  let profile = profileFromDoc(uid, snap.data() as Record<string, unknown>);
-  const incoming = await incomingTransfers(profile.player.id);
-  const inbox = await incomingRaids(profile.player.id);
-  const raidRows = [...inbox, ...incoming.filter((r) => Boolean((r as { raid?: boolean }).raid))];
-  const next = applyRaids(applyIncoming(profile, incoming), raidRows);
-  await setDoc(
-    ref,
-    profilePayload(withoutMeta(next), {
-      appliedTransferIds: next.appliedTransferIds,
-      appliedRaidIds: next.appliedRaidIds,
-    }),
-    { merge: true },
-  );
-  return { save: withoutMeta(next) };
+  const r = await playAction("pull");
+  return { save: r.save ?? null, admin: Boolean(r.admin) };
 }
 
 export async function createProfile(input: { nick: string; referredBy?: string | null }) {
-  const uid = requireUid();
-  const nick = input.nick.trim().replace(/\s+/g, " ").slice(0, 18);
-  if (nick.length < 3) throw new Error("O nome do condado precisa de ao menos 3 letras.");
-  const email = auth.currentUser?.email?.trim().toLowerCase();
-  if (!email) throw new Error("A conta precisa de um e-mail. E-mail duplicado não é aceite.");
-  const deviceId = getDeviceId();
-  const fingerprint = await deviceFingerprint();
-  const save = defaultSave(nick, input.referredBy?.trim().toUpperCase() || null);
-  const ref = doc(profilesCol(), uid);
-  const nickRef = doc(nickIndexCol(), nick.toLowerCase());
-  const playerRef = doc(playerIndexCol(), save.player.id);
-  const emailRef = doc(emailIndexCol(), email);
-  const deviceRef = doc(devicesCol(), deviceId);
-  const fpRef = doc(devicesCol(), `fp_${fingerprint}`);
-  try {
-    const result = await runTransaction(db, async (tx: Transaction) => {
-      const [existing, taken, emailTaken, deviceTaken, fpTaken] = await Promise.all([
-        tx.get(ref),
-        tx.get(nickRef),
-        tx.get(emailRef),
-        tx.get(deviceRef),
-        tx.get(fpRef),
-      ]);
-      if (existing.exists()) return withoutMeta(profileFromDoc(uid, existing.data() as Record<string, unknown>));
-      if (taken.exists()) throw new Error("Este nome de condado já está em uso.");
-      if (emailTaken.exists() && emailTaken.data()?.userId !== uid) {
-        throw new Error("Este e-mail já está ligado a outro condado.");
-      }
-      if (deviceTaken.exists() && deviceTaken.data()?.userId !== uid) {
-        throw new Error("Já existe um condado neste aparelho. Multi-contas não são permitidas.");
-      }
-      if (fpTaken.exists() && fpTaken.data()?.userId !== uid) {
-        throw new Error("Já existe um condado neste aparelho. Multi-contas não são permitidas.");
-      }
-      tx.set(ref, profilePayload(save, { appliedTransferIds: [], appliedRaidIds: [], accountEmail: email }));
-      tx.set(nickRef, { userId: uid, playerId: save.player.id });
-      tx.set(playerRef, { userId: uid, nick: save.player.nick });
-      tx.set(emailRef, { userId: uid, playerId: save.player.id });
-      tx.set(deviceRef, { userId: uid, playerId: save.player.id, kind: "device" });
-      tx.set(fpRef, { userId: uid, playerId: save.player.id, kind: "fingerprint" });
-      return save;
-    });
-    return { save: result };
-  } catch (error) {
-    throw firestoreError(error, "Não foi possível fundar o condado.");
-  }
+  const r = await playAction("createProfile", {
+    nick: input.nick,
+    referredBy: input.referredBy ?? null,
+    deviceId: getDeviceId(),
+    fingerprint: await deviceFingerprint(),
+  });
+  if (!r.save) throw new Error("Não foi possível fundar o condado.");
+  return { save: r.save };
 }
 
-export async function pushCloud(data: SaveState) {
-  const uid = requireUid();
-  const ref = doc(profilesCol(), uid);
-  try {
-    return await runTransaction(db, async (tx: Transaction) => {
-      const snap = await tx.get(ref);
-      const clean = toSave(data);
-      if (!snap.exists()) {
-        tx.set(ref, profilePayload(clean, { appliedTransferIds: [], appliedRaidIds: [] }));
-        return {
-          ok: true as const,
-          gold: clean.gold,
-          bread: clean.bread,
-          niens: clean.niens,
-          troopCards: clean.troopCards,
-          generalCards: clean.generalCards,
-        };
-      }
-      const old = profileFromDoc(uid, snap.data() as Record<string, unknown>);
-      const next = {
-        ...old,
-        ...clean,
-        player: { ...old.player, ...clean.player },
-        appliedTransferIds: old.appliedTransferIds,
-        appliedRaidIds: old.appliedRaidIds,
-      } as Profile;
-      tx.set(
-        ref,
-        profilePayload(withoutMeta(next), {
-          appliedTransferIds: next.appliedTransferIds,
-          appliedRaidIds: next.appliedRaidIds,
-        }),
-        { merge: true },
-      );
-      return {
-        ok: true as const,
-        gold: next.gold,
-        bread: next.bread,
-        niens: next.niens,
-        troopCards: next.troopCards,
-        generalCards: next.generalCards,
-      };
-    });
-  } catch (error) {
-    throw firestoreError(error, "Não foi possível guardar o condado.");
-  }
+export async function pushCloud(_data: SaveState) {
+  const r = await playAction("sync");
+  const s = r.save;
+  return {
+    ok: true as const,
+    gold: s?.gold ?? 0,
+    bread: s?.bread ?? 0,
+    niens: s?.niens ?? 0,
+    troopCards: s?.troopCards ?? 0,
+    generalCards: s?.generalCards ?? 0,
+    save: s,
+  };
 }
 
 export async function renameCounty(nickRaw: string) {
-  const uid = requireUid();
-  const nick = nickRaw.trim().slice(0, 18);
-  if (nick.length < 3) throw new Error("Nome curto demais.");
-  const ref = doc(profilesCol(), uid);
-  const newIndex = doc(nickIndexCol(), nick.toLowerCase());
-  try {
-    return await runTransaction(db, async (tx: Transaction) => {
-      const current = await tx.get(ref);
-      const taken = await tx.get(newIndex);
-      if (!current.exists()) throw new Error("Condado não encontrado.");
-      if (taken.exists() && taken.data()?.userId !== uid) throw new Error("Este nome de condado já está em uso.");
-      const p = profileFromDoc(uid, current.data() as Record<string, unknown>);
-      const oldIndex = doc(nickIndexCol(), p.player.nick.toLowerCase());
-      tx.delete(oldIndex);
-      tx.set(newIndex, { userId: uid, playerId: p.player.id });
-      tx.set(doc(playerIndexCol(), p.player.id), { userId: uid, nick }, { merge: true });
-      tx.set(
-        ref,
-        {
-          nick,
-          save: { ...p, player: { ...p.player, nick } },
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true },
-      );
-      return { nick };
-    });
-  } catch (error) {
-    throw firestoreError(error, "Este nome já está em uso.");
-  }
+  const r = await playAction("rename", { nick: nickRaw });
+  return { nick: r.nick ?? nickRaw, save: r.save };
 }
 
 export async function peekPlayer(idRaw: string) {
-  const id = idRaw.trim().toUpperCase();
-  const npc = findNick(id);
-  if (npc) return { id, nick: npc };
-  const snap = await getDoc(doc(playerIndexCol(), id));
-  return snap.exists() ? { id, nick: String(snap.data()?.nick) } : { id, nick: null as string | null };
+  const r = await playAction("peekPlayer", { id: idRaw });
+  return { id: r.id ?? idRaw.trim().toUpperCase(), nick: r.nick ?? null };
 }
 
 export async function cloudTransfer(data: { toId: string; amount: number; kind: ResourceKind }) {
-  const uid = requireUid();
-  const amount = Math.floor(data.amount);
-  const toId = data.toId.trim().toUpperCase();
-  if (amount <= 0) throw new Error("Quantia inválida.");
-  const meRef = doc(profilesCol(), uid);
-  const destRef = doc(playerIndexCol(), toId);
-  const txRef = doc(transfersCol(), makeId("TX"));
-  try {
-    return await runTransaction(db, async (tx: Transaction) => {
-      const [meSnap, destIndex] = await Promise.all([tx.get(meRef), tx.get(destRef)]);
-      if (!meSnap.exists()) throw new Error("Condado não encontrado.");
-      const me = profileFromDoc(uid, meSnap.data() as Record<string, unknown>);
-      if (toId === me.player.id) throw new Error("Não envie para si mesmo.");
-      const field = kindField(data.kind);
-      if (amount > Number(me[field])) throw new Error("Quantia inválida.");
-      if (data.kind === "niens") {
-        const day = brtDayKey();
-        const sent = me.niensSentDay === day ? me.niensSentToday : 0;
-        const cap = dailyNienSendCap(me.countyLevel);
-        if (sent + amount > cap) {
-          throw new Error(
-            `No nível ${me.countyLevel} podes enviar ${cap} Niens por dia. Já enviaste ${sent}.`,
-          );
-        }
-        me.niensSentDay = day;
-        me.niensSentToday = sent + amount;
-      }
-      const toNick = destIndex.exists() ? String(destIndex.data()?.nick ?? "") : findNick(toId);
-      if (!toNick) throw new Error("ID não encontrado. Cole e confira o nick.");
-      const next = { ...me, [field]: Number(me[field]) - amount } as Profile;
-      const now = new Date().toISOString();
-      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds, appliedRaidIds: me.appliedRaidIds }), { merge: true });
-      tx.set(txRef, {
-        fromUserId: uid,
-        fromPlayerId: me.player.id,
-        fromNick: me.player.nick,
-        toPlayerId: toId,
-        toNick,
-        kind: data.kind,
-        amount,
-        createdAt: now,
-      });
-      return {
-        ok: true as const,
-        toNick,
-        at: Date.parse(now),
-        id: txRef.id,
-        gold: next.gold,
-        bread: next.bread,
-        niens: next.niens,
-        troopCards: next.troopCards,
-        generalCards: next.generalCards,
-      };
-    });
-  } catch (error) {
-    throw firestoreError(error, "Falha no envio.");
-  }
+  const r = await playAction("transfer", data);
+  const s = r.save;
+  if (!s) throw new Error("Falha no envio.");
+  return {
+    ok: true as const,
+    toNick: r.nick ?? "",
+    at: Date.now(),
+    id: r.id ?? "",
+    gold: s.gold,
+    bread: s.bread,
+    niens: s.niens,
+    troopCards: s.troopCards,
+    generalCards: s.generalCards,
+    save: s,
+    toast: r.toast,
+  };
 }
 
 export async function listTransfers() {
-  const uid = requireUid();
-  const me = await getDoc(doc(profilesCol(), uid));
-  if (!me.exists()) return { rows: [] as LedgerRow[] };
-  const pid = String(me.data()?.playerId ?? "");
-  const [fromSnap, toSnap] = await Promise.all([
-    getDocs(query(transfersCol(), where("fromPlayerId", "==", pid))),
-    getDocs(query(transfersCol(), where("toPlayerId", "==", pid))),
-  ]);
-  const docs = [...fromSnap.docs, ...toSnap.docs]
-    .sort((a, b) => String(b.data().createdAt ?? "").localeCompare(String(a.data().createdAt ?? "")))
-    .filter((d) => !d.data().chat && !d.data().raid)
-    .slice(0, 40);
-  return {
-    rows: docs.map((d) => {
-      const r = d.data();
-      return {
-        id: d.id,
-        at: Date.parse(String(r.createdAt)) || Date.now(),
-        fromId: String(r.fromPlayerId),
-        fromNick: String(r.fromNick),
-        toId: String(r.toPlayerId),
-        toNick: String(r.toNick),
-        kind: r.kind as ResourceKind,
-        amount: Number(r.amount),
-        incoming: r.toPlayerId === pid && r.fromPlayerId !== pid,
-      };
-    }),
-  };
-}
-
-async function boardFor(uid: string, win: ReturnType<typeof rankingWindow>) {
-  const me = await getDoc(doc(profilesCol(), uid));
-  const you = me.exists() ? profileFromDoc(uid, me.data() as Record<string, unknown>) : null;
-  let snaps: Array<Record<string, unknown> & { playerId?: string }> = [];
-  try {
-    const q = query(profilesCol(), where("weekKey", "==", win.key));
-    const got = await getDocs(q);
-    snaps = got.docs.map((d) => d.data() as Record<string, unknown>);
-  } catch {
-    const got = await getDocs(profilesCol());
-    snaps = got.docs
-      .map((d) => d.data() as Record<string, unknown>)
-      .filter((r) => String(r.weekKey ?? "") === win.key);
-  }
-  const byId = new Map<string, RankRow>();
-  for (const b of botWeekBoard(win.key)) byId.set(b.playerId, { ...b, bot: true });
-  for (const r of snaps) {
-    byId.set(String(r.playerId), {
-      playerId: String(r.playerId),
-      nick: String(r.nick),
-      stars: Number(r.weekStars ?? 0),
-      you: you?.player.id === r.playerId,
-    });
-  }
-  if (you && you.weekKey === win.key && !byId.has(you.player.id)) {
-    byId.set(you.player.id, {
-      playerId: you.player.id,
-      nick: you.player.nick,
-      stars: you.weekStars,
-      you: true,
-    });
-  }
-  const board = [...byId.values()].sort((a, b) => b.stars - a.stars).slice(0, 20);
-  const yourRank = board.findIndex((r) => r.you) + 1;
-  const claim = await getDoc(doc(claimsCol(), `${uid}_${win.key}`));
-  return { board, yourRank, claimed: claim.exists() };
+  const r = await playAction("listTransfers");
+  return { rows: (r.rows ?? []) as LedgerRow[] };
 }
 
 export async function weeklyBoard() {
-  const uid = requireUid();
-  const win = rankingWindow();
-  return { ...(await boardFor(uid, win)), week: win };
-}
-
-export async function claimWeekly() {
-  const uid = requireUid();
-  const win = rankingWindow();
-  if (!win.claim) throw new Error("O prêmio abre domingo às 23h de Brasília.");
-  const { yourRank: rank } = await boardFor(uid, win);
-  const prize = weeklyPrize(rank);
-  if (!prize) throw new Error("Fora do top 20 desta semana.");
-  const claimRef = doc(claimsCol(), `${uid}_${win.key}`);
-  const profileRef = doc(profilesCol(), uid);
-  try {
-    await runTransaction(db, async (tx: Transaction) => {
-      const [c, p] = await Promise.all([tx.get(claimRef), tx.get(profileRef)]);
-      if (c.exists()) throw new Error("Prêmio já recolhido.");
-      if (!p.exists()) throw new Error("Condado não encontrado.");
-      tx.set(claimRef, {
-        userId: uid,
-        weekKey: win.key,
-        rank,
-        claimedAt: new Date().toISOString(),
-      });
-      const cur = profileFromDoc(uid, p.data() as Record<string, unknown>);
-      const next = {
-        ...cur,
-        gold: cur.gold + prize.gold,
-        troopCards: cur.troopCards + prize.troopCards,
-        generalCards: cur.generalCards + prize.generalCards,
-      };
-      tx.set(profileRef, profilePayload(withoutMeta(next), { appliedTransferIds: cur.appliedTransferIds, appliedRaidIds: cur.appliedRaidIds }), {
-        merge: true,
-      });
-    });
-  } catch (error) {
-    throw firestoreError(error, "Não foi possível recolher o prêmio.");
-  }
-  return { rank, prize };
-}
-
-export async function creditReferral() {
-  const uid = requireUid();
-  const meRef = doc(profilesCol(), uid);
-  try {
-    return await runTransaction(db, async (tx: Transaction) => {
-      const meSnap = await tx.get(meRef);
-      if (!meSnap.exists()) return { granted: false as const };
-      const me = profileFromDoc(uid, meSnap.data() as Record<string, unknown>);
-      if (me.referralClaimed || me.countyLevel < 3 || !me.referredBy) return { granted: false as const };
-      const refIndex = await tx.get(doc(playerIndexCol(), me.referredBy));
-      const next = { ...me, gold: me.gold + REFERRAL_GOLD, referralClaimed: true };
-      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds, appliedRaidIds: me.appliedRaidIds }), { merge: true });
-      if (refIndex.exists()) {
-        const toPlayerId = me.referredBy;
-        const toNick = String(refIndex.data()?.nick ?? "");
-        const grantRef = doc(transfersCol(), makeId("RF"));
-        tx.set(grantRef, {
-          fromUserId: uid,
-          fromPlayerId: me.player.id,
-          fromNick: me.player.nick,
-          toPlayerId,
-          toNick,
-          kind: "gold",
-          amount: REFERRAL_GOLD,
-          createdAt: new Date().toISOString(),
-          referral: true,
-        });
-      }
-      return { granted: true as const, gold: REFERRAL_GOLD };
-    });
-  } catch (error) {
-    throw firestoreError(error, "Não foi possível creditar o convite.");
-  }
-}
-
-function offerFromDoc(id: string, data: Record<string, unknown>): MarketOffer {
+  const r = await playAction("weeklyBoard");
   return {
-    id,
-    sellerId: String(data.sellerId ?? ""),
-    sellerUid: String(data.sellerUid ?? ""),
-    sellerNick: String(data.sellerNick ?? ""),
-    giveKind: data.giveKind as Tradable,
-    giveAmount: Number(data.giveAmount ?? 0),
-    wantKind: data.wantKind as Tradable,
-    wantAmount: Number(data.wantAmount ?? 0),
-    createdAt: Date.parse(String(data.createdAt ?? "")) || Date.now(),
+    board: r.board ?? [],
+    yourRank: r.yourRank ?? 0,
+    claimed: Boolean(r.claimed),
+    week: r.week ?? { key: "", open: false, claim: false, start: 0, end: 0 },
   };
 }
 
+export async function claimWeekly() {
+  const r = await playAction("claimWeekly");
+  return { rank: r.yourRank ?? 0, save: r.save, toast: r.toast };
+}
+
+export async function creditReferral() {
+  const r = await playAction("sync");
+  return { granted: Boolean(r.save?.referralClaimed), gold: r.save?.gold ?? 0, save: r.save };
+}
+
 export async function listMarket(): Promise<{ offers: MarketOffer[] }> {
-  requireUid();
-  const snap = await getDocs(marketCol());
-  const offers = snap.docs
-    .map((d) => offerFromDoc(d.id, d.data() as Record<string, unknown>))
-    .filter((o) => o.giveAmount > 0 && o.wantAmount > 0 && o.giveKind !== o.wantKind)
-    .sort((a, b) => b.createdAt - a.createdAt);
-  return { offers };
+  const r = await playAction("listMarket");
+  return { offers: r.offers ?? [] };
 }
 
 export async function createMarketOffer(input: {
@@ -674,150 +176,49 @@ export async function createMarketOffer(input: {
   wantKind: Tradable;
   wantAmount: number;
 }) {
-  const uid = requireUid();
-  const giveAmount = Math.floor(input.giveAmount);
-  const wantAmount = Math.floor(input.wantAmount);
-  if (giveAmount <= 0 || wantAmount <= 0) throw new Error("Quantia inválida.");
-  if (input.giveKind === input.wantKind) throw new Error("Troca precisa de recursos diferentes.");
-  const id = marketOfferId(input.giveKind, giveAmount, input.wantKind, wantAmount);
-  const offerRef = doc(marketCol(), id);
-  const meRef = doc(profilesCol(), uid);
-  try {
-    return await runTransaction(db, async (tx: Transaction) => {
-      const [offerSnap, meSnap] = await Promise.all([tx.get(offerRef), tx.get(meRef)]);
-      if (offerSnap.exists()) throw new Error("Esta proposta já está no mercado. As ofertas são únicas.");
-      if (!meSnap.exists()) throw new Error("Condado não encontrado.");
-      const me = profileFromDoc(uid, meSnap.data() as Record<string, unknown>);
-      const field = kindField(input.giveKind);
-      if (giveAmount > Number(me[field])) throw new Error("Não tens esse recurso para listar.");
-      const next = { ...me, [field]: Number(me[field]) - giveAmount } as Profile;
-      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds, appliedRaidIds: me.appliedRaidIds }), { merge: true });
-      tx.set(offerRef, {
-        sellerUid: uid,
-        sellerId: me.player.id,
-        sellerNick: me.player.nick,
-        giveKind: input.giveKind,
-        giveAmount,
-        wantKind: input.wantKind,
-        wantAmount,
-        createdAt: new Date().toISOString(),
-      });
-      return {
-        ok: true as const,
-        gold: next.gold,
-        bread: next.bread,
-        niens: next.niens,
-        offerId: id,
-      };
-    });
-  } catch (error) {
-    throw firestoreError(error, "Não foi possível publicar a oferta.");
-  }
+  const r = await playAction("createMarketOffer", input);
+  const s = r.save;
+  if (!s) throw new Error("Não foi possível publicar a oferta.");
+  return { ok: true as const, gold: s.gold, bread: s.bread, niens: s.niens, save: s, toast: r.toast };
 }
 
 export async function takeMarketOffer(offerId: string) {
-  const uid = requireUid();
-  const offerRef = doc(marketCol(), offerId);
-  const meRef = doc(profilesCol(), uid);
-  try {
-    return await runTransaction(db, async (tx: Transaction) => {
-      const [offerSnap, meSnap] = await Promise.all([tx.get(offerRef), tx.get(meRef)]);
-      if (!offerSnap.exists()) throw new Error("Esta oferta já foi fechada.");
-      if (!meSnap.exists()) throw new Error("Condado não encontrado.");
-      const offer = offerFromDoc(offerSnap.id, offerSnap.data() as Record<string, unknown>);
-      if (offer.sellerUid === uid) throw new Error("Não podes comprar a tua própria oferta.");
-      const me = profileFromDoc(uid, meSnap.data() as Record<string, unknown>);
-      const payField = kindField(offer.wantKind);
-      const getField = kindField(offer.giveKind);
-      if (offer.wantAmount > Number(me[payField])) throw new Error("Recurso insuficiente para este trato.");
-      const next = {
-        ...me,
-        [payField]: Number(me[payField]) - offer.wantAmount,
-        [getField]: Number(me[getField]) + offer.giveAmount,
-      } as Profile;
-      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds, appliedRaidIds: me.appliedRaidIds }), { merge: true });
-      tx.delete(offerRef);
-      const payRef = doc(transfersCol(), makeId("MK"));
-      tx.set(payRef, {
-        fromUserId: uid,
-        fromPlayerId: me.player.id,
-        fromNick: me.player.nick,
-        toPlayerId: offer.sellerId,
-        toNick: offer.sellerNick,
-        kind: offer.wantKind,
-        amount: offer.wantAmount,
-        createdAt: new Date().toISOString(),
-        market: true,
-      });
-      return {
-        ok: true as const,
-        gold: next.gold,
-        bread: next.bread,
-        niens: next.niens,
-        sellerNick: offer.sellerNick,
-      };
-    });
-  } catch (error) {
-    throw firestoreError(error, "Não foi possível fechar o trato.");
-  }
+  const r = await playAction("takeMarketOffer", { offerId });
+  const s = r.save;
+  if (!s) throw new Error("Não foi possível fechar o trato.");
+  return { ok: true as const, gold: s.gold, bread: s.bread, niens: s.niens, sellerNick: r.nick ?? "", save: s, toast: r.toast };
 }
 
 export async function cancelMarketOffer(offerId: string) {
-  const uid = requireUid();
-  const offerRef = doc(marketCol(), offerId);
-  const meRef = doc(profilesCol(), uid);
-  try {
-    return await runTransaction(db, async (tx: Transaction) => {
-      const [offerSnap, meSnap] = await Promise.all([tx.get(offerRef), tx.get(meRef)]);
-      if (!offerSnap.exists()) throw new Error("Oferta já não existe.");
-      if (!meSnap.exists()) throw new Error("Condado não encontrado.");
-      const offer = offerFromDoc(offerSnap.id, offerSnap.data() as Record<string, unknown>);
-      if (offer.sellerUid !== uid) throw new Error("Só o autor pode retirar a oferta.");
-      const me = profileFromDoc(uid, meSnap.data() as Record<string, unknown>);
-      const field = kindField(offer.giveKind);
-      const next = { ...me, [field]: Number(me[field]) + offer.giveAmount } as Profile;
-      tx.set(meRef, profilePayload(withoutMeta(next), { appliedTransferIds: me.appliedTransferIds, appliedRaidIds: me.appliedRaidIds }), { merge: true });
-      tx.delete(offerRef);
-      return { ok: true as const, gold: next.gold, bread: next.bread, niens: next.niens };
-    });
-  } catch (error) {
-    throw firestoreError(error, "Não foi possível retirar a oferta.");
-  }
+  const r = await playAction("cancelMarketOffer", { offerId });
+  const s = r.save;
+  if (!s) throw new Error("Não foi possível retirar a oferta.");
+  return { ok: true as const, gold: s.gold, bread: s.bread, niens: s.niens, save: s, toast: r.toast };
 }
 
-export async function listRaidTargets(myId: string, myLevel: number): Promise<{ targets: Lord[] }> {
-  requireUid();
-  const snap = await getDocs(profilesCol());
-  const now = Date.now();
-  const targets: Lord[] = [];
-  for (const d of snap.docs) {
-    const data = d.data() as Record<string, unknown>;
-    const pid = String(data.playerId ?? savePlayerId(data));
-    if (!pid || pid === myId) continue;
-    const save = (data.save as SaveState | undefined) ?? null;
-    const level = Number(data.countyLevel ?? save?.countyLevel ?? 1) || 1;
-    if (Math.abs(level - myLevel) > 1) continue;
-    const shieldUntil = Number(data.shieldUntil ?? save?.shieldUntil ?? 0);
-    const nick = String(data.nick ?? save?.player?.nick ?? "Senhor");
-    targets.push({
-      id: pid,
-      nick,
-      title: `Condado Nv.${level}`,
-      rank: level,
-      lootGold: LOOT_CAP,
-      lootBread: 0,
-      allianceId: save?.alliance?.id,
-      countyLevel: level,
-      buildings: Array.isArray(save?.buildings) ? save.buildings : undefined,
-      real: true,
-      shieldUntil,
-    });
-  }
-  targets.sort((a, b) => (a.shieldUntil && a.shieldUntil > now ? 1 : 0) - (b.shieldUntil && b.shieldUntil > now ? 1 : 0));
-  return { targets };
+export async function listRaidTargets(_myId: string, _myLevel: number): Promise<{ targets: Lord[] }> {
+  const r = await playAction("listRaidTargets");
+  return { targets: r.targets ?? [] };
 }
 
-export async function submitRaidResult(input: {
+export async function startRaid(targetId: string) {
+  const r = await playAction("startRaid", { targetId });
+  if (!r.sessionId) throw new Error("Não foi possível iniciar o ataque.");
+  return r;
+}
+
+export async function finishRaid(input: {
+  sessionId: string;
+  stars: number;
+  goldTaken: number;
+  destruction: number;
+  troopsLost: number;
+  survivors: SaveState["army"];
+}) {
+  return playAction("finishRaid", input);
+}
+
+export async function submitRaidResult(_input: {
   defenderId: string;
   defenderNick: string;
   goldTaken: number;
@@ -825,90 +226,39 @@ export async function submitRaidResult(input: {
   stars: number;
   troopsLost: number;
 }) {
-  const uid = requireUid();
-  const me = await getDoc(doc(profilesCol(), uid));
-  if (!me.exists()) return;
-  const data = me.data() as Record<string, unknown>;
-  const payload = {
-    fromUserId: uid,
-    fromPlayerId: String(data.playerId ?? ""),
-    fromNick: String(data.nick ?? ""),
-    toPlayerId: input.defenderId,
-    toNick: input.defenderNick,
-    kind: "gold" as const,
-    amount: Math.max(0, Math.floor(input.goldTaken)),
-    goldTaken: Math.max(0, Math.floor(input.goldTaken)),
-    destruction: input.destruction,
-    stars: input.stars,
-    troopsLost: input.troopsLost,
-    createdAt: new Date().toISOString(),
-    raid: true,
-  };
-  await addDoc(transfersCol(), payload);
+  /* raids reais passam por startRaid/finishRaid */
 }
 
 export async function sendGlobalChat(input: { playerId: string; nick: string; text: string }) {
-  const uid = requireUid();
-  const text = input.text.trim().slice(0, 160);
-  if (!text) return;
-  const now = Date.now();
-  await addDoc(transfersCol(), {
-    fromUserId: uid,
-    fromPlayerId: input.playerId,
-    fromId: input.playerId,
-    fromNick: input.nick,
-    toPlayerId: "GLOBAL_CHAT",
-    toNick: "Reino",
-    kind: "gold",
-    amount: 0,
-    createdAt: new Date(now).toISOString(),
-    at: now,
-    text,
-    channel: "global",
-    chat: true,
-  });
-}
-
-function mapChatDocs(docs: Array<{ id: string; data: () => unknown }>): ChatMsg[] {
-  return docs
-    .map((d) => {
-      const r = (d.data() ?? {}) as Record<string, unknown>;
-      const text = String(r.text ?? "");
-      return {
-        id: d.id,
-        fromId: String(r.fromId ?? r.fromPlayerId ?? ""),
-        fromNick: String(r.fromNick ?? "Senhor"),
-        text,
-        at: Number(r.at ?? (Date.parse(String(r.createdAt ?? "")) || Date.now())),
-        self: r.fromUserId === auth.currentUser?.uid,
-        channel: "global" as const,
-      };
-    })
-    .filter((m) => m.text)
-    .sort((a, b) => a.at - b.at)
-    .slice(-40);
+  await playAction("sendChat", { text: input.text });
 }
 
 export function listenGlobalChat(onRows: (rows: ChatMsg[]) => void): Unsubscribe {
-  const indexed = query(
-    transfersCol(),
-    where("toPlayerId", "==", "GLOBAL_CHAT"),
-    orderBy("createdAt", "desc"),
-    limit(40),
-  );
-  const plain = query(transfersCol(), where("toPlayerId", "==", "GLOBAL_CHAT"), limit(80));
+  const q = query(collection(db, "condado_chat"), orderBy("createdAt", "desc"), limit(40));
   return onSnapshot(
-    indexed,
-    (snap) => onRows(mapChatDocs(snap.docs)),
+    q,
+    (snap) => {
+      const rows: ChatMsg[] = snap.docs
+        .map((d) => {
+          const r = d.data();
+          return {
+            id: d.id,
+            fromId: String(r.fromId ?? r.fromPlayerId ?? ""),
+            fromNick: String(r.fromNick ?? "Senhor"),
+            text: String(r.text ?? ""),
+            at: Number(r.at ?? (Date.parse(String(r.createdAt ?? "")) || Date.now())),
+            self: r.fromUserId === auth.currentUser?.uid,
+            channel: "global" as const,
+          };
+        })
+        .filter((m) => m.text)
+        .sort((a, b) => a.at - b.at);
+      onRows(rows);
+    },
     () => {
-      onSnapshot(
-        plain,
-        (snap) => onRows(mapChatDocs(snap.docs)),
-        () => {
-          /* offline */
-        },
-      );
+      /* offline */
     },
   );
 }
 
+export { playAction };

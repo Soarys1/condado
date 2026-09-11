@@ -9,73 +9,74 @@ service cloud.firestore {
     }
 
     match /condado_profiles/{uid} {
-      allow read: if signedIn();
-      allow create, update: if isOwner(uid);
-      allow delete: if false;
+      allow read: if isOwner(uid);
+      allow create, update, delete: if false;
     }
 
     match /condado_nick_index/{nick} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if signedIn() && resource.data.userId == request.auth.uid;
+      allow read, write: if false;
     }
 
     match /condado_player_index/{playerId} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if signedIn() && resource.data.userId == request.auth.uid;
-      allow delete: if false;
+      allow read, write: if false;
     }
 
     match /condado_email_index/{email} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if signedIn() && resource.data.userId == request.auth.uid;
+      allow read, write: if false;
     }
 
     match /condado_devices/{id} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if false;
+      allow read, write: if false;
     }
 
     match /condado_transfers/{id} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.fromUserId == request.auth.uid;
-      allow update, delete: if false;
+      allow read, write: if false;
     }
 
     match /condado_market/{id} {
       allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.sellerUid == request.auth.uid;
-      allow update: if false;
-      allow delete: if signedIn();
+      allow create, update, delete: if false;
     }
 
     match /condado_week_claims/{id} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if false;
+      allow read, write: if false;
     }
 
     match /condado_chat/{id} {
       allow read: if signedIn();
-      allow create: if signedIn()
-        && request.resource.data.fromUserId == request.auth.uid
-        && request.resource.data.text is string
-        && request.resource.data.text.size() > 0
-        && request.resource.data.text.size() <= 160;
-      allow update, delete: if false;
+      allow create, update, delete: if false;
     }
 
     match /condado_raid_inbox/{id} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.fromUserId == request.auth.uid;
-      allow update, delete: if false;
+      allow read, write: if false;
+    }
+
+    match /condado_raid_sessions/{id} {
+      allow read, write: if false;
+    }
+
+    match /condado_economy_ledger/{id} {
+      allow read, write: if false;
+    }
+
+    match /condado_audit_logs/{id} {
+      allow read, write: if false;
+    }
+
+    match /condado_request_ids/{id} {
+      allow read, write: if false;
+    }
+
+    match /condado_rate_limits/{id} {
+      allow read, write: if false;
     }
 
     match /usuarios/{uid} {
-      allow read, write: if isOwner(uid);
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

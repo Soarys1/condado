@@ -4,32 +4,26 @@ Jogo de estratégia medieval no browser — constrói o teu condado, treina trop
 
 Tema rústico em vista isométrica 3/4, otimizado para **celular e desktop**.
 
-## Contas e banco (Firebase)
-
-Cadastro, login e o progresso do jogo usam **Firebase Auth + Cloud Firestore**. Não há SQLite, Postgres nem Better Auth no caminho do jogo.
+## Contas
 
 - **Criar conta / Entrar**: e-mail + senha, ou Google.
-- **Nome do condado**: único (coleção `condado_nick_index`).
-- **Progresso**: libras, pão, Niens, cartas, mapa e ranking em `condado_profiles`.
-- **Transferências**: `condado_transfers` (o destinatário recebe no próximo carregamento).
-- **Mercado**: ofertas únicas em `condado_market` (ouro interno continua `gold`, o nome visível é Libra).
-- **Anti-multi**: `condado_email_index` + `condado_devices` (aparelho + impressão digital).
+- O progresso da conta vive no servidor. O aparelho só guarda um cache.
+- **Nome do condado** é único.
+- **Anti-multi**: um condado por e-mail e por aparelho.
 - **Ranking semanal**: estrelas da semana, prêmio domingo 23h Brasília.
 
-A configuração web pública do projeto `condado-dcdf5` já vai no código. **Não precisa de variáveis `VITE_FIREBASE_*` no Vercel.** Nunca coloque o JSON da conta de serviço (`firebase-adminsdk`) no GitHub, no frontend, nem numa variável `VITE_*`.
+A configuração web pública do projeto já vai no código. **Não coloques o JSON da conta de serviço no GitHub, no frontend, nem numa variável `VITE_*`.**
 
-### Firebase Console (uma vez)
+### Produção (uma vez)
 
-1. Authentication → Sign-in method: **E-mail/senha** e **Google** ligados.
-2. Authentication → Settings → Authorized domains: inclua `localhost`, `vercel.app` e o teu domínio de produção.
-3. Firestore já existe (`southamerica-east1`). Não é preciso “iniciar coleção” — o jogo cria os documentos sozinho.
-4. Firestore → Rules: o ficheiro `firestore.rules` deste repositório (já publicado).
+1. Authentication → e-mail/senha e Google ligados. Domínios autorizados: o teu domínio de produção.
+2. Publica as regras e índices deste repositório (`firestore.rules`, `firestore.indexes.json`).
+3. No Vercel, define:
+   - `FIREBASE_SERVICE_ACCOUNT` — JSON da conta de serviço (texto inteiro), **ou** `FIREBASE_SERVICE_ACCOUNT_BASE64`, **ou** `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`
+   - `ADMIN_EMAILS` — e-mails que vêem o livro do reino (separados por vírgula)
+4. Liga o GitHub `Soarys1/condado` e faz **Redeploy**. Sem a conta de serviço, o jogo de treino abre mas a conta real não move ouro.
 
-### Vercel
-
-Liga o GitHub `Soarys1/condado` e faz **Redeploy**. Não é obrigatório colar o JSON de Admin. Depois do deploy, testa **Criar conta** com um e-mail novo.
-
-Se o Google falhar com `unauthorized-domain`, adiciona `vercel.app` em Authorized domains e espera um minuto.
+A economia (libras, Niens, mercado, ranking, saque) só muda no servidor. Pedidos repetidos com o mesmo `requestId` não creditam duas vezes.
 
 ## Como jogar
 
@@ -57,8 +51,9 @@ npm run dev
 ```bash
 npm run build
 npm run typecheck
+npm test
 ```
 
 ## Stack
 
-TanStack Start + React + Canvas 2D + Zustand. Auth: Firebase Auth. Banco: Cloud Firestore.
+TanStack Start + React + Canvas 2D + Zustand. Auth e dados da conta no servidor.

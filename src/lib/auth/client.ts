@@ -63,7 +63,7 @@ export async function signIn(providerId: string): Promise<void> {
     await signInGoogle();
     return;
   }
-  throw new Error("Provedor Firebase não configurado.");
+  throw new Error("Este login ainda não está disponível.");
 }
 
 export async function signOut(redirectTo = "/"): Promise<void> {

@@ -178,7 +178,7 @@ function migrate(s: SaveState): SaveState {
   };
 }
 
-/** Drop Zustand actions / UI fields so Firestore never sees functions. */
+/** Drop Zustand actions / UI fields so the cache never stores functions. */
 export function toSave(raw: unknown): SaveState {
   const src = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const picked: Record<string, unknown> = {};
@@ -215,12 +215,6 @@ export function persist(state: SaveState) {
     lastBlob = blob;
     localStorage.setItem(SAVE_KEY, JSON.stringify(blob));
     localStorage.setItem(SAVE_KEY + ".bak", JSON.stringify(blob));
-    if (!cloudSync) return;
-    if (cloudTimer) clearTimeout(cloudTimer);
-    cloudTimer = setTimeout(() => {
-      cloudTimer = null;
-      if (lastBlob && cloudSync) void cloudSync(lastBlob);
-    }, 250);
   } catch {
     /* quota */
   }
@@ -231,9 +225,9 @@ export async function flushCloud() {
     clearTimeout(cloudTimer);
     cloudTimer = null;
   }
-  if (lastBlob && cloudSync) {
+  if (cloudSync) {
     try {
-      await cloudSync(lastBlob);
+      await cloudSync(lastBlob ?? (loadSave() as SaveState));
     } catch {
       /* offline */
     }

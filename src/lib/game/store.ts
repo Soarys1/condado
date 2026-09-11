@@ -54,7 +54,7 @@ import {
 } from "./constants";
 import { Battle } from "./battle";
 import { ALLIANCES, botArmy, findLord, findNick, LORDS, lordsOfAlliance, pairWar, randomChat, warChest } from "./bots";
-import { defaultSave, flushCloud, loadSave, persist, progressScore, setCloudSync, wipeSave } from "./save";
+import { defaultSave, flushCloud, loadSave, persist, setCloudSync, wipeSave } from "./save";
 import type {
   BuildingInst,
   ChatMsg,
@@ -83,17 +83,59 @@ import {
   listTransfers,
   peekPlayer,
   pullCloud,
-  pushCloud,
   renameCounty,
   sendGlobalChat,
+  startRaid,
+  finishRaid,
   submitRaidResult,
   takeMarketOffer,
+  playAction,
 } from "./cloud";
 
 export let battle: Battle | null = null;
 export let raidTarget: Lord | null = null;
+let raidSessionId: string | null = null;
 let lastPersist = 0;
 let lastIncomingAt = 0;
+
+function isLive() {
+  return Boolean(auth.currentUser);
+}
+
+function applyServerSave(save: SaveState, extra?: { toast?: string | null; offers?: MarketOffer[]; raidTargets?: Lord[] }) {
+  const cur = useGame.getState();
+  useGame.setState({
+    ...save,
+    hydrated: true,
+    screen: cur.screen === "splash" ? "village" : cur.screen,
+    sheet: cur.sheet,
+    selectedId: cur.selectedId,
+    placing: cur.placing,
+    ghost: cur.ghost,
+    deployType: cur.deployType,
+    toast: extra?.toast ?? cur.toast,
+    offers: extra?.offers ?? cur.offers,
+    nickDraft: save.player.nick,
+    placingDir: cur.placingDir,
+    movingId: cur.movingId,
+    selectedRow: cur.selectedRow,
+    marchLord: cur.marchLord,
+    lookup: cur.lookup,
+    raidTargets: extra?.raidTargets ?? cur.raidTargets,
+  });
+  persist(save);
+}
+
+async function liveAction(action: string, payload: Record<string, unknown> = {}) {
+  const r = await playAction(action, payload);
+  if (r.save) applyServerSave(r.save, { toast: r.toast ?? null, offers: r.offers });
+  return r;
+}
+
+function liveFail(error: unknown) {
+  useGame.setState({ toast: error instanceof Error ? error.message : "Não foi possível concluir." });
+  sfxError();
+}
 
 function applyTraining(s: SaveState, dtMs: number) {
   const army = { ...s.army };
@@ -123,6 +165,7 @@ interface GameStore extends SaveState {
   marchLord: Lord | null;
   lookup: { id: string; nick: string } | null;
   raidTargets: Lord[];
+  admin: boolean;
   hydrate: () => void;
   hydrateFromCloud: () => Promise<boolean>;
   startGame: (nick: string, referredBy?: string) => void;
@@ -209,29 +252,13 @@ function storedAmount(b: BuildingInst, now = Date.now()): number {
 }
 
 function wireCloudSync() {
-  setCloudSync(async (s) => {
+  setCloudSync(async () => {
+    if (!auth.currentUser) return;
     try {
-      const r = await pushCloud(s);
-      const dg = r.gold - s.gold;
-      const dbread = r.bread - s.bread;
-      const dn = r.niens - s.niens;
-      const dt = r.troopCards - s.troopCards;
-      const dgc = r.generalCards - s.generalCards;
-      if (dg || dbread || dn || dt || dgc) {
-        const cur = useGame.getState();
-        useGame.setState({
-          gold: cur.gold + dg,
-          bread: cur.bread + dbread,
-          niens: cur.niens + dn,
-          troopCards: cur.troopCards + dt,
-          generalCards: cur.generalCards + dgc,
-        });
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "";
-      if (msg.includes("recusou") || msg.includes("guardar")) {
-        useGame.setState({ toast: "Não foi possível guardar na nuvem. O condado local está salvo." });
-      }
+      const r = await playAction("sync");
+      if (r.save) applyServerSave(r.save, { toast: null });
+    } catch {
+      /* offline */
     }
   });
 }
@@ -296,6 +323,7 @@ export const useGame = create<GameStore>((set, get) => ({
   marchLord: null,
   lookup: null,
   raidTargets: [],
+  admin: false,
 
   hydrate: () => {
     wireCloudSync();
@@ -306,31 +334,15 @@ export const useGame = create<GameStore>((set, get) => ({
 
   hydrateFromCloud: async () => {
     wireCloudSync();
-    const local = loadSave();
     try {
       const cloudResult = await pullCloud();
-      let save = cloudResult?.save ?? null;
-      if (save && local && local.player?.id === save.player.id && progressScore(local) > progressScore(save) + 50) {
-        save = local;
-        try {
-          await pushCloud(local);
-        } catch {
-          /* keep local; retry on next persist */
-        }
-      }
-      if (!save && local) {
-        save = local;
-        try {
-          await pushCloud(local);
-        } catch {
-          /* still play local */
-        }
-      }
+      const save = cloudResult?.save ?? null;
       if (!save) {
         set({ hydrated: true, screen: "splash" });
         return false;
       }
       applyLoadedSave(save);
+      if (cloudResult.admin) useGame.setState({ admin: true });
       startLiveChat();
       try {
         const led = await listTransfers();
@@ -343,12 +355,11 @@ export const useGame = create<GameStore>((set, get) => ({
       void flushCloud();
       return true;
     } catch {
-      if (local) {
-        applyLoadedSave(local, { toast: "Sem nuvem agora. O condado local foi reaberto." });
-        startLiveChat();
-        return true;
-      }
-      set({ hydrated: true, screen: "splash" });
+      set({
+        hydrated: true,
+        screen: "splash",
+        toast: "Não foi possível abrir o condado. Entra novamente.",
+      });
       return false;
     }
   },
@@ -367,7 +378,7 @@ export const useGame = create<GameStore>((set, get) => ({
         referredBy: referredBy?.trim().toUpperCase() || null,
       });
       if (!result?.save) {
-        throw new Error("O Firestore não devolveu o perfil. Tente novamente.");
+        throw new Error("Não foi possível fundar o condado. Tenta novamente.");
       }
       const { save } = result;
       const now = Date.now();
@@ -407,13 +418,22 @@ export const useGame = create<GameStore>((set, get) => ({
     if (dt < 0.2) return;
 
     const trained = applyTraining(s, dt * 1000);
+    const season = passSeasonKey(now).key;
+    const pass = s.pass.season === season ? s.pass : { season, purchased: false, stars: 0, claimed: [] };
+
+    if (isLive()) {
+      set({ lastTick: now, army: trained.army, training: trained.jobs, pass });
+      if (now - lastPersist > 30_000) {
+        lastPersist = now;
+        void flushCloud();
+      }
+      return;
+    }
+
     let chat = s.chat;
     if (!liveChat && !auth.currentUser && Math.random() < dt * 0.05) {
       chat = [...chat.slice(-39), randomChat(now)];
     }
-    const season = passSeasonKey(now).key;
-    let pass = s.pass;
-    if (pass.season !== season) pass = { season, purchased: false, stars: 0, claimed: [] };
 
     let war = s.war;
     const win = warWindow(now);
@@ -527,6 +547,7 @@ export const useGame = create<GameStore>((set, get) => ({
   setMuted: (muted) => {
     set({ muted });
     persist({ ...get(), muted });
+    if (isLive()) void playAction("setPrefs", { muted }).catch(() => undefined);
   },
   selectBuilding: (selectedId) =>
     set({ selectedId, sheet: selectedId ? "info" : get().sheet === "info" ? null : get().sheet }),
@@ -549,6 +570,26 @@ export const useGame = create<GameStore>((set, get) => ({
   confirmPlace: (gx, gy) => {
     const type = get().placing;
     if (!type) return false;
+    if (isLive()) {
+      const s = get();
+      void liveAction("placeBuilding", {
+        type,
+        gx,
+        gy,
+        dir: s.placingDir,
+        movingId: s.movingId,
+      })
+        .then(() => {
+          sfxBuild();
+          useGame.setState({
+            placing: type === "wall" && !s.movingId ? "wall" : null,
+            ghost: type === "wall" && !s.movingId ? useGame.getState().ghost : null,
+            movingId: null,
+          });
+        })
+        .catch(liveFail);
+      return true;
+    }
     const def = BUILDINGS[type];
     const s = get();
     const ignore = s.movingId ?? undefined;
@@ -605,6 +646,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   collect: (id) => {
+    if (isLive()) {
+      void liveAction("collect", { id }).then(() => sfxCoin()).catch(liveFail);
+      return;
+    }
     const s = get();
     const b = s.buildings.find((x) => x.id === id);
     if (!b) return;
@@ -623,6 +668,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   collectAll: () => {
+    if (isLive()) {
+      void liveAction("collectAll").then(() => sfxCoin()).catch(liveFail);
+      return;
+    }
     const s = get();
     let gold = 0;
     let bread = 0;
@@ -655,6 +704,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   upgrade: (id) => {
+    if (isLive()) {
+      void liveAction("upgrade", { id }).then(() => sfxBuild()).catch(liveFail);
+      return true;
+    }
     const s = get();
     const b = s.buildings.find((x) => x.id === id);
     if (!b) return false;
@@ -679,6 +732,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   demolish: (id) => {
+    if (isLive()) {
+      void liveAction("demolish", { id }).catch(liveFail);
+      return;
+    }
     const s = get();
     const b = s.buildings.find((x) => x.id === id);
     if (!b || b.type === "castle") return;
@@ -694,6 +751,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   train: (type) => {
+    if (isLive()) {
+      void liveAction("train", { type }).then(() => sfxClick()).catch(liveFail);
+      return true;
+    }
     const s = get();
     if (countType(s.buildings, "barracks") < 1) {
       set({ toast: "Construa um quartel primeiro." });
@@ -755,6 +816,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   speedTrain: (id) => {
+    if (isLive()) {
+      void liveAction("speedTrain", { id }).then(() => sfxCoin()).catch(liveFail);
+      return true;
+    }
     const s = get();
     const job = s.training.find((t) => t.id === id);
     if (!job) return false;
@@ -781,6 +846,28 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   beginAttack: (lord) => {
+    if (isLive() && lord.real) {
+      void (async () => {
+        try {
+          const r = await startRaid(lord.id);
+          if (r.save) applyServerSave(r.save, { toast: r.toast ?? null });
+          raidSessionId = r.sessionId ?? null;
+          const target: Lord = {
+            ...lord,
+            nick: r.nick ?? lord.nick,
+            buildings: r.buildings,
+            lootGold: r.lootGold ?? lord.lootGold,
+            real: true,
+          };
+          raidTarget = target;
+          set({ screen: "march", sheet: null, marchLord: target });
+          sfxClick();
+        } catch (error) {
+          liveFail(error);
+        }
+      })();
+      return;
+    }
     const s = get();
     const armyN = armySize(s) - s.training.length;
     if (armyN <= 0) {
@@ -982,6 +1069,23 @@ export const useGame = create<GameStore>((set, get) => ({
     });
     persist({ ...get() });
     if (r.stars > 0 && !battle.spectator) sfxStar();
+    if (!battle.spectator && raidTarget.real && isLive() && raidSessionId) {
+      const session = raidSessionId;
+      raidSessionId = null;
+      void finishRaid({
+        sessionId: session,
+        stars: r.stars,
+        goldTaken: r.gold,
+        destruction: r.destruction,
+        troopsLost,
+        survivors: army,
+      })
+        .then((res) => {
+          if (res.save) applyServerSave(res.save);
+        })
+        .catch(liveFail);
+      return;
+    }
     if (!battle.spectator && raidTarget.real) {
       void submitRaidResult({
         defenderId: raidTarget.id,
@@ -1032,13 +1136,16 @@ export const useGame = create<GameStore>((set, get) => ({
   buyOffer: async (id) => {
     try {
       const r = await takeMarketOffer(id);
-      set({
-        gold: r.gold,
-        bread: r.bread,
-        niens: r.niens,
-        toast: `Trato fechado com ${r.sellerNick}.`,
-      });
-      persist({ ...get() });
+      if (r.save) applyServerSave(r.save, { toast: r.toast ?? `Trato fechado com ${r.sellerNick}.` });
+      else {
+        set({
+          gold: r.gold,
+          bread: r.bread,
+          niens: r.niens,
+          toast: `Trato fechado com ${r.sellerNick}.`,
+        });
+        persist({ ...get() });
+      }
       await get().refreshMarket();
       sfxCoin();
       return true;
@@ -1050,6 +1157,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   buyNien: () => {
+    if (isLive()) {
+      void liveAction("buyNien").then(() => sfxCoin()).catch(liveFail);
+      return true;
+    }
     const s = get();
     if (s.gold < NIEN_COST_GOLD) {
       set({ toast: `Precisa de ${NIEN_COST_GOLD.toLocaleString("pt")} ${GOLD_NAME_PL}.` });
@@ -1063,6 +1174,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   sellNien: () => {
+    if (isLive()) {
+      void liveAction("sellNien").then(() => sfxCoin()).catch(liveFail);
+      return true;
+    }
     const s = get();
     if (s.niens < 1) {
       set({ toast: "Sem Niens para vender." });
@@ -1080,6 +1195,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   buyBreadPack: () => {
+    if (isLive()) {
+      void liveAction("buyBreadPack").then(() => sfxCoin()).catch(liveFail);
+      return true;
+    }
     const s = get();
     if (s.gold < BREAD_PACK_BUY_GOLD) {
       set({ toast: `Precisa de ${BREAD_PACK_BUY_GOLD.toLocaleString("pt")} ${GOLD_NAME_PL}.` });
@@ -1097,6 +1216,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   sellBreadPack: () => {
+    if (isLive()) {
+      void liveAction("sellBreadPack").then(() => sfxCoin()).catch(liveFail);
+      return true;
+    }
     const s = get();
     if (s.bread < BREAD_PACK) {
       set({ toast: `Precisa de ${BREAD_PACK.toLocaleString("pt")} pães.` });
@@ -1116,8 +1239,11 @@ export const useGame = create<GameStore>((set, get) => ({
   postOffer: async (giveKind, giveAmount, wantKind, wantAmount) => {
     try {
       const r = await createMarketOffer({ giveKind, giveAmount, wantKind, wantAmount });
-      set({ gold: r.gold, bread: r.bread, niens: r.niens, toast: "Oferta publicada no mercado real." });
-      persist({ ...get() });
+      if (r.save) applyServerSave(r.save, { toast: r.toast ?? "Oferta publicada no mercado." });
+      else {
+        set({ gold: r.gold, bread: r.bread, niens: r.niens, toast: "Oferta publicada no mercado." });
+        persist({ ...get() });
+      }
       await get().refreshMarket();
       sfxCoin();
       return true;
@@ -1131,8 +1257,11 @@ export const useGame = create<GameStore>((set, get) => ({
   withdrawOffer: async (id) => {
     try {
       const r = await cancelMarketOffer(id);
-      set({ gold: r.gold, bread: r.bread, niens: r.niens, toast: "Oferta retirada." });
-      persist({ ...get() });
+      if (r.save) applyServerSave(r.save, { toast: r.toast ?? "Oferta retirada." });
+      else {
+        set({ gold: r.gold, bread: r.bread, niens: r.niens, toast: "Oferta retirada." });
+        persist({ ...get() });
+      }
       await get().refreshMarket();
       return true;
     } catch (e) {
@@ -1172,6 +1301,11 @@ export const useGame = create<GameStore>((set, get) => ({
     }
     try {
       const r = await cloudTransfer({ toId, amount: n, kind });
+      if (r.save) {
+        applyServerSave(r.save, { toast: r.toast ?? `${n} ${resourceLabel(kind, n)} enviados a ${r.toNick}.` });
+        sfxCoin();
+        return true;
+      }
       const label = resourceLabel(kind, n);
       const rec: TransferRecord = {
         id: r.id,
@@ -1225,6 +1359,18 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   rotateWall: (id) => {
+    if (isLive()) {
+      const s = get();
+      const b = s.buildings.find((x) => x.id === id);
+      if (!b || b.type !== "wall") {
+        const dir: WallDir = s.placingDir === "v" ? "h" : "v";
+        set({ placingDir: dir, toast: dir === "v" ? "Muro em pé (I)." : "Muro deitado (—)." });
+        return;
+      }
+      const ids = s.selectedRow.includes(id) && s.selectedRow.length > 1 ? s.selectedRow : [id];
+      void liveAction("rotateWall", { id, rowIds: ids }).catch(liveFail);
+      return;
+    }
     const s = get();
     const b = s.buildings.find((x) => x.id === id);
     if (!b || b.type !== "wall") {
@@ -1282,6 +1428,10 @@ export const useGame = create<GameStore>((set, get) => ({
   cancelMove: () => set({ movingId: null, placing: null, ghost: null }),
 
   upgradeCounty: () => {
+    if (isLive()) {
+      void liveAction("upgradeCounty").then(() => sfxStar()).catch(liveFail);
+      return true;
+    }
     const s = get();
     if (s.countyLevel >= COUNTY_MAX) {
       set({ toast: "Condado no nível máximo." });
@@ -1344,6 +1494,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   upgradeTroop: (type) => {
+    if (isLive()) {
+      void liveAction("upgradeTroop", { type }).then(() => sfxBuild()).catch(liveFail);
+      return true;
+    }
     const s = get();
     if (countType(s.buildings, "training") < 1) {
       set({ toast: "Construa o Campo de Treino." });
@@ -1397,6 +1551,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   upgradeCamp: () => {
+    if (isLive()) {
+      void liveAction("upgradeCamp").then(() => sfxBuild()).catch(liveFail);
+      return true;
+    }
     const s = get();
     if (countType(s.buildings, "training") < 1) {
       set({ toast: "Construa o Campo de Treino." });
@@ -1424,6 +1582,10 @@ export const useGame = create<GameStore>((set, get) => ({
   recruitDefender: () => get().train("defender"),
 
   buyPass: () => {
+    if (isLive()) {
+      void liveAction("buyPass").then(() => sfxCoin()).catch(liveFail);
+      return true;
+    }
     const s = get();
     const win = passWindow();
     if (!win.active) {
@@ -1450,6 +1612,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   claimPass: (level) => {
+    if (isLive()) {
+      void liveAction("claimPass", { level }).then(() => sfxStar()).catch(liveFail);
+      return true;
+    }
     const s = get();
     if (!s.pass.purchased) {
       set({ toast: "Compre o passe primeiro." });
@@ -1473,6 +1639,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   foundAlliance: (name) => {
+    if (isLive()) {
+      void liveAction("foundAlliance", { name }).then(() => sfxStar()).catch(liveFail);
+      return true;
+    }
     const s = get();
     if (s.alliance) {
       set({ toast: "Já tens aliança." });
@@ -1506,6 +1676,10 @@ export const useGame = create<GameStore>((set, get) => ({
     const t = text.trim();
     const s = get();
     if (!t || !s.alliance) return;
+    if (isLive()) {
+      void liveAction("sendAllianceChat", { text: t }).catch(liveFail);
+      return;
+    }
     const msg: ChatMsg = {
       id: nid("m"),
       fromId: s.player.id,
@@ -1611,6 +1785,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   skipPass: () => {
+    if (isLive()) {
+      void liveAction("skipPass").then(() => sfxCoin()).catch(liveFail);
+      return true;
+    }
     const s = get();
     if (!passWindow().active) {
       set({ toast: "O passe abre em setembro, dia 1." });
@@ -1647,6 +1825,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   upgradeType: (type) => {
+    if (isLive()) {
+      void liveAction("upgradeType", { type }).then(() => sfxBuild()).catch(liveFail);
+      return true;
+    }
     const s = get();
     const targets = s.buildings.filter((b) => b.type === type && b.level < s.countyLevel);
     if (!targets.length) {
@@ -1671,6 +1853,10 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   upgradeWallRow: (id) => {
+    if (isLive()) {
+      void liveAction("upgradeWallRow", { id }).then(() => sfxBuild()).catch(liveFail);
+      return true;
+    }
     const s = get();
     const start = s.buildings.find((x) => x.id === id);
     if (!start || start.type !== "wall") return false;

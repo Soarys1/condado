@@ -34,7 +34,12 @@ export default defineConfig(({ command, isPreview }) => ({
             // Firebase Admin/Google Cloud Firestore use CommonJS internals
             // such as __dirname; keep them external for Vercel's Node runtime.
             rollupConfig: {
-              external: ["firebase-admin"],
+              external: [
+                "firebase-admin",
+                "firebase-admin/app",
+                "firebase-admin/auth",
+                "firebase-admin/firestore",
+              ],
             },
           }),
         ]

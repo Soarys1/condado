@@ -12,8 +12,6 @@
     "strict": true,
     "isolatedModules": true,
     "skipLibCheck": true,
-    // `src/lib/db.ts` imports scripts/migration-plan.mjs; checkJs types the
-    // implementation itself instead of a hand-written declaration beside it.
     "allowJs": true,
     "checkJs": true,
     "noEmit": true,
@@ -32,5 +30,20 @@
   "include": [
     "src",
     "server"
+  ],
+  "exclude": [
+    "src/lib/db.ts",
+    "src/lib/env.server.ts",
+    "src/lib/auth/server.ts",
+    "src/lib/auth/pglite-dialect.ts",
+    "src/lib/auth/gate-session.server.ts",
+    "src/lib/auth/gate-session-marker.ts",
+    "src/lib/auth/popup.server.ts",
+    "src/lib/auth/sign-in-gate.ts",
+    "src/lib/auth/sign-in-gate.test.ts",
+    "src/lib/app-data/readiness.ts",
+    "src/lib/app-data/readiness-schedule.ts",
+    "src/lib/app-data/readiness-schedule.test.ts",
+    "src/lib/app-data/use-connector-readiness.ts"
   ]
 }

@@ -97,7 +97,7 @@ import { setBearerToken, signOut } from "@/lib/auth/client";
 import { UserButton } from "@/lib/auth/gates";
 import {
   claimWeekly,
-  pullCloud,
+  playAction,
   syncAccountEmail,
   weeklyBoard,
   type RankRow,
@@ -236,8 +236,8 @@ function Splash({ signedIn }: { signedIn: boolean }) {
             Condado
           </h1>
           <p className="mt-3 max-w-sm text-[0.95rem] leading-relaxed text-parchment-dim">
-            Cria conta com e-mail e senha. O nome do condado é único. Libras, Niens e cartas ficam no
-            Firestore — nada some do telemóvel.
+            Cria conta com e-mail e senha. O nome do condado é único. O progresso fica na tua conta
+            — podes entrar de outro aparelho.
           </p>
           <a
             href="/login"
@@ -1191,6 +1191,91 @@ function InfoSheet() {
   );
 }
 
+function AdminLedger() {
+  const admin = useGame((s) => s.admin);
+  const [playerId, setPlayerId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lookup, setLookup] = useState<{
+    nick?: string;
+    playerId?: string;
+    gold?: number;
+    bread?: number;
+    niens?: number;
+    troopCards?: number;
+    generalCards?: number;
+    countyLevel?: number;
+    weekStars?: number;
+    ledger?: Array<{
+      type?: string;
+      currency?: string;
+      amount?: number;
+      balanceAfter?: number;
+      timestamp?: string;
+    }>;
+  } | null>(null);
+  if (!admin) return null;
+  return (
+    <div className="rounded-md border border-line bg-ink-2/70 p-3">
+      <p className="text-xs uppercase tracking-[0.18em] text-parchment-dim">Livro do reino</p>
+      <form
+        className="mt-2 flex gap-2"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          setError(null);
+          try {
+            const r = await playAction("adminLookup", { playerId });
+            setLookup((r.lookup as typeof lookup) ?? null);
+            if (!r.lookup) setError("Jogador não encontrado.");
+          } catch (err) {
+            setLookup(null);
+            setError(err instanceof Error ? err.message : "Não encontrado.");
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <input
+          value={playerId}
+          onChange={(event) => setPlayerId(event.target.value)}
+          placeholder="ID do jogador"
+          className="h-10 flex-1 rounded-md border border-line bg-ink px-3 text-sm outline-none"
+        />
+        <button
+          type="submit"
+          disabled={busy || playerId.trim().length < 3}
+          className="h-10 rounded-md bg-parchment px-3 font-display text-sm text-ink disabled:opacity-50"
+        >
+          Ver
+        </button>
+      </form>
+      {error && <p className="mt-2 text-xs text-iron">{error}</p>}
+      {lookup && (
+        <div className="mt-2 space-y-1 text-xs text-parchment-dim">
+          <p>
+            {lookup.nick} · {lookup.playerId} · Nv.{lookup.countyLevel}
+          </p>
+          <p>
+            {GOLD_NAME} {formatRes(Number(lookup.gold))} · Pão {formatRes(Number(lookup.bread))} · Niens{" "}
+            {formatRes(Number(lookup.niens))}
+          </p>
+          <p>
+            Cartas {lookup.troopCards}/{lookup.generalCards} · Estrelas da semana {lookup.weekStars}
+          </p>
+          <div className="max-h-40 space-y-1 overflow-y-auto">
+            {(lookup.ledger ?? []).slice(0, 40).map((row, i) => (
+              <p key={`${row.timestamp ?? i}-${i}`}>
+                {row.type} · {row.currency} {row.amount} → {row.balanceAfter}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProfileSheet() {
   const player = useGame((s) => s.player);
   const currentUser = useCurrentUserState().user;
@@ -1271,10 +1356,7 @@ function ProfileSheet() {
                   "auth/requires-recent-login": "Entre novamente e tente associar o e-mail.",
                 };
                 setAccountMessage(
-                  messages[code] ??
-                    (error instanceof Error
-                      ? error.message
-                      : "Não foi possível associar o e-mail."),
+                  messages[code] ?? "Não foi possível associar o e-mail.",
                 );
               } finally {
                 setAccountBusy(false);
@@ -1306,7 +1388,7 @@ function ProfileSheet() {
               {accountBusy ? "Associando…" : "Associar e-mail e senha"}
             </button>
             <p className="text-xs leading-relaxed text-parchment-dim">
-              A senha é protegida pelo Firebase Auth e não é salva no banco do jogo.
+              A senha fica só na tua conta. Nunca a partilhes.
             </p>
           </form>
         ) : (
@@ -1364,6 +1446,7 @@ function ProfileSheet() {
           Fundado em {new Date(player.createdAt).toLocaleDateString("pt")}
         </li>
       </ul>
+      <AdminLedger />
       {raids.length > 0 && (
         <div>
           <p className="mb-2 font-display text-sm">Registo de combates</p>
@@ -2005,37 +2088,21 @@ function RankSheet() {
         setClaim(r.week.claim);
         setClaimed(r.claimed);
       })
-      .catch(() => setMsg("Ranking no servidor. Entra na tua conta."));
+      .catch(() => setMsg("Não foi possível abrir o ranking."));
   }, []);
 
   async function onClaim() {
     try {
       const r = await claimWeekly();
       setClaimed(true);
-      setMsg(`#${r.rank}: ${r.prize.label}`);
-      try {
-        const cloudResult = await pullCloud();
-        const save = cloudResult?.save;
-        if (save) {
-          useGame.setState({
-            gold: save.gold,
-            troopCards: save.troopCards,
-            generalCards: save.generalCards,
-          });
-          persist({ ...useGame.getState() });
-        } else {
-          useGame.setState((s) => ({
-            gold: s.gold + r.prize.gold,
-            troopCards: s.troopCards + r.prize.troopCards,
-            generalCards: s.generalCards + r.prize.generalCards,
-          }));
-        }
-      } catch {
-        useGame.setState((s) => ({
-          gold: s.gold + r.prize.gold,
-          troopCards: s.troopCards + r.prize.troopCards,
-          generalCards: s.generalCards + r.prize.generalCards,
-        }));
+      setMsg(r.toast ?? `Prêmio do ${r.rank}º lugar recolhido.`);
+      if (r.save) {
+        useGame.setState({
+          gold: r.save.gold,
+          troopCards: r.save.troopCards,
+          generalCards: r.save.generalCards,
+        });
+        persist({ ...useGame.getState() });
       }
       void refreshLedger();
     } catch (e) {
