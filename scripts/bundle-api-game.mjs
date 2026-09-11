@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "rolldown";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const outfile = join(root, "api/_handler.cjs");
+const outfile = join(root, "api/_lib/handler.cjs");
 
 const external = (id) =>
   id === "firebase-admin" ||
@@ -14,7 +14,7 @@ const external = (id) =>
   id.startsWith("@grpc/") ||
   id.startsWith("node:");
 
-await mkdir(join(root, "api"), { recursive: true });
+await mkdir(join(root, "api/_lib"), { recursive: true });
 
 const result = await build({
   input: join(root, "src/lib/game/server/http.server.ts"),
@@ -33,4 +33,4 @@ if (!result) {
   throw new Error("[condado] failed to bundle /api/game handler");
 }
 
-console.log("[condado] bundled api/_handler.cjs with firebase-admin external");
+console.log("[condado] bundled api/_lib/handler.cjs with firebase-admin external");

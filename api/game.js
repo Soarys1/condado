@@ -57,7 +57,7 @@ async function run(request) {
   nodeRequire("firebase-admin/app");
   nodeRequire("firebase-admin/auth");
   nodeRequire("firebase-admin/firestore");
-  const mod = await import("./_handler.cjs");
+  const mod = await import("./_lib/handler.cjs");
   const handle = mod.handleGamePost || mod.default?.handleGamePost;
   if (typeof handle !== "function") {
     throw new Error("handler missing");

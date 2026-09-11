@@ -6,7 +6,7 @@
   "functions": {
     "api/game.js": {
       "maxDuration": 30,
-      "includeFiles": "node_modules/{firebase-admin,@google-cloud,@grpc,@fastify,google-gax,google-auth-library,google-logging-utils,protobufjs,proto3-json-serializer,jwks-rsa,jsonwebtoken,farmhash-modern,fast-deep-equal,gtoken,jws,gcp-metadata,teeny-request,retry-request,duplexify,functional-red-black-tree}/**"
+      "includeFiles": "api/_lib/**"
     }
   },
   "rewrites": [

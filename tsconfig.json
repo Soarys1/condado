@@ -47,6 +47,6 @@
     "src/lib/app-data/readiness-schedule.test.ts",
     "src/lib/app-data/use-connector-readiness.ts",
     "api/game.js",
-    "api/_handler.cjs"
+    "api/_lib/**"
   ]
 }
