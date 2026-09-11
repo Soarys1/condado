@@ -32,17 +32,24 @@ function parseJsonObject(raw: string): Record<string, string> | null {
 }
 
 function parseServiceAccount(): { projectId: string; clientEmail: string; privateKey: string } | null {
-  const raw = env("FIREBASE_SERVICE_ACCOUNT") || env("FIREBASE_SERVICE_ACCOUNT_BASE64");
-  let json: Record<string, string> | null = null;
-  if (raw) {
-    json = raw.startsWith("{") || raw.startsWith('"') || raw.startsWith("'") ? parseJsonObject(raw) : parseJsonObject(Buffer.from(raw, "base64").toString("utf8"));
+  try {
+    const raw = env("FIREBASE_SERVICE_ACCOUNT") || env("FIREBASE_SERVICE_ACCOUNT_BASE64");
+    let json: Record<string, string> | null = null;
+    if (raw) {
+      json =
+        raw.startsWith("{") || raw.startsWith('"') || raw.startsWith("'")
+          ? parseJsonObject(raw)
+          : parseJsonObject(Buffer.from(raw, "base64").toString("utf8"));
+    }
+    const clientEmail = String(json?.clientEmail || json?.client_email || env("FIREBASE_CLIENT_EMAIL") || "");
+    let privateKey = String(json?.privateKey || json?.private_key || env("FIREBASE_PRIVATE_KEY") || "");
+    privateKey = privateKey.replace(/\\n/g, "\n").replace(/\r/g, "");
+    const projectId = String(json?.projectId || json?.project_id || env("FIREBASE_PROJECT_ID") || PROJECT_ID);
+    if (!clientEmail || !privateKey.includes("PRIVATE KEY")) return null;
+    return { projectId, clientEmail, privateKey };
+  } catch {
+    return null;
   }
-  const clientEmail = json?.clientEmail || json?.client_email || env("FIREBASE_CLIENT_EMAIL");
-  let privateKey = json?.privateKey || json?.private_key || env("FIREBASE_PRIVATE_KEY");
-  privateKey = privateKey.replace(/\\n/g, "\n").replace(/\r/g, "");
-  const projectId = json?.projectId || json?.project_id || env("FIREBASE_PROJECT_ID") || PROJECT_ID;
-  if (!clientEmail || !privateKey.includes("PRIVATE KEY")) return null;
-  return { projectId, clientEmail, privateKey };
 }
 
 let app: App | null = null;

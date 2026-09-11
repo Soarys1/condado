@@ -21,8 +21,11 @@ A chave `AIza…` no cliente **não é um segredo** — é o identificador web p
 1. **Regras (obrigatório)** — no Console, Firestore → **Segurança**, cola o ficheiro `firestore.rules` deste repositório e clica **Publicar**. Sem isto o cliente antigo ainda consegue escrever ouro.
 2. **Índices** — Firestore → **Índices**, ou publica `firestore.indexes.json`.
 3. **Vercel** — o livro do reino já reconhece `ifcorporationsu@gmail.com` sem variável. Para a economia da conta real, define só:
-   - `FIREBASE_SERVICE_ACCOUNT` = o JSON inteiro da conta de serviço (Project settings → Service accounts → Generate new private key). Sem prefixo `VITE_`. Ambiente: Production + Preview.
-4. Redeploy.
+   - `FIREBASE_SERVICE_ACCOUNT` = o JSON inteiro da conta de serviço (Project settings → Service accounts → Generate new private key).
+   - Tipo: **Sensitive / Secret**. Sem prefixo `VITE_`. Ambiente: Production + Preview. Disponível em **Runtime** (não só Build).
+   - Cola o JSON numa linha, ou com as quebras `\n` da chave privada tal como o ficheiro original.
+   - Se o JSON for recusado pelo tamanho, usa em vez disso `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY` (a chave com `\n`).
+4. Redeploy depois de gravar a variável.
 
 Sem a conta de serviço, o reino de treino abre; a conta real não move ouro.
 

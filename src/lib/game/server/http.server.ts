@@ -2,9 +2,25 @@ import { adminConfigured, verifyPlayerToken } from "@/lib/firebase-admin.server"
 import { handleGameAction } from "@/lib/game/server/engine.server";
 import { GameError } from "@/lib/game/sim";
 
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
 function statusFor(error: unknown): number {
   const message = error instanceof Error ? error.message : "";
-  if (message.includes("reino ainda não está ligado") || message.includes("credential") || message.includes("private")) {
+  if (
+    message.includes("reino ainda não está ligado") ||
+    message.includes("credential") ||
+    message.includes("private") ||
+    message.includes("Cannot find module") ||
+    message.includes("firebase-admin")
+  ) {
     return 503;
   }
   if (message.includes("Entre na tua conta") || message.includes("Sessão expirada")) return 401;
@@ -19,6 +35,7 @@ function safeMessage(error: unknown): string {
     message.includes("FIREBASE") ||
     message.includes("credential") ||
     message.includes("private") ||
+    message.includes("Cannot find module") ||
     message.includes("service account") ||
     /at\s+\S+\s+\(/.test(message)
   ) {
@@ -30,10 +47,7 @@ function safeMessage(error: unknown): string {
 export async function handleGamePost(request: Request): Promise<Response> {
   try {
     if (!adminConfigured()) {
-      return Response.json(
-        { error: "O reino ainda não está ligado ao servidor. Tenta dentro de instantes." },
-        { status: 503 },
-      );
+      return json({ error: "O reino ainda não está ligado ao servidor. Tenta dentro de instantes." }, 503);
     }
     const player = await verifyPlayerToken(request.headers.get("authorization"));
     const body = (await request.json()) as {
@@ -45,11 +59,12 @@ export async function handleGamePost(request: Request): Promise<Response> {
     const requestId = String(body.requestId ?? "");
     const payload = body.payload && typeof body.payload === "object" ? body.payload : {};
     if (!action) {
-      return Response.json({ error: "Pedido inválido." }, { status: 400 });
+      return json({ error: "Pedido inválido." }, 400);
     }
     const result = await handleGameAction(player, action, payload, requestId);
-    return Response.json(result);
+    return json(result);
   } catch (error) {
-    return Response.json({ error: safeMessage(error) }, { status: statusFor(error) });
+    console.error("[condado] /api/game", error instanceof Error ? error.message : error);
+    return json({ error: safeMessage(error) }, statusFor(error));
   }
 }

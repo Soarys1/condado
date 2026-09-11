@@ -98,14 +98,24 @@ export default async function grokPwaMiddleware(
 
   if (!isDocumentPath(path)) return next();
 
-  const result = await next();
-  if (
-    result instanceof Response &&
-    result.body &&
-    String(result.headers.get("content-type") ?? "").includes("text/html") &&
-    !result.headers.get("content-encoding")
-  ) {
-    return injectHeadStreaming(result, requestHost(event));
+  let result: unknown;
+  try {
+    result = await next();
+  } catch (error) {
+    console.error("[grok-pwa] next failed", error instanceof Error ? error.message : error);
+    throw error;
+  }
+  try {
+    if (
+      result instanceof Response &&
+      result.body &&
+      String(result.headers.get("content-type") ?? "").includes("text/html") &&
+      !result.headers.get("content-encoding")
+    ) {
+      return injectHeadStreaming(result, requestHost(event));
+    }
+  } catch (error) {
+    console.error("[grok-pwa] inject failed", error instanceof Error ? error.message : error);
   }
   return result;
 }

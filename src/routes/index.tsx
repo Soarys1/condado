@@ -1,5 +1,7 @@
+import { lazy, Suspense } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { GameApp } from "@/components/game/GameApp";
+
+const GameApp = lazy(() => import("@/components/game/GameApp").then((mod) => ({ default: mod.GameApp })));
 
 export const Route = createFileRoute("/")({
   ssr: false,
@@ -7,5 +9,9 @@ export const Route = createFileRoute("/")({
 });
 
 function Home() {
-  return <GameApp />;
+  return (
+    <Suspense fallback={<div className="min-h-dvh w-full bg-ink" />}>
+      <GameApp />
+    </Suspense>
+  );
 }

@@ -7,8 +7,10 @@ import { nitro } from "nitro/vite";
 import { grokPwaPlugin } from "./scripts/grok-pwa-plugin.mjs";
 // @ts-expect-error JS plugin alongside the TS vite config
 import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
+// @ts-expect-error JS plugin alongside the TS vite config
+import { traceFirebaseAdmin } from "./scripts/trace-firebase-admin.mjs";
 
-const firebaseExternals = [
+const firebaseAdminPackages = [
   "firebase-admin",
   "firebase-admin/app",
   "firebase-admin/auth",
@@ -33,20 +35,31 @@ export default defineConfig(({ command, isPreview }) => ({
   },
   resolve: { tsconfigPaths: true },
   ssr: {
-    external: firebaseExternals,
+    external: firebaseAdminPackages,
   },
   plugins: [
     appEnvPlugin(),
     grokPwaPlugin(),
     tailwindcss(),
-    tanstackStart(),
+    tanstackStart({
+      spa: { enabled: true },
+    }),
     ...(command === "build" || isPreview
       ? [
           nitro({
             preset: "vercel",
             serverDir: "./server",
+            node: true,
             rollupConfig: {
-              external: firebaseExternals,
+              external: firebaseAdminPackages,
+            },
+            hooks: {
+              compiled: async () => {
+                const ok = await traceFirebaseAdmin();
+                if (!ok) {
+                  throw new Error("firebase-admin was not copied into the Vercel function");
+                }
+              },
             },
           }),
         ]

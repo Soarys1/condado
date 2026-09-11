@@ -89,7 +89,7 @@ const profileRef = (uid: string) => col("condado_profiles").doc(uid);
 
 function isAdmin(email: string | null): boolean {
   if (!email) return false;
-  const extra = (process.env.ADMIN_EMAILS ?? "")
+  const extra = String(globalThis.process?.env?.ADMIN_EMAILS ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);

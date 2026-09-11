@@ -72,7 +72,13 @@ async function playAction(action: string, payload: Record<string, unknown> = {},
   } catch {
     data = {};
   }
-  if (!res.ok) throw new Error(data.error || "Não foi possível concluir a ação.");
+  if (!res.ok) {
+    const raw = data as GameActionResult & { message?: string; unhandled?: boolean };
+    if (raw.unhandled || raw.message === "HTTPError") {
+      throw new Error("O reino ainda não está ligado ao servidor. Tenta dentro de instantes.");
+    }
+    throw new Error(data.error || "Não foi possível concluir a ação.");
+  }
   return data;
 }
 
