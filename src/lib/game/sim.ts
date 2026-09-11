@@ -299,7 +299,7 @@ export function placeBuilding(
     gy: snapped.gy,
     level: 1,
     lastCollect: Date.now(),
-    dir: type === "wall" ? input.dir ?? "h" : undefined,
+    ...(type === "wall" ? { dir: input.dir ?? "h" } : {}),
   };
   const ledger: LedgerEntry[] = [];
   pushLedger(ledger, s, "place", "gold", -def.costGold, type);
@@ -313,6 +313,7 @@ export function placeBuilding(
 export function upgradeBuilding(s: SaveState, id: string): { save: SaveState; ledger: LedgerEntry[]; toast: string } {
   const b = s.buildings.find((x) => x.id === id);
   if (!b) throw new GameError("Construção não encontrada.");
+  if (b.type === "castle") throw new GameError("O castelo avança com o nível do condado.");
   if (b.level >= s.countyLevel) throw new GameError("Limite do condado. Maximize tudo e avance o nível.");
   const cost = upgradeCost(b.type, b.level);
   if (s.gold < cost) throw new GameError(`Faltam ${GOLD_NAME_PL} para melhorar.`);
@@ -330,7 +331,7 @@ export function upgradeBuilding(s: SaveState, id: string): { save: SaveState; le
 }
 
 export function upgradeAllOfType(s: SaveState, type: BuildingType): { save: SaveState; ledger: LedgerEntry[]; toast: string } {
-  const targets = s.buildings.filter((b) => b.type === type && b.level < s.countyLevel);
+  const targets = s.buildings.filter((b) => b.type === type && b.type !== "castle" && b.level < s.countyLevel);
   if (!targets.length) throw new GameError("Nada para melhorar neste tipo.");
   const cost = targets.reduce((n, b) => n + upgradeCost(b.type, b.level), 0);
   if (s.gold < cost) throw new GameError(`Precisa de ${cost.toLocaleString("pt")} ${GOLD_NAME_PL}.`);
@@ -548,7 +549,7 @@ export function creditResource(
 
 export function upgradeCountySim(s: SaveState): { save: SaveState; ledger: LedgerEntry[]; toast: string } {
   if (s.countyLevel >= COUNTY_MAX) throw new GameError("Condado no nível máximo.");
-  const need = s.buildings.filter((b) => b.type !== "wall" && b.level < s.countyLevel);
+  const need = s.buildings.filter((b) => b.type !== "wall" && b.type !== "castle" && b.level < s.countyLevel);
   if (need.length) throw new GameError("Full construção: maximize todas as estruturas atuais.");
   const cost = countyUpgradeCost(s.countyLevel);
   if (s.gold < cost.gold || s.niens < cost.niens) {
@@ -559,7 +560,13 @@ export function upgradeCountySim(s: SaveState): { save: SaveState; ledger: Ledge
   if (cost.niens) pushLedger(ledger, s, "upgrade_county", "niens", -cost.niens, "county");
   const next = s.countyLevel + 1;
   return {
-    save: { ...s, countyLevel: next, gold: s.gold - cost.gold, niens: s.niens - cost.niens },
+    save: {
+      ...s,
+      countyLevel: next,
+      gold: s.gold - cost.gold,
+      niens: s.niens - cost.niens,
+      buildings: s.buildings.map((b) => (b.type === "castle" ? { ...b, level: next } : b)),
+    },
     ledger,
     toast: `Condado nível ${next}.`,
   };

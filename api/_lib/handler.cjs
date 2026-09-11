@@ -87,6 +87,9 @@ function getAdminFirestore() {
 	} catch {
 		dbInstance = (0, firebase_admin_firestore.getFirestore)(instance, DATABASE_ID);
 	}
+	try {
+		dbInstance.settings({ ignoreUndefinedProperties: true });
+	} catch {}
 	return dbInstance;
 }
 async function verifyPlayerToken(header) {
@@ -1031,9 +1034,23 @@ function defaultSave(nick = "Senhor", referredBy = null) {
 		attacksByTarget: {}
 	};
 }
+function cleanBuilding(b, countyLevel, now) {
+	const next = {
+		id: String(b.id ?? ""),
+		type: b.type,
+		gx: Number(b.gx),
+		gy: Number(b.gy),
+		level: b.type === "castle" ? Math.max(1, countyLevel) : Math.max(1, Number(b.level || 1))
+	};
+	if (b.lastCollect != null) next.lastCollect = Number(b.lastCollect) || now;
+	else if (b.type === "mine" || b.type === "farm") next.lastCollect = now;
+	if (b.type === "wall") next.dir = b.dir === "v" ? "v" : "h";
+	return next;
+}
 function migrate(s) {
 	const base = defaultSave(s.player?.nick ?? "Senhor");
 	const now = Date.now();
+	const countyLevel = Math.max(1, Number(s.countyLevel ?? base.countyLevel ?? 1));
 	const buildings = Array.isArray(s.buildings) && s.buildings.length ? s.buildings : base.buildings;
 	const season = passSeasonKey(now).key;
 	const pass = s.pass?.season === season ? s.pass : {
@@ -1062,13 +1079,9 @@ function migrate(s) {
 		},
 		troopCards: s.troopCards ?? 2,
 		generalCards: s.generalCards ?? 0,
-		countyLevel: s.countyLevel ?? 1,
+		countyLevel,
 		campLevel: s.campLevel ?? 1,
-		buildings: buildings.map((b) => ({
-			...b,
-			lastCollect: b.lastCollect ?? now,
-			dir: b.type === "wall" ? b.dir ?? "h" : b.dir
-		})),
+		buildings: buildings.map((b) => cleanBuilding(b, countyLevel, now)),
 		training: Array.isArray(s.training) ? s.training : [],
 		chat: Array.isArray(s.chat) ? s.chat.slice(-40) : base.chat,
 		allianceChat: Array.isArray(s.allianceChat) ? s.allianceChat.slice(-40) : [],
@@ -1353,7 +1366,7 @@ function placeBuilding(s, input) {
 		gy: snapped.gy,
 		level: 1,
 		lastCollect: Date.now(),
-		dir: type === "wall" ? input.dir ?? "h" : void 0
+		...type === "wall" ? { dir: input.dir ?? "h" } : {}
 	};
 	const ledger = [];
 	pushLedger(ledger, s, "place", "gold", -def.costGold, type);
@@ -1370,6 +1383,7 @@ function placeBuilding(s, input) {
 function upgradeBuilding(s, id) {
 	const b = s.buildings.find((x) => x.id === id);
 	if (!b) throw new GameError("Construção não encontrada.");
+	if (b.type === "castle") throw new GameError("O castelo avança com o nível do condado.");
 	if (b.level >= s.countyLevel) throw new GameError("Limite do condado. Maximize tudo e avance o nível.");
 	const cost = upgradeCost(b.type, b.level);
 	if (s.gold < cost) throw new GameError(`Faltam ${GOLD_NAME_PL} para melhorar.`);
@@ -1389,7 +1403,7 @@ function upgradeBuilding(s, id) {
 	};
 }
 function upgradeAllOfType(s, type) {
-	const targets = s.buildings.filter((b) => b.type === type && b.level < s.countyLevel);
+	const targets = s.buildings.filter((b) => b.type === type && b.type !== "castle" && b.level < s.countyLevel);
 	if (!targets.length) throw new GameError("Nada para melhorar neste tipo.");
 	const cost = targets.reduce((n, b) => n + upgradeCost(b.type, b.level), 0);
 	if (s.gold < cost) throw new GameError(`Precisa de ${cost.toLocaleString("pt")} ${GOLD_NAME_PL}.`);
@@ -1644,7 +1658,7 @@ function creditResource(s, amount, kind, type, source) {
 }
 function upgradeCountySim(s) {
 	if (s.countyLevel >= 15) throw new GameError("Condado no nível máximo.");
-	if (s.buildings.filter((b) => b.type !== "wall" && b.level < s.countyLevel).length) throw new GameError("Full construção: maximize todas as estruturas atuais.");
+	if (s.buildings.filter((b) => b.type !== "wall" && b.type !== "castle" && b.level < s.countyLevel).length) throw new GameError("Full construção: maximize todas as estruturas atuais.");
 	const cost = countyUpgradeCost(s.countyLevel);
 	if (s.gold < cost.gold || s.niens < cost.niens) throw new GameError(cost.niens ? `Precisa de ${cost.niens} Niens.` : `Precisa de ${cost.gold.toLocaleString("pt")} ${GOLD_NAME_PL}.`);
 	const ledger = [];
@@ -1656,7 +1670,11 @@ function upgradeCountySim(s) {
 			...s,
 			countyLevel: next,
 			gold: s.gold - cost.gold,
-			niens: s.niens - cost.niens
+			niens: s.niens - cost.niens,
+			buildings: s.buildings.map((b) => b.type === "castle" ? {
+				...b,
+				level: next
+			} : b)
 		},
 		ledger,
 		toast: `Condado nível ${next}.`
@@ -2028,6 +2046,9 @@ function withoutMeta(p) {
 	const { userId: _u, appliedTransferIds: _a, appliedRaidIds: _r, accountEmail: _e, ...save } = p;
 	return toSave(save);
 }
+function toFirestore(value) {
+	return JSON.parse(JSON.stringify(value));
+}
 function profilePayload(save, extra) {
 	const clean = toSave(save);
 	return JSON.parse(JSON.stringify({
@@ -2221,12 +2242,12 @@ async function handleGameAction(player, action, payload, requestId) {
 			const patch = ratePatch((await tx.get(rateRef)).data(), action);
 			const out = await dispatch(tx, player, action, payload, requestId);
 			tx.set(rateRef, patch, { merge: true });
-			tx.set(reqRef, {
+			tx.set(reqRef, toFirestore({
 				result: out,
 				action,
 				userId: player.uid,
 				at: (/* @__PURE__ */ new Date()).toISOString()
-			});
+			}));
 			writeAudit(tx, player.uid, action, requestId, true);
 			return out;
 		});
@@ -2380,7 +2401,7 @@ async function createProfile(tx, player, payload, requestId) {
 async function syncProfile(tx, player, requestId) {
 	const ref = profileRef(player.uid);
 	if (!(await tx.get(ref)).exists) return {
-		save: void 0,
+		save: null,
 		admin: isAdmin(player.email)
 	};
 	const prep = await preparePlayer(tx, player.uid);
@@ -3027,7 +3048,7 @@ function statusFor(error) {
 }
 function safeMessage(error) {
 	const message = error instanceof Error ? error.message : "Não foi possível concluir a ação.";
-	if (message.includes("FIREBASE") || message.includes("credential") || message.includes("private") || message.includes("Cannot find module") || message.includes("service account") || /at\s+\S+\s+\(/.test(message)) return "Não foi possível concluir a ação.";
+	if (message.includes("FIREBASE") || message.includes("Firestore") || message.includes("undefined") || message.includes("credential") || message.includes("private") || message.includes("Cannot find module") || message.includes("service account") || /at\s+\S+\s+\(/.test(message)) return "Não foi possível concluir a ação.";
 	return message;
 }
 async function handleGamePost(request) {

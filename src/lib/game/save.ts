@@ -1,5 +1,5 @@
 import { SAVE_KEY, SAVE_VERSION, passSeasonKey } from "./constants";
-import type { SaveState, TroopLevels } from "./types";
+import type { BuildingInst, SaveState, TroopLevels } from "./types";
 import { makeId, starterVillage } from "./world";
 import { seedChat } from "./bots";
 
@@ -122,9 +122,24 @@ export function loadSave(): SaveState | null {
   }
 }
 
+function cleanBuilding(b: BuildingInst, countyLevel: number, now: number): BuildingInst {
+  const next: BuildingInst = {
+    id: String(b.id ?? ""),
+    type: b.type,
+    gx: Number(b.gx),
+    gy: Number(b.gy),
+    level: b.type === "castle" ? Math.max(1, countyLevel) : Math.max(1, Number(b.level || 1)),
+  };
+  if (b.lastCollect != null) next.lastCollect = Number(b.lastCollect) || now;
+  else if (b.type === "mine" || b.type === "farm") next.lastCollect = now;
+  if (b.type === "wall") next.dir = b.dir === "v" ? "v" : "h";
+  return next;
+}
+
 function migrate(s: SaveState): SaveState {
   const base = defaultSave(s.player?.nick ?? "Senhor");
   const now = Date.now();
+  const countyLevel = Math.max(1, Number(s.countyLevel ?? base.countyLevel ?? 1));
   const buildings = Array.isArray(s.buildings) && s.buildings.length ? s.buildings : base.buildings;
   const season = passSeasonKey(now).key;
   const pass = s.pass?.season === season ? s.pass : { season, purchased: false, stars: 0, claimed: [] };
@@ -137,13 +152,9 @@ function migrate(s: SaveState): SaveState {
     troopLevels: { ...base.troopLevels, ...s.troopLevels },
     troopCards: s.troopCards ?? 2,
     generalCards: s.generalCards ?? 0,
-    countyLevel: s.countyLevel ?? 1,
+    countyLevel,
     campLevel: s.campLevel ?? 1,
-    buildings: buildings.map((b) => ({
-      ...b,
-      lastCollect: b.lastCollect ?? now,
-      dir: b.type === "wall" ? b.dir ?? "h" : b.dir,
-    })),
+    buildings: buildings.map((b) => cleanBuilding(b, countyLevel, now)),
     training: Array.isArray(s.training) ? s.training : [],
     chat: Array.isArray(s.chat) ? s.chat.slice(-40) : base.chat,
     allianceChat: Array.isArray(s.allianceChat) ? s.allianceChat.slice(-40) : [],
@@ -188,7 +199,7 @@ export function toSave(raw: unknown): SaveState {
   return migrate(picked as unknown as SaveState);
 }
 
-export function progressScore(s: SaveState): number {
+function progressScore(s: SaveState): number {
   const built = s.buildings.reduce((n, b) => n + (b.level || 1), 0);
   return s.countyLevel * 1_000_000_000 + built * 10_000 + s.gold + s.bread + s.niens * 100_000 + s.stars * 1_000;
 }

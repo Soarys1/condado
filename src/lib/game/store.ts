@@ -166,6 +166,8 @@ interface GameStore extends SaveState {
   lookup: { id: string; nick: string } | null;
   raidTargets: Lord[];
   admin: boolean;
+  needsCounty: boolean;
+  bootError: string | null;
   hydrate: () => void;
   hydrateFromCloud: () => Promise<boolean>;
   startGame: (nick: string, referredBy?: string) => void;
@@ -324,6 +326,8 @@ export const useGame = create<GameStore>((set, get) => ({
   lookup: null,
   raidTargets: [],
   admin: false,
+  needsCounty: false,
+  bootError: null,
 
   hydrate: () => {
     wireCloudSync();
@@ -338,10 +342,11 @@ export const useGame = create<GameStore>((set, get) => ({
       const cloudResult = await pullCloud();
       const save = cloudResult?.save ?? null;
       if (!save) {
-        set({ hydrated: true, screen: "splash" });
+        set({ hydrated: true, screen: "splash", needsCounty: true, bootError: null, toast: null });
         return false;
       }
       applyLoadedSave(save);
+      useGame.setState({ needsCounty: false, bootError: null });
       if (cloudResult.admin) useGame.setState({ admin: true });
       startLiveChat();
       try {
@@ -355,10 +360,16 @@ export const useGame = create<GameStore>((set, get) => ({
       void flushCloud();
       return true;
     } catch (error) {
+      const raw = error instanceof Error ? error.message : "Não foi possível abrir o condado. Entra novamente.";
+      const toast = /Firestore|undefined|valid document|HTTPError|FUNCTION_INVOCATION/i.test(raw)
+        ? "Não foi possível abrir o condado. Tenta novamente."
+        : raw;
       set({
         hydrated: true,
         screen: "splash",
-        toast: error instanceof Error ? error.message : "Não foi possível abrir o condado. Entra novamente.",
+        needsCounty: false,
+        bootError: toast,
+        toast,
       });
       return false;
     }
@@ -391,6 +402,9 @@ export const useGame = create<GameStore>((set, get) => ({
         screen: "village",
         sheet: null,
         nickDraft: save.player.nick,
+        needsCounty: false,
+        bootError: null,
+        toast: null,
       });
       persist({ ...get() });
       sfxClick();
@@ -710,7 +724,7 @@ export const useGame = create<GameStore>((set, get) => ({
     }
     const s = get();
     const b = s.buildings.find((x) => x.id === id);
-    if (!b) return false;
+    if (!b || b.type === "castle") return false;
     if (b.level >= s.countyLevel) {
       set({ toast: "Limite do condado. Maximize tudo e avance o nível." });
       return false;
@@ -1437,7 +1451,7 @@ export const useGame = create<GameStore>((set, get) => ({
       set({ toast: "Condado no nível máximo." });
       return false;
     }
-    const need = s.buildings.filter((b) => b.type !== "wall" && b.level < s.countyLevel);
+    const need = s.buildings.filter((b) => b.type !== "wall" && b.type !== "castle" && b.level < s.countyLevel);
     if (need.length) {
       set({ toast: "Full construção: maximize todas as estruturas atuais." });
       return false;
@@ -1457,6 +1471,7 @@ export const useGame = create<GameStore>((set, get) => ({
       countyLevel: next,
       gold: s.gold - cost.gold,
       niens: s.niens - cost.niens,
+      buildings: s.buildings.map((b) => (b.type === "castle" ? { ...b, level: next } : b)),
       toast: `Condado nível ${next}.`,
     });
     persist({ ...get() });

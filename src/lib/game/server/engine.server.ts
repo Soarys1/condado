@@ -49,7 +49,7 @@ type Profile = SaveState & {
 };
 
 type ActionResult = {
-  save?: SaveState;
+  save?: SaveState | null;
   toast?: string;
   admin?: boolean;
   offers?: MarketOffer[];
@@ -132,6 +132,10 @@ function profileFromDoc(uid: string, data: DocumentData): Profile {
 function withoutMeta(p: Profile): SaveState {
   const { userId: _u, appliedTransferIds: _a, appliedRaidIds: _r, accountEmail: _e, ...save } = p;
   return toSave(save);
+}
+
+function toFirestore<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function profilePayload(
@@ -364,7 +368,7 @@ export async function handleGameAction(
       const patch = ratePatch(rateSnap.data(), action);
       const out = await dispatch(tx, player, action, payload, requestId);
       tx.set(rateRef, patch, { merge: true });
-      tx.set(reqRef, { result: out, action, userId: player.uid, at: new Date().toISOString() });
+      tx.set(reqRef, toFirestore({ result: out, action, userId: player.uid, at: new Date().toISOString() }));
       writeAudit(tx, player.uid, action, requestId, true);
       return out;
     });
@@ -572,7 +576,7 @@ async function createProfile(
 async function syncProfile(tx: Transaction, player: PlayerAuth, requestId: string): Promise<ActionResult> {
   const ref = profileRef(player.uid);
   const snap = await tx.get(ref);
-  if (!snap.exists) return { save: undefined, admin: isAdmin(player.email) };
+  if (!snap.exists) return { save: null, admin: isAdmin(player.email) };
   const prep = await preparePlayer(tx, player.uid);
   commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
   return { save: withoutMeta(prep.profile), admin: isAdmin(player.email) };

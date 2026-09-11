@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { defaultSave } from "./save";
+import { defaultSave, toSave } from "./save";
 import {
   GameError,
   applyRaidFinish,
@@ -13,6 +13,7 @@ import {
   storedAmount,
   trainTroop,
   upgradeBuilding,
+  upgradeCountySim,
 } from "./sim";
 import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP } from "./constants";
 
@@ -122,5 +123,37 @@ describe("economia pura", () => {
     const save = defaultSave("Teste");
     save.buildings = save.buildings.filter((b) => b.type !== "barracks");
     assert.throws(() => trainTroop(save, "infantry"), GameError);
+  });
+
+  it("construções sem muro não levam dir indefinido para a nuvem", () => {
+    const save = toSave(defaultSave("Teste"));
+    const castle = save.buildings.find((b) => b.type === "castle");
+    const mine = save.buildings.find((b) => b.type === "mine");
+    const wall = save.buildings.find((b) => b.type === "wall");
+    assert.ok(castle);
+    assert.ok(mine);
+    assert.ok(wall);
+    assert.equal(Object.prototype.hasOwnProperty.call(castle, "dir"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(mine, "dir"), false);
+    assert.equal(wall.dir, "h");
+    const round = JSON.parse(JSON.stringify(save)) as typeof save;
+    assert.doesNotMatch(JSON.stringify(round.buildings[0]), /undefined/);
+  });
+
+  it("avançar o condado sobe o castelo e não o trata como construção normal", () => {
+    const save = defaultSave("Teste");
+    const castle = save.buildings.find((b) => b.type === "castle")!;
+    assert.throws(() => upgradeBuilding(save, castle.id), GameError);
+    save.gold = 30_000;
+    const r = upgradeCountySim(save);
+    assert.equal(r.save.countyLevel, 2);
+    assert.equal(r.save.buildings.find((b) => b.type === "castle")?.level, 2);
+    r.save.gold = 60_000;
+    r.save.buildings = r.save.buildings.map((b) =>
+      b.type === "castle" || b.type === "wall" ? b : { ...b, level: 2 },
+    );
+    const r2 = upgradeCountySim(r.save);
+    assert.equal(r2.save.countyLevel, 3);
+    assert.equal(r2.save.buildings.find((b) => b.type === "castle")?.level, 3);
   });
 });

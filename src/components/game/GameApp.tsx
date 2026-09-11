@@ -214,7 +214,10 @@ export function GameApp() {
 function Splash({ signedIn }: { signedIn: boolean }) {
   const startCloud = useGame((s) => s.startCloud);
   const startGame = useGame((s) => s.startGame);
+  const hydrateFromCloud = useGame((s) => s.hydrateFromCloud);
   const toast = useGame((s) => s.toast);
+  const bootError = useGame((s) => s.bootError);
+  const needsCounty = useGame((s) => s.needsCounty);
   const [nick, setNick] = useState("");
   const [ref, setRef] = useState("");
   const [busy, setBusy] = useState(false);
@@ -283,8 +286,28 @@ function Splash({ signedIn }: { signedIn: boolean }) {
           Condado
         </h1>
         <p className="mt-3 max-w-sm text-[0.95rem] leading-relaxed text-parchment-dim">
-          Escolhe um nome que ninguém mais use. Ele identifica o teu condado no reino.
+          {bootError && !needsCounty
+            ? "A tua conta já existe. Estamos a abrir o condado."
+            : "Escolhe um nome que ninguém mais use. Ele identifica o teu condado no reino."}
         </p>
+        {bootError && !needsCounty ? (
+          <>
+            <p className="mt-6 text-sm text-iron">{bootError}</p>
+            <button
+              type="button"
+              disabled={busy}
+              className="mt-4 flex h-12 w-full items-center justify-center rounded-md bg-parchment font-display text-sm font-semibold tracking-wide text-ink disabled:opacity-50"
+              onClick={() => {
+                unlockAudio();
+                setBusy(true);
+                void hydrateFromCloud().finally(() => setBusy(false));
+              }}
+            >
+              {busy ? "A abrir…" : "Abrir o condado"}
+            </button>
+          </>
+        ) : (
+          <>
         <label className="mt-6 block text-xs uppercase tracking-[0.18em] text-parchment-dim">
           Nome do condado
         </label>
@@ -319,6 +342,8 @@ function Splash({ signedIn }: { signedIn: boolean }) {
           Fundar condado
         </button>
         {toast && <p className="mt-3 text-sm text-iron">{toast}</p>}
+          </>
+        )}
       </div>
     </div>
   );
@@ -1087,7 +1112,8 @@ function InfoSheet() {
         <div>
           <p className="font-display text-lg">{d.name}</p>
           <p className="text-sm text-parchment-dim">
-            Nível {b.level}/{countyLevel} · {hp} HP{dmg > 0 ? ` · ${dmg} dano` : ""}
+            Nível {b.type === "castle" ? countyLevel : b.level}/{b.type === "castle" ? COUNTY_MAX : countyLevel} · {hp} HP
+            {dmg > 0 ? ` · ${dmg} dano` : ""}
           </p>
         </div>
       </div>

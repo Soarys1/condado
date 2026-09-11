@@ -99,6 +99,13 @@ export function getAdminFirestore(): Firestore {
   } catch {
     dbInstance = getFirestore(instance, DATABASE_ID);
   }
+  try {
+    (dbInstance as Firestore & { settings: (s: { ignoreUndefinedProperties: boolean }) => void }).settings({
+      ignoreUndefinedProperties: true,
+    });
+  } catch {
+    /* already configured */
+  }
   return dbInstance;
 }
 

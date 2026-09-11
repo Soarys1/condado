@@ -33,6 +33,8 @@ function safeMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : "Não foi possível concluir a ação.";
   if (
     message.includes("FIREBASE") ||
+    message.includes("Firestore") ||
+    message.includes("undefined") ||
     message.includes("credential") ||
     message.includes("private") ||
     message.includes("Cannot find module") ||
