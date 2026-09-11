@@ -8,6 +8,17 @@ import { grokPwaPlugin } from "./scripts/grok-pwa-plugin.mjs";
 // @ts-expect-error JS plugin alongside the TS vite config
 import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
 
+const firebaseExternals = [
+  "firebase-admin",
+  "firebase-admin/app",
+  "firebase-admin/auth",
+  "firebase-admin/firestore",
+  "@google-cloud/firestore",
+  "@google-cloud/storage",
+  "google-gax",
+  "google-auth-library",
+];
+
 export default defineConfig(({ command, isPreview }) => ({
   server: {
     host: "0.0.0.0",
@@ -21,6 +32,9 @@ export default defineConfig(({ command, isPreview }) => ({
     strictPort: true,
   },
   resolve: { tsconfigPaths: true },
+  ssr: {
+    external: firebaseExternals,
+  },
   plugins: [
     appEnvPlugin(),
     grokPwaPlugin(),
@@ -31,15 +45,8 @@ export default defineConfig(({ command, isPreview }) => ({
           nitro({
             preset: "vercel",
             serverDir: "./server",
-            // Firebase Admin/Google Cloud Firestore use CommonJS internals
-            // such as __dirname; keep them external for Vercel's Node runtime.
             rollupConfig: {
-              external: [
-                "firebase-admin",
-                "firebase-admin/app",
-                "firebase-admin/auth",
-                "firebase-admin/firestore",
-              ],
+              external: firebaseExternals,
             },
           }),
         ]

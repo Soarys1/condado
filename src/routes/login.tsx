@@ -13,7 +13,7 @@ import { setBearerToken, signInGoogle } from "@/lib/auth/client";
 import { WHATSAPP_GROUP } from "@/lib/game/constants";
 import { unlockAudio } from "@/lib/game/audio";
 
-export const Route = createFileRoute("/login")({ component: AuthForm });
+export const Route = createFileRoute("/login")({ ssr: false, component: AuthForm });
 
 function firebaseErrorMessage(error: unknown): string {
   const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";

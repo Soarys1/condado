@@ -5,25 +5,43 @@ import { getFirestore, type Firestore } from "firebase-admin/firestore";
 const DATABASE_ID = "default";
 const PROJECT_ID = "condado-dcdf5";
 
-function parseServiceAccount(): { projectId: string; clientEmail: string; privateKey: string } | null {
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT?.trim();
-  const b64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64?.trim();
-  let json: Record<string, string> | null = null;
+function env(name: string): string {
   try {
-    if (raw) {
-      json = JSON.parse(raw.startsWith("{") ? raw : Buffer.from(raw, "base64").toString("utf8")) as Record<string, string>;
-    } else if (b64) {
-      json = JSON.parse(Buffer.from(b64, "base64").toString("utf8")) as Record<string, string>;
-    }
+    const value = globalThis.process?.env?.[name];
+    return typeof value === "string" ? value.trim() : "";
   } catch {
-    json = null;
+    return "";
   }
-  const email = process.env.FIREBASE_CLIENT_EMAIL?.trim();
-  const key = process.env.FIREBASE_PRIVATE_KEY?.trim();
-  const clientEmail = json?.clientEmail || json?.client_email || email || "";
-  const privateKey = (json?.privateKey || json?.private_key || key || "").replace(/\\n/g, "\n");
-  const projectId = json?.projectId || json?.project_id || process.env.FIREBASE_PROJECT_ID?.trim() || PROJECT_ID;
-  if (!clientEmail || !privateKey) return null;
+}
+
+function parseJsonObject(raw: string): Record<string, string> | null {
+  let text = raw.trim();
+  if (!text) return null;
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    try {
+      text = JSON.parse(text) as string;
+    } catch {
+      text = text.slice(1, -1);
+    }
+  }
+  try {
+    return JSON.parse(text) as Record<string, string>;
+  } catch {
+    return null;
+  }
+}
+
+function parseServiceAccount(): { projectId: string; clientEmail: string; privateKey: string } | null {
+  const raw = env("FIREBASE_SERVICE_ACCOUNT") || env("FIREBASE_SERVICE_ACCOUNT_BASE64");
+  let json: Record<string, string> | null = null;
+  if (raw) {
+    json = raw.startsWith("{") || raw.startsWith('"') || raw.startsWith("'") ? parseJsonObject(raw) : parseJsonObject(Buffer.from(raw, "base64").toString("utf8"));
+  }
+  const clientEmail = json?.clientEmail || json?.client_email || env("FIREBASE_CLIENT_EMAIL");
+  let privateKey = json?.privateKey || json?.private_key || env("FIREBASE_PRIVATE_KEY");
+  privateKey = privateKey.replace(/\\n/g, "\n").replace(/\r/g, "");
+  const projectId = json?.projectId || json?.project_id || env("FIREBASE_PROJECT_ID") || PROJECT_ID;
+  if (!clientEmail || !privateKey.includes("PRIVATE KEY")) return null;
   return { projectId, clientEmail, privateKey };
 }
 
@@ -42,15 +60,23 @@ function getAdminApp(): App {
   if (!account) {
     throw new Error("O reino ainda não está ligado ao servidor. Tenta dentro de instantes.");
   }
-  app = initializeApp({
-    credential: cert(account),
-    projectId: account.projectId,
-  });
-  return app;
+  try {
+    app = initializeApp({
+      credential: cert(account),
+      projectId: account.projectId,
+    });
+    return app;
+  } catch {
+    throw new Error("O reino ainda não está ligado ao servidor. Tenta dentro de instantes.");
+  }
 }
 
 export function adminConfigured(): boolean {
-  return Boolean(parseServiceAccount() || getApps().length);
+  try {
+    return Boolean(parseServiceAccount() || getApps().length);
+  } catch {
+    return false;
+  }
 }
 
 export function getAdminAuth(): Auth {
