@@ -99,6 +99,7 @@ export interface BattleResult {
   elapsed: number;
   retreated: boolean;
   fieldWin: boolean;
+  fieldWinner: "atk" | "def" | "draw";
 }
 
 let uid = 1;
@@ -139,6 +140,9 @@ export class Battle {
   private sfxGate = 0;
   private stats: Record<TroopType, { hp: number; dps: number; speed: number }>;
   private foeStats: Record<TroopType, { hp: number; dps: number; speed: number }>;
+  pvp = false;
+  controlSide: TroopSide = "atk";
+  hostSim = true;
 
   constructor(
     layout: BuildingInst[],
@@ -153,6 +157,9 @@ export class Battle {
       foeArmy?: ArmyCounts;
       foeLevels?: TroopLevels;
       foeCamp?: number;
+      pvp?: boolean;
+      controlSide?: TroopSide;
+      hostSim?: boolean;
     },
   ) {
     this.armyLeft = {
@@ -173,6 +180,9 @@ export class Battle {
     };
     this.spectator = !!opts?.spectator;
     this.mode = opts?.mode ?? "raid";
+    this.pvp = !!opts?.pvp;
+    this.controlSide = opts?.controlSide ?? "atk";
+    this.hostSim = opts?.hostSim !== false;
     this.lootCap = Math.max(0, Math.floor(opts?.lootCap ?? LOOT_CAP));
     const lv = opts?.levels;
     const camp = opts?.campLevel ?? 1;
@@ -323,8 +333,9 @@ export class Battle {
     return n;
   }
 
-  armyHome(): ArmyCounts {
-    const s = this.result?.survivors ?? {
+  armyHome(side: TroopSide = this.controlSide): ArmyCounts {
+    const bag = side === "atk" ? this.armyLeft : this.foeArmy;
+    const s: ArmyCounts = {
       infantry: 0,
       archers: 0,
       cavalry: 0,
@@ -332,13 +343,17 @@ export class Battle {
       generaless: 0,
       defender: 0,
     };
+    for (const t of this.troops) {
+      if (t.side !== side || !t.alive) continue;
+      s[t.type] += 1;
+    }
     return {
-      infantry: this.armyLeft.infantry + s.infantry,
-      archers: this.armyLeft.archers + s.archers,
-      cavalry: this.armyLeft.cavalry + s.cavalry,
-      general: this.armyLeft.general + s.general,
-      generaless: this.armyLeft.generaless + s.generaless,
-      defender: this.armyLeft.defender + s.defender,
+      infantry: bag.infantry + s.infantry,
+      archers: bag.archers + s.archers,
+      cavalry: bag.cavalry + s.cavalry,
+      general: Math.min(1, bag.general + s.general),
+      generaless: Math.min(1, bag.generaless + s.generaless),
+      defender: bag.defender + s.defender,
     };
   }
 
@@ -394,7 +409,7 @@ export class Battle {
     if (this.phase !== "prep") return;
     this.phase = "fight";
     this.prepLeft = 0;
-    if (this.mode === "field") this.autoDeploySide("def", this.foeArmy);
+    if (this.mode === "field" && !this.pvp) this.autoDeploySide("def", this.foeArmy);
     for (const t of this.troops) {
       if (!t.alive) continue;
       t.repath = 0;
@@ -417,7 +432,7 @@ export class Battle {
     let best: BattleTroop | null = null;
     let bd = 1.15;
     for (const t of this.troops) {
-      if (!t.alive || t.side !== "atk") continue;
+      if (!t.alive || t.side !== this.controlSide) continue;
       const d = Math.hypot(t.x - wx, t.y - wy);
       if (d < bd) {
         bd = d;
@@ -430,7 +445,7 @@ export class Battle {
   selectGroup(t: BattleTroop) {
     this.selected.clear();
     for (const o of this.troops) {
-      if (!o.alive || o.side !== "atk") continue;
+      if (!o.alive || o.side !== this.controlSide) continue;
       if (o.type !== t.type) continue;
       if (Math.hypot(o.x - t.x, o.y - t.y) > 2.6) continue;
       this.selected.add(o.id);
@@ -475,10 +490,15 @@ export class Battle {
 
     if (this.phase === "prep") {
       this.prepLeft = Math.max(0, this.prepLeft - d * 1000);
-      if (this.prepLeft <= 0 && this.troops.length > 0) this.startFight();
+      if (this.prepLeft <= 0 && this.troops.length > 0 && !this.pvp) this.startFight();
       return;
     }
     if (this.phase !== "fight") return;
+
+    if (this.pvp && !this.hostSim) {
+      this.fightLeft = Math.max(0, this.fightLeft - d * 1000);
+      return;
+    }
 
     this.fightLeft = Math.max(0, this.fightLeft - d * 1000);
     if (this.mode === "raid") this.grantBands();
@@ -1155,30 +1175,39 @@ export class Battle {
     this.floats.push({ x, y, text, life: 1.1, color });
   }
 
-  private end(retreated: boolean) {
+  end(retreated: boolean) {
     if (this.phase === "ended") return;
     this.phase = "ended";
     if (this.mode === "field") {
       const atkAlive = this.troops.some((t) => t.alive && t.side === "atk");
       const defAlive = this.troops.some((t) => t.alive && t.side === "def");
-      const fieldWin = !retreated && atkAlive && !defAlive;
-      const survivors: ArmyCounts = {
-        infantry: 0,
-        archers: 0,
-        cavalry: 0,
-        general: 0,
-        generaless: 0,
-        defender: 0,
-      };
+      const atkN = (atkAlive ? 1 : 0) + this.reserveCount("atk");
+      const defN = (defAlive ? 1 : 0) + this.reserveCount("def");
+      let fieldWinner: "atk" | "def" | "draw" = "draw";
+      if (retreated) fieldWinner = this.controlSide === "atk" ? "def" : "atk";
+      else if (defN <= 0 && atkN > 0) fieldWinner = "atk";
+      else if (atkN <= 0 && defN > 0) fieldWinner = "def";
+      else if (this.pvp) {
+        const atkTotal = this.armyHome("atk");
+        const defTotal = this.armyHome("def");
+        const a =
+          atkTotal.infantry + atkTotal.archers + atkTotal.cavalry + atkTotal.general + atkTotal.generaless + atkTotal.defender;
+        const b =
+          defTotal.infantry + defTotal.archers + defTotal.cavalry + defTotal.general + defTotal.generaless + defTotal.defender;
+        fieldWinner = a > b ? "atk" : b > a ? "def" : "draw";
+      } else {
+        fieldWinner = !retreated && atkAlive && !defAlive ? "atk" : "def";
+      }
+      const fieldWin = fieldWinner === "atk";
+      const survivors = this.armyHome("atk");
       let casualties = 0;
       for (const t of this.troops) {
         if (t.side !== "atk") continue;
-        if (t.alive) survivors[t.type] += 1;
-        else casualties += 1;
+        if (!t.alive) casualties += 1;
       }
       this.result = {
         stars: fieldWin ? 3 : 0,
-        destruction: fieldWin ? 1 : defAlive ? 0 : 0.5,
+        destruction: fieldWinner === "atk" ? 1 : fieldWinner === "def" ? 0 : 0.5,
         niens: 0,
         gold: 0,
         bread: 0,
@@ -1188,6 +1217,7 @@ export class Battle {
         elapsed: (BATTLE_MS - this.fightLeft) / 1000,
         retreated,
         fieldWin,
+        fieldWinner,
       };
       return;
     }
@@ -1227,13 +1257,14 @@ export class Battle {
       elapsed: (BATTLE_MS - this.fightLeft) / 1000,
       retreated,
       fieldWin: false,
+      fieldWinner: "def" as const,
     };
   }
 
   get destruction(): number {
     if (this.mode === "field") {
       const defs = this.troops.filter((t) => t.side === "def");
-      if (!defs.length) return 1;
+      if (!defs.length) return this.reserveCount("def") > 0 ? 0 : 1;
       const lost = defs.filter((t) => !t.alive).length;
       return lost / defs.length;
     }
@@ -1242,7 +1273,88 @@ export class Battle {
     const lost = nonWall.reduce((s, b) => s + (1 - b.hp / b.maxHp), 0);
     return lost / nonWall.length;
   }
+
+  exportSnapshot(): DuelSnap {
+    return {
+      phase: this.phase,
+      prepLeft: this.prepLeft,
+      fightLeft: this.fightLeft,
+      armyLeft: { ...this.armyLeft },
+      foeArmy: { ...this.foeArmy },
+      troops: this.troops.map((t) => ({
+        id: t.id,
+        type: t.type,
+        x: t.x,
+        y: t.y,
+        hp: t.hp,
+        maxHp: t.maxHp,
+        side: t.side,
+        alive: t.alive,
+        facing: t.facing,
+      })),
+    };
+  }
+
+  applySnapshot(snap: DuelSnap) {
+    this.phase = snap.phase === "fight" || snap.phase === "ended" || snap.phase === "prep" ? snap.phase : this.phase;
+    this.prepLeft = snap.prepLeft;
+    this.fightLeft = snap.fightLeft;
+    this.armyLeft = { ...snap.armyLeft };
+    this.foeArmy = { ...snap.foeArmy };
+    const keep = this.hostSim ? this.controlSide : null;
+    const local = keep ? this.troops.filter((t) => t.side === keep) : [];
+    const remote = snap.troops.filter((t) => !keep || t.side !== keep);
+    const rebuilt: BattleTroop[] = [
+      ...local,
+      ...remote.map((t) => ({
+        id: t.id,
+        type: t.type,
+        x: t.x,
+        y: t.y,
+        hp: t.hp,
+        maxHp: t.maxHp,
+        goalId: null,
+        targetId: null,
+        path: [] as Array<[number, number]>,
+        pathI: 0,
+        facing: t.facing,
+        cooldown: 0,
+        alive: t.alive,
+        repath: 0,
+        side: t.side,
+        waypoint: null,
+        foeId: null,
+      })),
+    ];
+    this.troops = rebuilt;
+    if (snap.phase === "fight" && this.phase === "fight") {
+      /* already fighting */
+    } else if (snap.phase === "fight" && this.phase !== "ended") {
+      this.phase = "fight";
+      this.prepLeft = 0;
+    }
+    this.rebuildBlocked();
+  }
 }
+
+export type DuelSnap = {
+  phase: BattlePhase;
+  prepLeft: number;
+  fightLeft: number;
+  armyLeft: ArmyCounts;
+  foeArmy: ArmyCounts;
+  troops: Array<{
+    id: string;
+    type: TroopType;
+    x: number;
+    y: number;
+    hp: number;
+    maxHp: number;
+    side: TroopSide;
+    alive: boolean;
+    facing: number;
+  }>;
+};
 
 function closest(x: number, y: number, list: BattleBuilding[]): BattleBuilding | null {
   let best: BattleBuilding | null = null;

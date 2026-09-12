@@ -9,7 +9,7 @@ import {
 import { auth, db } from "@/lib/firebase";
 import { CHAT_TTL_MS } from "./constants";
 import type { ResourceKind, Tradable } from "./constants";
-import type { AllianceRival, ChatMsg, Lord, MarketOffer, SaveState } from "./types";
+import type { AllianceRival, ChatMsg, DuelChallenge, Lord, MarketOffer, SaveState } from "./types";
 import { deviceFingerprint, getDeviceId } from "./device";
 
 export type RankRow = {
@@ -51,9 +51,16 @@ export type GameActionResult = {
   error?: string;
   foes?: Lord[];
   rivals?: AllianceRival[];
+  challenges?: DuelChallenge[];
   foeArmy?: SaveState["army"];
   foeLevels?: SaveState["troopLevels"];
   foeCamp?: number;
+  atkArmy?: SaveState["army"];
+  atkLevels?: SaveState["troopLevels"];
+  atkCamp?: number;
+  status?: string;
+  side?: "atk" | "def";
+  duel?: Record<string, unknown>;
 };
 
 async function playAction(action: string, payload: Record<string, unknown> = {}, requestId?: string): Promise<GameActionResult> {

@@ -18,7 +18,7 @@ import {
   upgradeCountySim,
   settle,
 } from "./sim";
-import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT, trainCostFor, ALLIANCE_FOUND_NIENS, allianceAtWarToday, warWindow } from "./constants";
+import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT, trainCostFor, ALLIANCE_FOUND_NIENS, allianceAtWarToday, allianceXpToNext, applyAllianceXp, warWindow } from "./constants";
 
 describe("economia pura", () => {
   it("recolha de mina usa timestamp, não tick", () => {
@@ -166,6 +166,16 @@ describe("economia pura", () => {
     assert.equal(allianceAtWarToday({ warDay: win.key, foeId: null, sittingOut: true, resolved: false }), false);
     assert.equal(allianceAtWarToday({ warDay: win.key, foeId: "AL-X", sittingOut: false, resolved: true }), false);
     assert.equal(allianceAtWarToday({ warDay: "1999-01-01", foeId: "AL-X", sittingOut: false, resolved: false }), false);
+  });
+
+  it("xp de aliança: nv.2 pede 2000 e depois dobra", () => {
+    assert.equal(allianceXpToNext(1), 2000);
+    assert.equal(allianceXpToNext(2), 4000);
+    assert.equal(allianceXpToNext(3), 8000);
+    assert.equal(allianceXpToNext(6), 64000);
+    const g = applyAllianceXp(1, 0, 2000);
+    assert.equal(g.level, 2);
+    assert.equal(g.xp, 0);
   });
 
   it("débito recusa saldo negativo", () => {

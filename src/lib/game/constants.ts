@@ -65,12 +65,18 @@ export const ALLIANCE_MAX_LEVEL = 7;
 export const ALLIANCE_SLOTS_BASE = 30;
 export const ALLIANCE_SLOTS_STEP = 10;
 export const ALLIANCE_XP_WIN = 1000;
-export const ALLIANCE_XP_BASE = 4000;
-export const ALLIANCE_WAR_CHEST = 50_000_000;
-export const ALLIANCE_DUEL_MIN = 70_000;
-export const ALLIANCE_DUEL_MAX = 100_000;
+export const ALLIANCE_XP_BASE = 2000;
+/** @deprecated war chest replaced by the duel pot */
+export const ALLIANCE_WAR_CHEST = 0;
+export const ALLIANCE_DUEL_MIN = 10_000;
+export const ALLIANCE_DUEL_MAX = 10_000;
 export const ALLIANCE_DUEL_WIN_POINTS = 3;
 export const ALLIANCE_DUEL_LOSS_POINTS = 1;
+export const ALLIANCE_DUEL_WIN_GOLD = 10_000;
+export const ALLIANCE_DUEL_LOSS_GOLD = 6_000;
+export const ALLIANCE_DUEL_WIN_POT = 20_000;
+export const ALLIANCE_DUEL_LOSS_POT = 8_000;
+export const ALLIANCE_CHALLENGE_MS = 90_000;
 
 export type BuildingType =
   | "castle"

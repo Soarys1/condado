@@ -25,8 +25,13 @@ import {
   Undo2,
 } from "lucide-react";
 import {
+  ALLIANCE_DUEL_LOSS_GOLD,
+  ALLIANCE_DUEL_LOSS_POT,
+  ALLIANCE_DUEL_WIN_GOLD,
+  ALLIANCE_DUEL_WIN_POT,
   ALLIANCE_FOUND_NIENS,
-  ALLIANCE_WAR_CHEST,
+  ALLIANCE_XP_BASE,
+  ALLIANCE_XP_WIN,
   allianceAtWarToday,
   allianceSlots,
   BREAD_PACK,
@@ -51,7 +56,6 @@ import {
   SPEED_TRAIN_GOLD,
   TROOP_ORDER,
   TROOPS,
-  WAR_ATTACK_CAP,
   armyCapacity,
   brtDayKey,
   buildingDamage,
@@ -85,7 +89,7 @@ import {
   type TroopType,
 } from "@/lib/game/constants";
 import { ALLIANCES, lordsOfAlliance } from "@/lib/game/bots";
-import { battle, raidTarget, useGame } from "@/lib/game/store";
+import { battle, duelSide, raidTarget, useGame } from "@/lib/game/store";
 import { flushCloud, persist, wipeSave } from "@/lib/game/save";
 import { createRuntime } from "@/lib/game/render";
 import { formatRes, formatTime, countType } from "@/lib/game/world";
@@ -169,6 +173,17 @@ export function GameApp() {
     else setMusicMode("village");
   }, [screen, war]);
 
+  const allianceId = useGame((s) => s.alliance?.id);
+  const refreshWarHall = useGame((s) => s.refreshWarHall);
+  useEffect(() => {
+    if (screen !== "village" || !allianceId) return;
+    void refreshWarHall();
+    const id = window.setInterval(() => {
+      if (useGame.getState().screen === "village") void refreshWarHall();
+    }, 4000);
+    return () => window.clearInterval(id);
+  }, [allianceId, screen, refreshWarHall]);
+
   if (isPending || !hydrated) {
     return (
       <div className="relative flex h-dvh w-full items-end bg-ink">
@@ -197,6 +212,7 @@ export function GameApp() {
         aria-label="Mapa do condado"
       />
       <HUD />
+      <DuelBanner />
       {(screen === "prep" || screen === "battle") && <BattleHUD />}
       {screen === "spectate" && <SpectateHUD />}
       {screen === "march" && <MarchOverlay />}
@@ -339,6 +355,62 @@ function Splash({ signedIn }: { signedIn: boolean }) {
           Fundar condado
         </button>
         {toast && <p className="mt-3 text-sm text-iron">{toast}</p>}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DuelBanner() {
+  const inbox = useGame((s) => s.duelInbox);
+  const respondDuel = useGame((s) => s.respondDuel);
+  const screen = useGame((s) => s.screen);
+  const [, bump] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => bump((n) => n + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  if (screen !== "village") return null;
+  const incoming = inbox.find((c) => c.incoming && c.status === "pending" && c.until > Date.now());
+  const outgoing = inbox.find((c) => !c.incoming && c.status === "pending" && c.until > Date.now());
+  if (!incoming && !outgoing) return null;
+  const left = Math.max(0, Math.ceil(((incoming ?? outgoing)!.until - Date.now()) / 1000));
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-[max(4.6rem,calc(env(safe-area-inset-top)+3.4rem))] z-30 flex justify-center px-3">
+      <div className="pointer-events-auto w-full max-w-md rounded-md border border-niens/50 bg-panel p-3 shadow-panel">
+        {incoming ? (
+          <>
+            <p className="font-display text-sm">{incoming.fromNick} desafia-te no campo</p>
+            <p className="text-xs text-parchment-dim">1v1 · aceita em {left}s ou escolhe outro depois</p>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => respondDuel(incoming.sessionId, true)}
+                className="h-11 rounded-md bg-parchment font-display text-sm text-ink"
+              >
+                Aceitar
+              </button>
+              <button
+                type="button"
+                onClick={() => respondDuel(incoming.sessionId, false)}
+                className="h-11 rounded-md border border-line text-sm"
+              >
+                Recusar
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="font-display text-sm">À espera de {outgoing!.toNick}</p>
+            <p className="text-xs text-parchment-dim">Ele precisa de aceitar o 1v1 · {left}s</p>
+            <button
+              type="button"
+              onClick={() => respondDuel(outgoing!.sessionId, false)}
+              className="mt-2 h-11 w-full rounded-md border border-line text-sm"
+            >
+              Cancelar desafio
+            </button>
           </>
         )}
       </div>
@@ -1834,6 +1906,9 @@ function AllianceSheet() {
   const leaveAlliance = useGame((s) => s.leaveAlliance);
   const startAllianceDuel = useGame((s) => s.startAllianceDuel);
   const declareWar = useGame((s) => s.declareWar);
+  const respondDuel = useGame((s) => s.respondDuel);
+  const refreshWarHall = useGame((s) => s.refreshWarHall);
+  const duelInbox = useGame((s) => s.duelInbox);
   const allianceChat = useGame((s) => s.allianceChat);
   const war = useGame((s) => s.war);
   const niens = useGame((s) => s.niens);
@@ -1867,6 +1942,7 @@ function AllianceSheet() {
               alliance: r.save.alliance ?? cur.alliance,
               war: r.save.war ?? cur.war,
               allianceChat: r.save.allianceChat ?? cur.allianceChat,
+              duelInbox: r.challenges ?? cur.duelInbox,
             });
           }
         })
@@ -1891,9 +1967,11 @@ function AllianceSheet() {
         <p className="text-sm text-parchment-dim">
           Fundar custa {ALLIANCE_FOUND_NIENS} Niens. Escolhe se quem chega entra livre ou precisa de
           pedido — o pedido fica no chat da aliança até o líder aceitar ou recusar. Guerra dura 1
-          dia: o líder escolhe o rival na aba Guerra. Duelos no campo, 3 pontos na vitória, 1 na
-          derrota. A aliança com mais pontos leva {formatRes(ALLIANCE_WAR_CHEST)} {GOLD_NAME_PL}{" "}
-          repartidos pelos que lutaram. Quem já está em guerra não pode ser chamado.
+          dia: o líder escolhe o rival na aba Guerra. Duelos 1v1 no campo limpo — o lorde tem de
+          aceitar. Vitória 3 pontos, {formatRes(ALLIANCE_DUEL_WIN_GOLD)} {GOLD_NAME_PL} e{" "}
+          {formatRes(ALLIANCE_DUEL_WIN_POT)} no pote. Derrota 1 ponto, {formatRes(ALLIANCE_DUEL_LOSS_GOLD)}{" "}
+          e {formatRes(ALLIANCE_DUEL_LOSS_POT)} no pote. Quem ganha a guerra leva {ALLIANCE_XP_WIN} XP;
+          o pote divide-se por quem lutou. Nv.2 pede {formatRes(ALLIANCE_XP_BASE)} XP, depois dobra até 7.
         </p>
         <input
           value={name}
@@ -1993,7 +2071,8 @@ function AllianceSheet() {
             Sair da aliança
           </button>
           <p className="text-xs text-parchment-dim">
-            Teu condado Nv.{countyLevel}. XP de guerra: 1000 por vitória. Nv.2 pede 4000 XP, depois dobra até 7.
+            Teu condado Nv.{countyLevel}. Guerra ganha: {ALLIANCE_XP_WIN} XP. Nv.2 pede{" "}
+            {formatRes(ALLIANCE_XP_BASE)} XP, depois dobra até 7.
           </p>
         </div>
       )}
@@ -2006,28 +2085,66 @@ function AllianceSheet() {
                   Guerra vs {war?.foeName} {win.open ? "aberta" : "encerrada"}
                 </p>
                 <p className="text-parchment-dim">
-                  Nós {war?.ourStars ?? 0} · Eles {war?.theirStars ?? 0} · Cofre{" "}
-                  {formatRes(war?.chest || ALLIANCE_WAR_CHEST)}
+                  Nós {war?.ourStars ?? 0} · Eles {war?.theirStars ?? 0} · Pote{" "}
+                  {formatRes(war?.chest || 0)} {GOLD_NAME_PL}
                 </p>
                 <p className="mt-1 text-xs text-parchment-dim">
-                  Duelo no campo. Máx. 2 por rival. Recuar dá 1 ponto ao inimigo. A aliança não pode
-                  entrar noutra guerra enquanto esta durar.
+                  1v1 no campo limpo, 4 minutos. O lorde tem de aceitar. Vitória +3 pontos,{" "}
+                  {formatRes(ALLIANCE_DUEL_WIN_GOLD)} {GOLD_NAME_PL} e {formatRes(ALLIANCE_DUEL_WIN_POT)} no
+                  pote. Derrota +1 ponto, {formatRes(ALLIANCE_DUEL_LOSS_GOLD)} e{" "}
+                  {formatRes(ALLIANCE_DUEL_LOSS_POT)} no pote. Recuar entrega a vitória. Quem tem menos
+                  pontos no fim não leva XP.
                 </p>
               </div>
               {shownFoes.length > 0 ? (
                 <div className="space-y-2">
                   <p className="text-xs uppercase tracking-[0.18em] text-parchment-dim">Campo de guerra</p>
-                  {shownFoes.map((f) => (
-                    <button
-                      key={f.id}
-                      type="button"
-                      onClick={() => startAllianceDuel(f)}
-                      className="flex h-11 w-full items-center justify-between rounded-md border border-line bg-ink-2 px-3 text-sm"
-                    >
-                      <span>{f.nick}</span>
-                      <span className="text-xs text-parchment-dim">Duelar</span>
-                    </button>
-                  ))}
+                  <p className="text-xs text-parchment-dim">Escolhe o lorde. Ele tem de aceitar o 1v1. Se recusar, desafia outro.</p>
+                  {shownFoes.map((f) => {
+                    const used = war?.attacks[f.id] ?? 0;
+                    const outgoing = duelInbox.find((c) => !c.incoming && c.toId === f.id && (c.status === "pending" || c.status === "prep" || c.status === "fight"));
+                    const incoming = duelInbox.find((c) => c.incoming && c.fromId === f.id && c.status === "pending");
+                    const busy = duelInbox.some((c) => (c.status === "prep" || c.status === "fight") && (c.toId === f.id || c.fromId === f.id));
+                    return (
+                      <div key={f.id} className="rounded-md border border-line bg-ink-2 px-3 py-2">
+                        <div className="flex items-center justify-between gap-2 text-sm">
+                          <span>{f.nick}</span>
+                          <span className="text-xs text-parchment-dim">{used}/2 hoje</span>
+                        </div>
+                        {incoming ? (
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => respondDuel(incoming.sessionId, true)}
+                              className="h-10 rounded-md bg-parchment font-display text-xs text-ink"
+                            >
+                              Aceitar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => respondDuel(incoming.sessionId, false)}
+                              className="h-10 rounded-md border border-line text-xs"
+                            >
+                              Recusar
+                            </button>
+                          </div>
+                        ) : outgoing ? (
+                          <p className="mt-1 text-xs text-niens">
+                            {outgoing.status === "pending" ? "À espera que aceite…" : "Duelo a decorrer"}
+                          </p>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={used >= 2 || busy}
+                            onClick={() => startAllianceDuel(f)}
+                            className="mt-2 h-10 w-full rounded-md border border-niens/40 text-xs disabled:opacity-50"
+                          >
+                            {used >= 2 ? "Limite do dia" : "Desafiar 1v1"}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <p className="text-sm text-parchment-dim">A carregar os senhores do rival…</p>
@@ -2170,10 +2287,8 @@ function RaidSelect() {
   const raidTargets = useGame((s) => s.raidTargets);
   const refreshTargets = useGame((s) => s.refreshTargets);
   const countyLevel = useGame((s) => s.countyLevel);
-  const foes = war?.foeId ? lordsOfAlliance(war.foeId) : [];
   const day = brtDayKey();
-  const win = warWindow();
-  const warLive = !!(war && win.open && !war.sittingOut);
+  const atWar = !!(war && allianceAtWarToday(war));
   useEffect(() => {
     void refreshTargets();
   }, [refreshTargets]);
@@ -2198,19 +2313,15 @@ function RaidSelect() {
             <X className="mx-auto size-4" />
           </button>
         </div>
-        {foes.length > 0 && (
+        {atWar && (
           <p className="mb-2 text-xs text-niens">
-            Guerra: {war?.foeName}. Máx. {WAR_ATTACK_CAP} ataques por base, só nesta guerra.
+            Guerra vs {war?.foeName}: o 1v1 é na aba Aliança → Guerra. Aqui só se ataca condados.
           </p>
         )}
         <div className="space-y-2">
           {list.map((l) => {
-            const usedWar = war?.attacks[l.id] ?? 0;
             const rec = attacksByTarget[l.id];
-            const usedDay = rec && rec.day === day ? rec.count : 0;
-            const warFoe = warLive && !!war?.foeId && l.allianceId === war.foeId;
-            const cap = warFoe ? WAR_ATTACK_CAP : DAILY_ATTACK_CAP;
-            const used = warFoe ? Math.max(usedWar, usedDay) : usedDay;
+            const used = rec && rec.day === day ? rec.count : 0;
             const shielded = (l.shieldUntil ?? 0) > Date.now();
             return (
               <button
@@ -2219,7 +2330,7 @@ function RaidSelect() {
                 onClick={() => beginAttack(l)}
                 className="flex w-full items-center gap-3 rounded-md border border-line bg-ink-2/60 p-3 text-left"
               >
-                <Shield className={`size-5 ${warFoe ? "text-iron" : "text-parchment-dim"}`} />
+                <Shield className="size-5 text-parchment-dim" />
                 <div className="min-w-0 flex-1">
                   <p className="font-display">
                     {l.nick}
@@ -2228,7 +2339,7 @@ function RaidSelect() {
                   <p className="text-xs text-parchment-dim">
                     {l.title} · {l.id}
                     {shielded ? " · escudo" : ` · saque até ${l.lootGold} ${GOLD_NAME_PL}`}
-                    {warFoe ? ` · guerra ${used}/${cap}` : ` · ${used}/${cap} hoje`}
+                    {` · ${used}/${DAILY_ATTACK_CAP} hoje`}
                   </p>
                 </div>
                 <ChevronRight className="size-4 text-parchment-dim" />
@@ -2340,8 +2451,10 @@ function BattleHUD() {
   }, []);
 
   if (!battle) return null;
+  const side = battle.pvp ? duelSide : "atk";
   const left = screen === "prep" ? battle.prepLeft : battle.fightLeft;
   const pct = Math.round(battle.destruction * 100);
+  const edge = side === "def" ? "borda leste" : "borda oeste";
 
   return (
     <div className="pointer-events-none absolute inset-0 z-20">
@@ -2356,7 +2469,7 @@ function BattleHUD() {
       {screen === "prep" && (
         <div className="pointer-events-auto absolute inset-x-0 bottom-0 pb-[max(0.6rem,env(safe-area-inset-bottom))]">
           <p className="mb-2 text-center text-xs text-parchment-dim">
-            Escolhe o tipo e toca o mapa: entram todas as tropas desse tipo nas bordas livres.
+            Escolhe o tipo e toca o mapa: entram todas as tropas desse tipo na {edge}.
           </p>
           <div className="mx-auto flex max-w-xl gap-1 overflow-x-auto px-3">
             {TROOP_ORDER.map((t) => (
@@ -2369,7 +2482,7 @@ function BattleHUD() {
                 }`}
               >
                 <span>{TROOPS[t].name}</span>
-                <span className="tabular">{battle?.remainingOf(t) ?? army[t]}</span>
+                <span className="tabular">{battle?.remainingOf(t, side) ?? army[t]}</span>
                 <span className="tabular text-[0.6rem] text-parchment-dim">
                   {scaledTroop(t, troopLevels[t], campLevel).dps} dano/s
                 </span>
@@ -2381,7 +2494,7 @@ function BattleHUD() {
             onClick={skipPrep}
             className="mx-auto mt-2 flex h-11 w-[min(90%,20rem)] items-center justify-center rounded-md bg-parchment font-display text-sm text-ink"
           >
-            Iniciar ataque
+            {battle.pvp ? "Estou pronto" : "Iniciar ataque"}
           </button>
         </div>
       )}
@@ -2389,7 +2502,7 @@ function BattleHUD() {
       {screen === "battle" && (
         <div className="pointer-events-auto absolute inset-x-0 bottom-0 pb-[max(0.6rem,env(safe-area-inset-bottom))]">
           <p className="mb-2 text-center text-xs text-parchment-dim">
-            Toca um grupo e arrasta para enviar. Toca a borda para pôr todas as tropas do tipo escolhido.
+            Toca um grupo e arrasta para enviar. Toca a {edge} para pôr todas as tropas do tipo escolhido.
           </p>
           <div className="mx-auto flex max-w-xl gap-1 overflow-x-auto px-3">
             {TROOP_ORDER.map((t) => (
@@ -2402,7 +2515,7 @@ function BattleHUD() {
                 }`}
               >
                 <span>{TROOPS[t].name}</span>
-                <span className="tabular">{battle?.remainingOf(t) ?? army[t]}</span>
+                <span className="tabular">{battle?.remainingOf(t, side) ?? army[t]}</span>
               </button>
             ))}
           </div>

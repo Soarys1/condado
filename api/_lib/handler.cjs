@@ -105,6 +105,10 @@ async function verifyPlayerToken(header) {
 		throw new Error("Sessão expirada. Entra novamente.");
 	}
 }
+//#endregion
+//#region src/lib/game/constants.ts
+const PREP_MS = 12e4;
+const BATTLE_MS = 24e4;
 const NIEN_COST_GOLD = 55e4;
 const NIEN_SELL_GOLD = 165e3;
 const SPEED_TRAIN_GOLD = 2500;
@@ -134,9 +138,13 @@ const GOLD_NAME = "Libra";
 const GOLD_NAME_PL = "Libras";
 const BREAD_PACK = 1e3;
 const BREAD_PACK_BUY_GOLD = 2400;
-const ALLIANCE_XP_BASE = 4e3;
-const ALLIANCE_WAR_CHEST = 5e7;
-const ALLIANCE_DUEL_MIN = 7e4;
+const ALLIANCE_XP_WIN = 1e3;
+const ALLIANCE_XP_BASE = 2e3;
+const ALLIANCE_DUEL_WIN_GOLD = 1e4;
+const ALLIANCE_DUEL_LOSS_GOLD = 6e3;
+const ALLIANCE_DUEL_WIN_POT = 2e4;
+const ALLIANCE_DUEL_LOSS_POT = 8e3;
+const ALLIANCE_CHALLENGE_MS = 9e4;
 const BUILDINGS = {
 	castle: {
 		type: "castle",
@@ -580,12 +588,6 @@ function applyAllianceXp(level, xp, gained) {
 		level: lv,
 		xp: cur
 	};
-}
-function duelGold(seed) {
-	let h = 2166136261;
-	for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
-	const t = (h >>> 0) / 4294967296;
-	return Math.round((ALLIANCE_DUEL_MIN + t * 3e4) / 1e3) * 1e3;
 }
 function warWindow(now = Date.now()) {
 	const key = brtDayKey(now);
@@ -2265,6 +2267,18 @@ const RATE = {
 	declareWar: {
 		n: 4,
 		windowMs: 6e4
+	},
+	respondAllianceDuel: {
+		n: 12,
+		windowMs: 6e4
+	},
+	syncAllianceDuel: {
+		n: 30,
+		windowMs: 1e4
+	},
+	finishAllianceDuel: {
+		n: 8,
+		windowMs: 6e4
 	}
 };
 const FAST_ACTIONS = /* @__PURE__ */ new Set([
@@ -2277,7 +2291,8 @@ const FAST_ACTIONS = /* @__PURE__ */ new Set([
 	"rotateWall",
 	"demolish",
 	"upgradeType",
-	"upgradeWallRow"
+	"upgradeWallRow",
+	"syncAllianceDuel"
 ]);
 function db() {
 	return getAdminFirestore();
@@ -2508,7 +2523,8 @@ const READ_ONLY = /* @__PURE__ */ new Set([
 	"listRaidTargets",
 	"adminLookup",
 	"listAllianceFoes",
-	"listAllianceHall"
+	"listAllianceHall",
+	"pollAllianceDuel"
 ]);
 async function handleGameAction(player, action, payload, requestId) {
 	if (!requestId || requestId.length < 8 || requestId.length > 80) throw new GameError("Pedido inválido.");
@@ -2598,6 +2614,9 @@ async function dispatch(tx, player, action, payload, requestId) {
 		case "listAllianceHall": return listAllianceHallAction(player);
 		case "declareWar": return declareWarAction(write(), player, String(payload.allianceId ?? ""), requestId);
 		case "startAllianceDuel": return startAllianceDuelAction(write(), player, String(payload.targetId ?? ""), requestId);
+		case "respondAllianceDuel": return respondAllianceDuelAction(write(), player, String(payload.sessionId ?? ""), payload.accept !== false, requestId);
+		case "pollAllianceDuel": return pollAllianceDuelAction(player, String(payload.sessionId ?? ""));
+		case "syncAllianceDuel": return syncAllianceDuelAction(write(), player, payload, requestId);
 		case "finishAllianceDuel": return finishAllianceDuelAction(write(), player, payload, requestId);
 		case "sendAllianceChat": return sendAlliance(write(), player, String(payload.text ?? ""), requestId);
 		case "setPrefs": return setPrefs(write(), player, payload, requestId);
@@ -2672,10 +2691,18 @@ function slimSave(s) {
 	};
 }
 function slimResult(out) {
-	if (!out.save) return { toast: out.toast };
+	const extra = {
+		toast: out.toast,
+		sessionId: out.sessionId,
+		status: out.status,
+		side: out.side,
+		duel: out.duel,
+		challenges: out.challenges
+	};
+	if (!out.save) return extra;
 	return {
-		save: slimSave(out.save),
-		toast: out.toast
+		...extra,
+		save: slimSave(out.save)
 	};
 }
 async function createProfile(tx, player, payload, requestId) {
@@ -3427,7 +3454,8 @@ function allianceFromDoc(id, data) {
 			nick: String(r.nick ?? "Senhor"),
 			uid: r.uid ? String(r.uid) : void 0,
 			at: Number(r.at ?? 0)
-		})) : []
+		})) : [],
+		pot: Math.max(0, Number(data.pot ?? 0))
 	};
 }
 function allianceStateOf(a) {
@@ -3466,7 +3494,7 @@ function warFromAlliance(a) {
 		week: a.warDay,
 		foeId: a.foeId,
 		foeName: a.foeName,
-		chest: ALLIANCE_WAR_CHEST,
+		chest: a.pot,
 		ourStars: a.ourPoints,
 		theirStars: a.theirPoints,
 		attacks: {},
@@ -3486,13 +3514,14 @@ async function readAlliancePayout(tx, a) {
 	let xp = a.xp;
 	let level = a.level;
 	if (won) {
-		const grown = applyAllianceXp(a.level, a.xp, 1e3);
+		const grown = applyAllianceXp(a.level, a.xp, ALLIANCE_XP_WIN);
 		xp = grown.xp;
 		level = grown.level;
 	}
 	const rows = [];
 	const parts = a.participants.filter(Boolean);
-	const share = won && parts.length ? Math.floor(ALLIANCE_WAR_CHEST / parts.length) : 0;
+	const pot = Math.max(0, Math.floor(a.pot || 0));
+	const share = parts.length ? Math.floor(pot / parts.length) : 0;
 	if (share) for (const pid of parts) {
 		const member = a.members.find((m) => m.id === pid);
 		let uid = member?.uid ? String(member.uid) : "";
@@ -3511,7 +3540,7 @@ async function readAlliancePayout(tx, a) {
 				gold: p.gold + share
 			},
 			ledger: [{
-				type: "alliance_war_chest",
+				type: "alliance_war_pot",
 				currency: "gold",
 				amount: share,
 				balanceBefore: p.gold,
@@ -3526,7 +3555,8 @@ async function readAlliancePayout(tx, a) {
 			...a,
 			xp,
 			level,
-			resolved: true
+			resolved: true,
+			pot: 0
 		},
 		rows,
 		settled: true
@@ -3574,7 +3604,8 @@ async function foundAllianceAction(tx, player, payload, requestId) {
 		sittingOut: false,
 		resolved: true,
 		openJoin,
-		joinRequests: []
+		joinRequests: [],
+		pot: 0
 	};
 	const niens = prep.profile.niens - 5;
 	const profile = {
@@ -3886,7 +3917,8 @@ function warLinkFields(foeId, foeName, winKey) {
 		theirPoints: 0,
 		participants: [],
 		sittingOut: false,
-		resolved: false
+		resolved: false,
+		pot: 0
 	};
 }
 async function loadFoeLords(foeId) {
@@ -3949,6 +3981,7 @@ async function listAllianceHallAction(player) {
 			atWar: allianceAtWarToday(x),
 			foeName: allianceAtWarToday(x) ? x.foeName : ""
 		})).sort((p, q) => p.name.localeCompare(q.name, "pt")),
+		challenges: await listInbox(player.uid),
 		save: allianceSave
 	};
 }
@@ -4039,10 +4072,82 @@ async function declareWarAction(tx, player, allianceIdRaw, requestId) {
 		toast: `Guerra declarada contra ${foe.name}. Os duelos estão na aba Guerra.`
 	};
 }
+function armyCount(a) {
+	if (!a) return 0;
+	return a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender;
+}
+function inboxRef(uid) {
+	return col("condado_duel_inbox").doc(uid);
+}
+function parseInbox(data) {
+	const raw = Array.isArray(data?.items) ? data.items : [];
+	const now = Date.now();
+	const out = [];
+	for (const r of raw) {
+		const until = Number(r.until ?? 0);
+		let status = String(r.status ?? "pending");
+		if (status === "pending" && until && now > until) status = "expired";
+		if (![
+			"pending",
+			"prep",
+			"fight"
+		].includes(status) && now - until > 12e4) continue;
+		out.push({
+			sessionId: String(r.sessionId ?? ""),
+			fromId: String(r.fromId ?? ""),
+			fromNick: String(r.fromNick ?? "Senhor"),
+			fromUid: String(r.fromUid ?? ""),
+			toId: String(r.toId ?? ""),
+			toNick: String(r.toNick ?? "Senhor"),
+			toUid: String(r.toUid ?? ""),
+			until,
+			status
+		});
+	}
+	return out.slice(-12);
+}
+function toChallenges(uid, items) {
+	return items.filter((i) => i.sessionId && (i.status === "pending" || i.status === "prep" || i.status === "fight")).map((i) => ({
+		sessionId: i.sessionId,
+		fromId: i.fromId,
+		fromNick: i.fromNick,
+		toId: i.toId,
+		toNick: i.toNick,
+		until: i.until,
+		status: i.status,
+		incoming: i.toUid === uid
+	}));
+}
+async function listInbox(uid) {
+	return toChallenges(uid, parseInbox((await inboxRef(uid).get()).data()));
+}
+async function readInbox(tx, uid) {
+	return parseInbox((await tx.get(inboxRef(uid))).data());
+}
+function writeInbox(tx, uid, items) {
+	tx.set(inboxRef(uid), { items: items.slice(-12) }, { merge: true });
+}
+function patchInbox(items, sessionId, status) {
+	return items.map((i) => i.sessionId === sessionId ? {
+		...i,
+		status
+	} : i);
+}
+function applySurvivors(current, started, survivors) {
+	const clamp = (have, took, back) => Math.max(0, have - took + Math.min(took, Math.max(0, back)));
+	return {
+		infantry: clamp(current.infantry, started.infantry ?? 0, survivors.infantry ?? 0),
+		archers: clamp(current.archers, started.archers ?? 0, survivors.archers ?? 0),
+		cavalry: clamp(current.cavalry, started.cavalry ?? 0, survivors.cavalry ?? 0),
+		general: Math.min(1, clamp(current.general, started.general ?? 0, survivors.general ?? 0)),
+		generaless: Math.min(1, clamp(current.generaless, started.generaless ?? 0, survivors.generaless ?? 0)),
+		defender: clamp(current.defender, started.defender ?? 0, survivors.defender ?? 0)
+	};
+}
 async function startAllianceDuelAction(tx, player, targetId, requestId) {
 	const prep = await preparePlayer(tx, player.uid);
 	if (!prep.profile.alliance) throw new GameError("Sem aliança.");
-	if (prep.profile.army.infantry + prep.profile.army.archers + prep.profile.army.cavalry + prep.profile.army.general + prep.profile.army.generaless + prep.profile.army.defender <= 0) throw new GameError("Sem tropas no acampamento.");
+	if (armyCount(prep.profile.army) <= 0) throw new GameError("Sem tropas no acampamento.");
 	const aref = allianceRef(prep.profile.alliance.id);
 	const asnap = await tx.get(aref);
 	if (!asnap.exists) throw new GameError("Aliança não encontrada.");
@@ -4055,7 +4160,15 @@ async function startAllianceDuelAction(tx, player, targetId, requestId) {
 		gold: mine.profile.gold
 	} : prep.profile;
 	const extraLedger = mine ? mine.ledger : [];
-	if (payout.settled) writeAlliancePayout(tx, payout.rows, requestId, player.uid);
+	if (payout.settled) {
+		writeAlliancePayout(tx, payout.rows, requestId, player.uid);
+		tx.set(aref, {
+			xp: a.xp,
+			level: a.level,
+			resolved: a.resolved,
+			pot: a.pot
+		}, { merge: true });
+	}
 	if (!allianceAtWarToday(a)) {
 		const waitingProfile = {
 			...baseProfile,
@@ -4071,48 +4184,248 @@ async function startAllianceDuelAction(tx, player, targetId, requestId) {
 	const idx = await tx.get(col("condado_player_index").doc(targetId));
 	if (!idx.exists) throw new GameError("Alvo não encontrado.");
 	const toUid = String(idx.data()?.userId ?? "");
+	if (toUid === player.uid) throw new GameError("Não podes desafiar-te a ti mesmo.");
 	const destSnap = await tx.get(profileRef(toUid));
 	if (!destSnap.exists) throw new GameError("Alvo não encontrado.");
 	const dest = profileFromDoc(toUid, destSnap.data());
 	if (dest.alliance?.id !== a.foeId) throw new GameError("Este senhor não está na aliança rival.");
-	const used = baseProfile.war?.attacks[dest.player.id] ?? 0;
-	if (used >= 2) throw new GameError("No máximo 2 duelos por rival neste dia.");
+	if ((baseProfile.war?.attacks[dest.player.id] ?? 0) >= 2) throw new GameError("No máximo 2 duelos por rival neste dia.");
+	const mineBox = await readInbox(tx, player.uid);
+	if (mineBox.some((i) => i.status === "pending" || i.status === "prep" || i.status === "fight")) throw new GameError("Já tens um desafio a decorrer. Espera ou escolhe outro depois.");
+	const theirs = await readInbox(tx, toUid);
+	if (theirs.some((i) => i.status === "pending" || i.status === "prep" || i.status === "fight")) throw new GameError("Este lorde já está num desafio. Escolhe outro que aceite.");
 	const sessionId = makeId("AW");
-	const war = {
-		...warFromAlliance(a),
-		attacks: {
-			...baseProfile.war?.attacks ?? {},
-			[dest.player.id]: used + 1
-		}
+	const until = Date.now() + ALLIANCE_CHALLENGE_MS;
+	const item = {
+		sessionId,
+		fromId: prep.profile.player.id,
+		fromNick: prep.profile.player.nick,
+		fromUid: player.uid,
+		toId: dest.player.id,
+		toNick: dest.player.nick,
+		toUid,
+		until,
+		status: "pending"
 	};
-	const profile = {
-		...baseProfile,
-		alliance: allianceStateOf(a),
-		war
-	};
-	commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...extraLedger], prep.creditRefs);
+	writeInbox(tx, player.uid, [...mineBox, item]);
+	writeInbox(tx, toUid, [...theirs, item]);
 	tx.set(col("condado_raid_sessions").doc(sessionId), {
 		kind: "alliance",
+		status: "pending",
 		attackerUid: player.uid,
 		defenderUid: toUid,
+		attackerId: prep.profile.player.id,
+		attackerNick: prep.profile.player.nick,
 		defenderId: dest.player.id,
 		defenderNick: dest.player.nick,
 		allianceId: a.id,
 		foeAllianceId: a.foeId,
-		startedArmy: prep.profile.army,
-		foeArmy: dest.army,
-		foeLevels: dest.troopLevels,
-		foeCamp: dest.campLevel,
+		attackerArmy: prep.profile.army,
+		defenderArmy: dest.army,
+		attackerLevels: prep.profile.troopLevels,
+		defenderLevels: dest.troopLevels,
+		attackerCamp: prep.profile.campLevel,
+		defenderCamp: dest.campLevel,
 		createdAt: Date.now(),
+		challengeUntil: until,
+		attackerReady: false,
+		defenderReady: false,
+		pendingDeploys: [],
 		open: true
 	});
+	const profile = {
+		...baseProfile,
+		alliance: allianceStateOf(a),
+		war: warFromAlliance(a)
+	};
+	commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...extraLedger], prep.creditRefs);
 	return {
 		save: withoutMeta(profile),
 		sessionId,
+		status: "pending",
 		nick: dest.player.nick,
-		foeArmy: dest.army,
-		foeLevels: dest.troopLevels,
-		foeCamp: dest.campLevel
+		challenges: toChallenges(player.uid, [...mineBox, item]),
+		toast: `Desafio enviado a ${dest.player.nick}. Ele precisa de aceitar no campo.`
+	};
+}
+async function respondAllianceDuelAction(tx, player, sessionId, accept, requestId) {
+	if (!sessionId) throw new GameError("Desafio inválido.");
+	const sessionRef = col("condado_raid_sessions").doc(sessionId);
+	const sessionSnap = await tx.get(sessionRef);
+	if (!sessionSnap.exists) throw new GameError("Desafio inválido.");
+	const session = sessionSnap.data();
+	if (session.kind !== "alliance") throw new GameError("Desafio inválido.");
+	const isDef = session.defenderUid === player.uid;
+	const isAtk = session.attackerUid === player.uid;
+	if (!isDef && !isAtk) throw new GameError("Este desafio não é teu.");
+	if (String(session.status ?? "pending") !== "pending") throw new GameError("Este desafio já foi resolvido.");
+	if (Number(session.challengeUntil ?? 0) < Date.now()) {
+		tx.set(sessionRef, {
+			status: "expired",
+			open: false
+		}, { merge: true });
+		throw new GameError("O desafio expirou. Escolhe outro lorde.");
+	}
+	const atkBox = await readInbox(tx, String(session.attackerUid));
+	const defBox = await readInbox(tx, String(session.defenderUid));
+	if (!accept) {
+		writeInbox(tx, String(session.attackerUid), patchInbox(atkBox, sessionId, "declined"));
+		writeInbox(tx, String(session.defenderUid), patchInbox(defBox, sessionId, "declined"));
+		tx.set(sessionRef, {
+			status: "declined",
+			open: false
+		}, { merge: true });
+		const prep = await preparePlayer(tx, player.uid);
+		commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
+		return {
+			save: withoutMeta(prep.profile),
+			status: "declined",
+			sessionId,
+			toast: isAtk ? "Desafio cancelado. Escolhe outro lorde." : "Recusaste o duelo.",
+			challenges: toChallenges(player.uid, patchInbox(isDef ? defBox : atkBox, sessionId, "declined"))
+		};
+	}
+	if (!isDef) throw new GameError("Só o lorde desafiado pode aceitar.");
+	const prep = await preparePlayer(tx, player.uid);
+	if (armyCount(prep.profile.army) <= 0) throw new GameError("Sem tropas no acampamento.");
+	const prepEndsAt = Date.now() + PREP_MS;
+	const fightEndsAt = prepEndsAt + BATTLE_MS;
+	writeInbox(tx, String(session.attackerUid), patchInbox(atkBox, sessionId, "prep"));
+	writeInbox(tx, String(session.defenderUid), patchInbox(defBox, sessionId, "prep"));
+	tx.set(sessionRef, {
+		status: "prep",
+		phase: "prep",
+		prepEndsAt,
+		fightEndsAt,
+		defenderArmy: prep.profile.army,
+		defenderLevels: prep.profile.troopLevels,
+		defenderCamp: prep.profile.campLevel,
+		attackerStarted: session.attackerArmy,
+		defenderStarted: prep.profile.army,
+		open: true
+	}, { merge: true });
+	commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
+	return {
+		save: withoutMeta(prep.profile),
+		sessionId,
+		status: "prep",
+		side: "def",
+		atkArmy: session.attackerArmy ?? {},
+		atkLevels: session.attackerLevels ?? {},
+		atkCamp: Number(session.attackerCamp ?? 1),
+		foeArmy: prep.profile.army,
+		foeLevels: prep.profile.troopLevels,
+		foeCamp: prep.profile.campLevel,
+		nick: String(session.attackerNick ?? "Rival"),
+		toast: "Desafio aceite. Posiciona as tropas na borda leste.",
+		challenges: toChallenges(player.uid, patchInbox(defBox, sessionId, "prep")),
+		duel: {
+			phase: "prep",
+			prepEndsAt,
+			fightEndsAt,
+			attackerReady: false,
+			defenderReady: false
+		}
+	};
+}
+async function pollAllianceDuelAction(player, sessionId) {
+	if (!sessionId) return { status: "expired" };
+	const snap = await col("condado_raid_sessions").doc(sessionId).get();
+	if (!snap.exists) return { status: "expired" };
+	const session = snap.data();
+	if (session.attackerUid !== player.uid && session.defenderUid !== player.uid) throw new GameError("Este duelo não é teu.");
+	let status = String(session.status ?? "pending");
+	if (status === "pending" && Number(session.challengeUntil ?? 0) < Date.now()) status = "expired";
+	const side = session.attackerUid === player.uid ? "atk" : "def";
+	return {
+		sessionId,
+		status,
+		side,
+		nick: side === "atk" ? String(session.defenderNick ?? "") : String(session.attackerNick ?? ""),
+		atkArmy: session.attackerArmy ?? {},
+		atkLevels: session.attackerLevels ?? {},
+		atkCamp: Number(session.attackerCamp ?? 1),
+		foeArmy: session.defenderArmy ?? {},
+		foeLevels: session.defenderLevels ?? {},
+		foeCamp: Number(session.defenderCamp ?? 1),
+		duel: {
+			phase: session.phase ?? status,
+			snapshot: session.snapshot ?? null,
+			pendingDeploys: session.pendingDeploys ?? [],
+			attackerReady: !!session.attackerReady,
+			defenderReady: !!session.defenderReady,
+			attackerRetreated: !!session.attackerRetreated,
+			defenderRetreated: !!session.defenderRetreated,
+			prepEndsAt: session.prepEndsAt ?? 0,
+			fightEndsAt: session.fightEndsAt ?? 0,
+			winner: session.winner ?? null
+		}
+	};
+}
+async function syncAllianceDuelAction(tx, player, payload, requestId) {
+	const sessionId = String(payload.sessionId ?? "");
+	if (!sessionId) throw new GameError("Duelo inválido.");
+	const sessionRef = col("condado_raid_sessions").doc(sessionId);
+	const sessionSnap = await tx.get(sessionRef);
+	if (!sessionSnap.exists) throw new GameError("Duelo inválido.");
+	const session = sessionSnap.data();
+	if (session.attackerUid !== player.uid && session.defenderUid !== player.uid) throw new GameError("Este duelo não é teu.");
+	const isAtk = session.attackerUid === player.uid;
+	const side = isAtk ? "atk" : "def";
+	const patch = {};
+	let status = String(session.status ?? "pending");
+	let phase = String(session.phase ?? status);
+	if (payload.ready === true) {
+		if (isAtk) patch.attackerReady = true;
+		else patch.defenderReady = true;
+	}
+	if (payload.retreat === true) {
+		if (isAtk) patch.attackerRetreated = true;
+		else patch.defenderRetreated = true;
+	}
+	const deploys = Array.isArray(payload.deploys) ? payload.deploys : [];
+	if (deploys.length) patch.pendingDeploys = [...Array.isArray(session.pendingDeploys) ? session.pendingDeploys : [], ...deploys.slice(0, 40).map((d) => ({
+		type: String(d.type ?? "infantry"),
+		gx: Number(d.gx ?? 0),
+		gy: Number(d.gy ?? 0),
+		side
+	}))].slice(-80);
+	if (isAtk && payload.snapshot && typeof payload.snapshot === "object") {
+		patch.snapshot = payload.snapshot;
+		patch.pendingDeploys = [];
+		if (payload.snapshot.phase === "fight") {
+			patch.phase = "fight";
+			patch.status = "fight";
+			phase = "fight";
+			status = "fight";
+		}
+	}
+	const attackerReady = payload.ready === true && isAtk ? true : !!session.attackerReady || !!patch.attackerReady;
+	const defenderReady = payload.ready === true && !isAtk ? true : !!session.defenderReady || !!patch.defenderReady;
+	const prepEndsAt = Number(session.prepEndsAt ?? 0);
+	if (status === "prep" && (attackerReady && defenderReady || prepEndsAt && Date.now() >= prepEndsAt)) {
+		patch.status = "fight";
+		patch.phase = "fight";
+		status = "fight";
+		phase = "fight";
+	}
+	if (Object.keys(patch).length) tx.set(sessionRef, patch, { merge: true });
+	return {
+		sessionId,
+		status,
+		side,
+		duel: {
+			phase,
+			snapshot: patch.snapshot ?? session.snapshot ?? null,
+			pendingDeploys: isAtk ? patch.pendingDeploys ?? session.pendingDeploys ?? [] : [],
+			attackerReady,
+			defenderReady,
+			attackerRetreated: !!session.attackerRetreated || !!patch.attackerRetreated,
+			defenderRetreated: !!session.defenderRetreated || !!patch.defenderRetreated,
+			prepEndsAt: session.prepEndsAt ?? 0,
+			fightEndsAt: session.fightEndsAt ?? 0,
+			winner: session.winner ?? null
+		}
 	};
 }
 async function finishAllianceDuelAction(tx, player, payload, requestId) {
@@ -4121,85 +4434,153 @@ async function finishAllianceDuelAction(tx, player, payload, requestId) {
 	const sessionSnap = await tx.get(sessionRef);
 	if (!sessionSnap.exists) throw new GameError("Duelo inválido.");
 	const session = sessionSnap.data();
-	if (session.attackerUid !== player.uid || session.kind !== "alliance") throw new GameError("Duelo inválido.");
-	if (!session.open) throw new GameError("Este duelo já foi resolvido.");
-	const won = Boolean(payload.won);
-	const retreated = Boolean(payload.retreated);
+	if (session.kind !== "alliance") throw new GameError("Duelo inválido.");
+	const isAtk = session.attackerUid === player.uid;
+	const isDef = session.defenderUid === player.uid;
+	if (!isAtk && !isDef) throw new GameError("Duelo inválido.");
 	const prep = await preparePlayer(tx, player.uid);
+	if (!session.open) {
+		commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
+		return {
+			save: withoutMeta(prep.profile),
+			toast: "Este duelo já foi resolvido.",
+			sessionId,
+			status: "done"
+		};
+	}
+	const rawWinner = String(payload.winner ?? "");
+	const retreated = Boolean(payload.retreated);
+	let winner = "draw";
+	if (rawWinner === "atk" || rawWinner === "def" || rawWinner === "draw") winner = rawWinner;
+	else if (retreated) winner = isAtk ? "def" : "atk";
+	else if (payload.won === true) winner = isAtk ? "atk" : "def";
+	else if (payload.won === false) winner = isAtk ? "def" : "atk";
+	const atkUid = String(session.attackerUid);
+	const defUid = String(session.defenderUid);
 	const aref = allianceRef(String(session.allianceId));
-	const asnap = await tx.get(aref);
 	const foeRef = allianceRef(String(session.foeAllianceId));
+	const asnap = await tx.get(aref);
 	const foeSnap = await tx.get(foeRef);
-	const bonus = won && !retreated ? duelGold(sessionId) : 0;
-	const ourAdd = won && !retreated ? 3 : 1;
-	const theirAdd = won && !retreated ? 1 : 3;
+	const atkSnap = isAtk ? null : await tx.get(profileRef(atkUid));
+	const defPSnap = isDef ? null : await tx.get(profileRef(defUid));
+	const atkBox = await readInbox(tx, atkUid);
+	const defBox = await readInbox(tx, defUid);
 	let a = asnap.exists ? allianceFromDoc(asnap.id, asnap.data()) : null;
+	let foe = foeSnap.exists ? allianceFromDoc(foeSnap.id, foeSnap.data()) : null;
+	const atkPts = winner === "atk" ? 3 : winner === "def" ? 1 : 1;
+	const defPts = winner === "def" ? 3 : winner === "atk" ? 1 : 1;
+	const atkGold = winner === "atk" ? ALLIANCE_DUEL_WIN_GOLD : ALLIANCE_DUEL_LOSS_GOLD;
+	const defGold = winner === "def" ? ALLIANCE_DUEL_WIN_GOLD : ALLIANCE_DUEL_LOSS_GOLD;
+	const atkPot = winner === "atk" ? ALLIANCE_DUEL_WIN_POT : ALLIANCE_DUEL_LOSS_POT;
+	const defPot = winner === "def" ? ALLIANCE_DUEL_WIN_POT : ALLIANCE_DUEL_LOSS_POT;
+	const atkId = String(session.attackerId ?? "");
+	const defId = String(session.defenderId ?? "");
 	if (a) {
-		const participants = a.participants.includes(prep.profile.player.id) ? a.participants : [...a.participants, prep.profile.player.id];
+		const participants = a.participants.includes(atkId) ? a.participants : [...a.participants, atkId];
 		a = {
 			...a,
-			ourPoints: a.ourPoints + ourAdd,
-			theirPoints: a.theirPoints + theirAdd,
-			participants
+			ourPoints: a.ourPoints + atkPts,
+			theirPoints: a.theirPoints + defPts,
+			participants,
+			pot: a.pot + atkPot
 		};
 		tx.set(aref, {
 			ourPoints: a.ourPoints,
 			theirPoints: a.theirPoints,
-			participants
+			participants,
+			pot: a.pot
 		}, { merge: true });
 	}
-	if (foeSnap.exists) {
-		const foe = allianceFromDoc(foeSnap.id, foeSnap.data());
+	if (foe) {
+		const participants = foe.participants.includes(defId) ? foe.participants : [...foe.participants, defId];
+		foe = {
+			...foe,
+			ourPoints: foe.ourPoints + defPts,
+			theirPoints: foe.theirPoints + atkPts,
+			participants,
+			pot: foe.pot + defPot
+		};
 		tx.set(foeRef, {
-			ourPoints: foe.ourPoints + theirAdd,
-			theirPoints: foe.theirPoints + ourAdd
+			ourPoints: foe.ourPoints,
+			theirPoints: foe.theirPoints,
+			participants,
+			pot: foe.pot
 		}, { merge: true });
 	}
-	const startedArmy = session.startedArmy;
-	const survivors = payload.survivors ?? {};
-	const army = {
-		infantry: prep.profile.army.infantry - (startedArmy.infantry ?? 0) + Math.min(startedArmy.infantry ?? 0, Math.max(0, survivors.infantry ?? 0)),
-		archers: prep.profile.army.archers - (startedArmy.archers ?? 0) + Math.min(startedArmy.archers ?? 0, Math.max(0, survivors.archers ?? 0)),
-		cavalry: prep.profile.army.cavalry - (startedArmy.cavalry ?? 0) + Math.min(startedArmy.cavalry ?? 0, Math.max(0, survivors.cavalry ?? 0)),
-		general: Math.min(1, prep.profile.army.general - (startedArmy.general ?? 0) + Math.min(startedArmy.general ?? 0, Math.max(0, survivors.general ?? 0))),
-		generaless: Math.min(1, prep.profile.army.generaless - (startedArmy.generaless ?? 0) + Math.min(startedArmy.generaless ?? 0, Math.max(0, survivors.generaless ?? 0))),
-		defender: prep.profile.army.defender - (startedArmy.defender ?? 0) + Math.min(startedArmy.defender ?? 0, Math.max(0, survivors.defender ?? 0))
+	const atkProf = isAtk ? prep.profile : atkSnap?.exists ? profileFromDoc(atkUid, atkSnap.data()) : null;
+	const defProf = isDef ? prep.profile : defPSnap?.exists ? profileFromDoc(defUid, defPSnap.data()) : null;
+	const atkStarted = session.attackerStarted ?? session.attackerArmy ?? {};
+	const defStarted = session.defenderStarted ?? session.defenderArmy ?? {};
+	const atkSurv = payload.atkSurvivors ?? (isAtk ? payload.survivors : payload.foeSurvivors) ?? {};
+	const defSurv = payload.defSurvivors ?? (isDef ? payload.survivors : payload.foeSurvivors) ?? {};
+	const payOne = (p, gold, started, surv, alliance, foePlayerId) => {
+		const army = applySurvivors(p.army, started, surv);
+		const ledger = [{
+			type: "alliance_duel",
+			currency: "gold",
+			amount: gold,
+			balanceBefore: p.gold,
+			balanceAfter: p.gold + gold,
+			source: String(session.defenderNick ?? "duelo")
+		}];
+		const used = (p.war?.attacks[foePlayerId] ?? 0) + (p.userId === atkUid ? 1 : 0);
+		return {
+			profile: {
+				...p,
+				army,
+				gold: p.gold + gold,
+				alliance: alliance ? allianceStateOf(alliance) : p.alliance,
+				war: alliance ? {
+					...warFromAlliance(alliance),
+					attacks: {
+						...p.war?.attacks ?? {},
+						...p.userId === atkUid ? { [foePlayerId]: Math.max(used, 1) } : {}
+					}
+				} : p.war
+			},
+			ledger
+		};
 	};
-	const ledger = [];
-	if (bonus) ledger.push({
-		type: "alliance_duel",
-		currency: "gold",
-		amount: bonus,
-		balanceBefore: prep.profile.gold,
-		balanceAfter: prep.profile.gold + bonus,
-		source: String(session.defenderNick ?? "duelo")
-	});
-	const used = Math.max(prep.profile.war?.attacks[String(session.defenderId)] ?? 0, 1);
-	const profile = {
-		...prep.profile,
-		army,
-		gold: prep.profile.gold + bonus,
-		alliance: a ? allianceStateOf(a) : prep.profile.alliance,
-		war: a ? {
-			...warFromAlliance(a),
-			attacks: {
-				...prep.profile.war?.attacks ?? {},
-				[String(session.defenderId)]: used
-			}
-		} : prep.profile.war
-	};
-	commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...ledger], prep.creditRefs);
+	let caller = prep.profile;
+	if (atkProf) {
+		const paid = payOne(atkProf, atkGold, atkStarted, atkSurv, a, defId);
+		if (isAtk) caller = paid.profile;
+		else {
+			writeProfile(tx, profileRef(atkUid), paid.profile);
+			writeLedger(tx, atkUid, paid.profile.player.id, requestId, paid.ledger);
+		}
+		if (isAtk) {
+			commitPrepared(tx, player.uid, paid.profile, requestId, [...prep.ledger, ...paid.ledger], prep.creditRefs);
+			caller = paid.profile;
+		}
+	}
+	if (defProf) {
+		const paid = payOne(defProf, defGold, defStarted, defSurv, foe, atkId);
+		if (isDef) {
+			commitPrepared(tx, player.uid, paid.profile, requestId, [...prep.ledger, ...paid.ledger], prep.creditRefs);
+			caller = paid.profile;
+		} else {
+			writeProfile(tx, profileRef(defUid), paid.profile);
+			writeLedger(tx, defUid, paid.profile.player.id, requestId, paid.ledger);
+		}
+	}
+	writeInbox(tx, atkUid, patchInbox(atkBox, sessionId, "done"));
+	writeInbox(tx, defUid, patchInbox(defBox, sessionId, "done"));
 	tx.set(sessionRef, {
 		open: false,
-		won,
-		bonus,
+		status: "done",
+		winner,
 		resolvedAt: Date.now()
 	}, { merge: true });
-	const toast = won && !retreated ? `Vitória no campo. +3 pontos e ${bonus.toLocaleString("pt")} Libras.` : "Duelo encerrado. +1 ponto para o rival.";
+	const myWin = isAtk && winner === "atk" || isDef && winner === "def";
+	const gold = isAtk ? atkGold : defGold;
+	const toast = winner === "draw" ? `Empate no campo. +1 ponto e ${gold.toLocaleString("pt")} Libras.` : myWin ? `Vitória no campo. +3 pontos, ${gold.toLocaleString("pt")} Libras e ${ALLIANCE_DUEL_WIN_POT.toLocaleString("pt")} no pote.` : `Derrota no campo. +1 ponto, ${gold.toLocaleString("pt")} Libras e ${ALLIANCE_DUEL_LOSS_POT.toLocaleString("pt")} no pote.`;
 	return {
-		save: withoutMeta(profile),
+		save: withoutMeta(caller),
 		toast,
-		duelGold: bonus
+		sessionId,
+		status: "done",
+		duelGold: gold
 	};
 }
 //#endregion

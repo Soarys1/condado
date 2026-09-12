@@ -165,6 +165,19 @@ export interface WarState {
   participants: string[];
 }
 
+export type DuelStatus = "pending" | "prep" | "fight" | "declined" | "expired" | "done";
+
+export interface DuelChallenge {
+  sessionId: string;
+  fromId: string;
+  fromNick: string;
+  toId: string;
+  toNick: string;
+  until: number;
+  status: DuelStatus;
+  incoming: boolean;
+}
+
 export interface AllianceRival {
   id: string;
   name: string;
