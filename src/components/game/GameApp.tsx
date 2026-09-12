@@ -34,6 +34,7 @@ import {
   BREAD_UPKEEP_PER_TROOP_HOUR,
   BUILD_ORDER,
   BUILDINGS,
+  CHAT_TTL_MS,
   COLLECT_READY,
   COUNTY_MAX,
   DAILY_ATTACK_CAP,
@@ -41,6 +42,7 @@ import {
   GOLD_NAME,
   GOLD_NAME_PL,
   MARCH_MS,
+  MAX_TRAIN_QTY,
   NIEN_COST_GOLD,
   NIEN_SELL_GOLD,
   PASS_LEVELS,
@@ -85,6 +87,7 @@ import { battle, raidTarget, useGame } from "@/lib/game/store";
 import { flushCloud, persist, wipeSave } from "@/lib/game/save";
 import { createRuntime } from "@/lib/game/render";
 import { formatRes, formatTime, countType } from "@/lib/game/world";
+import { armySize, jobCount } from "@/lib/game/sim";
 import {
   setMuted as audioMute,
   unlockAudio,
@@ -679,15 +682,9 @@ function ArmySheet() {
   const campLevel = useGame((s) => s.campLevel);
   const troopLevels = useGame((s) => s.troopLevels);
   const cap = armyCapacity(countType(buildings, "camp"));
-  const used =
-    army.infantry +
-    army.archers +
-    army.cavalry +
-    army.general +
-    army.generaless +
-    army.defender +
-    training.length;
+  const used = armySize({ army, training });
   const hasCamp = countType(buildings, "training") > 0;
+  const campRoom = Math.max(0, cap - used);
   return (
     <div className="space-y-3">
       <p className="text-sm text-parchment-dim">
@@ -703,37 +700,21 @@ function ArmySheet() {
           Abrir Campo de Treino
         </button>
       )}
-      {TROOP_ORDER.map((type) => {
-        const d = TROOPS[type];
-        const st = scaledTroop(type, troopLevels[type], campLevel);
-        const costLabel =
-          type === "defender" ? `${formatRes(DEFENDER_COST)} ${GOLD_NAME_PL}` : `${d.costBread} pão`;
-        const can = type === "defender" ? gold >= DEFENDER_COST : bread >= d.costBread;
-        return (
-          <div
-            key={type}
-            className="flex items-center gap-3 rounded-md border border-line bg-ink-2/50 p-3"
-          >
-            <img src={`/game/${troopAsset(type)}.png`} alt="" className="size-12 object-contain" />
-            <div className="min-w-0 flex-1">
-              <p className="font-display text-sm">
-                {d.name} <span className="tabular text-parchment-dim">×{army[type]}</span>
-              </p>
-              <p className="text-xs text-parchment-dim">
-                {st.hp} HP · {st.dps} dano/s · {d.desc}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => train(type)}
-              disabled={!can}
-              className="rounded-md bg-parchment px-3 py-2 font-display text-xs font-semibold text-ink disabled:opacity-40"
-            >
-              {costLabel}
-            </button>
-          </div>
-        );
-      })}
+      {TROOP_ORDER.map((type) => (
+        <RecruitRow
+          key={type}
+          type={type}
+          army={army[type]}
+          queued={training.filter((t) => t.type === type).reduce((n, t) => n + jobCount(t), 0)}
+          campRoom={campRoom}
+          campLevel={campLevel}
+          troopLevel={troopLevels[type]}
+          bread={bread}
+          gold={gold}
+          hasTraining={hasCamp}
+          onTrain={train}
+        />
+      ))}
       {training.length > 0 && (
         <div className="space-y-2">
           <p className="font-display text-sm">Fila</p>
@@ -743,7 +724,7 @@ function ArmySheet() {
               className="flex items-center justify-between rounded-md border border-line px-3 py-2 text-sm"
             >
               <span>
-                {TROOPS[j.type].name} · {formatTime(j.remaining)}
+                {TROOPS[j.type].name} ×{jobCount(j)} · {formatTime(j.remaining)}
               </span>
               <button type="button" className="text-gold" onClick={() => speedTrain(j.id)}>
                 {formatRes(SPEED_TRAIN_GOLD)} {GOLD_NAME_PL}
@@ -756,38 +737,152 @@ function ArmySheet() {
   );
 }
 
+function RecruitRow({
+  type,
+  army,
+  queued,
+  campRoom,
+  campLevel,
+  troopLevel,
+  bread,
+  gold,
+  hasTraining,
+  onTrain,
+}: {
+  type: TroopType;
+  army: number;
+  queued: number;
+  campRoom: number;
+  campLevel: number;
+  troopLevel: number;
+  bread: number;
+  gold: number;
+  hasTraining: boolean;
+  onTrain: (type: TroopType, qty?: number) => boolean;
+}) {
+  const d = TROOPS[type];
+  const hero = isHero(type);
+  const unitCost = type === "defender" ? DEFENDER_COST : d.costBread;
+  const unitKind = type === "defender" ? GOLD_NAME_PL : "pão";
+  const defenderRoom =
+    type === "defender" ? Math.max(0, defenderCap(campLevel) - army - queued) : campRoom;
+  const maxQty = hero
+    ? army + queued >= 1
+      ? 0
+      : 1
+    : type === "defender"
+      ? Math.min(defenderRoom, campRoom, MAX_TRAIN_QTY)
+      : Math.min(campRoom, MAX_TRAIN_QTY);
+  const [qty, setQty] = useState(1);
+  const n = Math.max(1, Math.min(hero ? 1 : Math.max(1, maxQty || 1), Math.floor(qty) || 1));
+  const total = unitCost * n;
+  const canPay = type === "defender" ? gold >= total : bread >= total;
+  const can = maxQty >= 1 && canPay && n <= maxQty;
+  const st = scaledTroop(type, troopLevel, campLevel);
+  const missingCamp = type === "defender" && !hasTraining;
+  return (
+    <div className="rounded-md border border-line bg-ink-2/50 p-3">
+      <div className="flex items-center gap-3">
+        <img src={`/game/${troopAsset(type)}.png`} alt="" className="size-12 object-contain" />
+        <div className="min-w-0 flex-1">
+          <p className="font-display text-sm">
+            {d.name} <span className="tabular text-parchment-dim">×{army}</span>
+            {queued > 0 ? <span className="tabular text-niens"> · +{queued} na fila</span> : null}
+          </p>
+          <p className="text-xs text-parchment-dim">
+            {st.hp} HP · {st.dps} dano/s · {d.desc}
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 flex items-end gap-2">
+        {!hero && (
+          <label className="min-w-0 flex-1">
+            <span className="mb-1 block text-[0.65rem] uppercase tracking-[0.16em] text-parchment-dim">
+              Quantidade
+            </span>
+            <input
+              type="number"
+              min={1}
+              max={Math.max(1, maxQty)}
+              inputMode="numeric"
+              value={n}
+              onChange={(e) => setQty(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+              className="h-11 w-full rounded-md border border-line bg-ink px-3 text-sm tabular outline-none"
+            />
+          </label>
+        )}
+        <button
+          type="button"
+          onClick={() => onTrain(type, hero ? 1 : n)}
+          disabled={!can || missingCamp}
+          className="h-11 min-w-[9.5rem] rounded-md bg-parchment px-3 font-display text-xs font-semibold text-ink disabled:opacity-40"
+        >
+          {missingCamp
+            ? "Campo de treino"
+            : `Recrutar · ${formatRes(total)} ${unitKind}`}
+        </button>
+      </div>
+      <p className="mt-1 text-[0.7rem] text-parchment-dim">
+        {hero
+          ? `1 ${d.name.toLowerCase()} por condado · ${formatRes(unitCost)} ${unitKind}`
+          : maxQty < 1
+            ? "Sem vaga no acampamento."
+            : `${formatRes(unitCost)} ${unitKind} cada · máx. ${maxQty}`}
+      </p>
+    </div>
+  );
+}
+
 function ChatSheet() {
   const chat = useGame((s) => s.chat);
   const sendChat = useGame((s) => s.sendChat);
   const [text, setText] = useState("");
+  const [now, setNow] = useState(() => Date.now());
   const end = useRef<HTMLDivElement>(null);
+  const live = chat.filter((m) => now - m.at <= CHAT_TTL_MS);
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(id);
+  }, []);
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
-  }, [chat.length]);
+  }, [live.length]);
   return (
     <div className="flex h-[52dvh] flex-col md:h-[calc(100dvh-8rem)]">
       <p className="mb-2 text-[0.7rem] uppercase tracking-[0.18em] text-parchment-dim">
-        Chat global ao vivo
+        Chat global · mensagens somem após 5 minutos
       </p>
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-        {chat.map((m) => (
-          <div
-            key={m.id}
-            className={`rounded-md px-3 py-2 ${m.self ? "bg-moss/20 ml-6" : "bg-ink-2 mr-4"}`}
-          >
-            <p className="font-display text-[0.7rem] text-niens">{m.fromNick}</p>
-            <p className="text-sm leading-snug">{m.text}</p>
-            {m.recruitAllianceId && (
-              <button
-                type="button"
-                onClick={() => useGame.getState().joinAlliance(m.recruitAllianceId!)}
-                className="mt-2 h-10 w-full rounded-md border border-niens/40 text-xs"
-              >
-                Pedir entrada · Nv.{m.recruitMinLevel ?? 3}+
-              </button>
-            )}
-          </div>
-        ))}
+        {live.length === 0 && (
+          <p className="text-sm text-parchment-dim">Nenhuma mensagem nos últimos 5 minutos.</p>
+        )}
+        {live.map((m) => {
+          const left = Math.max(0, CHAT_TTL_MS - (now - m.at));
+          return (
+            <div
+              key={m.id}
+              className={`rounded-md px-3 py-2 ${m.self ? "bg-moss/20 ml-6" : "bg-ink-2 mr-4"}`}
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <p className="font-display text-[0.7rem] text-niens">{m.fromNick}</p>
+                <p className="text-[0.65rem] tabular text-parchment-dim">
+                  {new Date(m.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                  {left < 60_000 ? ` · some em ${Math.max(1, Math.ceil(left / 1000))}s` : ""}
+                </p>
+              </div>
+              <p className="text-sm leading-snug">{m.text}</p>
+              {m.recruitAllianceId && (
+                <button
+                  type="button"
+                  onClick={() => useGame.getState().joinAlliance(m.recruitAllianceId!)}
+                  className="mt-2 h-10 w-full rounded-md border border-niens/40 text-xs"
+                >
+                  Pedir entrada · Nv.{m.recruitMinLevel ?? 3}+
+                </button>
+              )}
+            </div>
+          );
+        })}
         <div ref={end} />
       </div>
       <form
@@ -803,6 +898,7 @@ function ChatSheet() {
           onChange={(e) => setText(e.target.value)}
           className="h-11 flex-1 rounded-md border border-line bg-ink px-3 text-sm outline-none"
           placeholder="Chat global — todos os senhores vêem"
+          maxLength={160}
         />
         <button
           type="submit"
@@ -1583,6 +1679,7 @@ function PassSheet() {
   const claimPass = useGame((s) => s.claimPass);
   const claimPassFree = useGame((s) => s.claimPassFree);
   const claimPassExtra = useGame((s) => s.claimPassExtra);
+  const claimPassAll = useGame((s) => s.claimPassAll);
   const skipPass = useGame((s) => s.skipPass);
   const niens = useGame((s) => s.niens);
   const passDiscount = useGame((s) => s.passDiscount);
@@ -1593,6 +1690,11 @@ function PassSheet() {
   const levels = Array.from({ length: PASS_LEVELS }, (_, i) => i + 1);
   const extras = pass.extrasClaimed ?? [];
   const canExtras = pass.purchased && (reached >= PASS_LEVELS || pass.claimed.includes(PASS_LEVELS));
+  const pendingFree = levels.filter((lv) => lv <= reached && !(pass.claimedFree ?? []).includes(lv)).length;
+  const pendingPaid = pass.purchased
+    ? levels.filter((lv) => lv <= reached && !pass.claimed.includes(lv)).length
+    : 0;
+  const pendingAll = pendingFree + pendingPaid;
   return (
     <div className="space-y-3">
       <p className="text-sm text-parchment-dim">
@@ -1626,7 +1728,25 @@ function PassSheet() {
           >
             Pular 1 nível · 1 Nien {niens < 1 ? "(faltam gemas)" : "e recebe o prêmio pago"}
           </button>
+          {pendingAll > 0 && (
+            <button
+              type="button"
+              onClick={claimPassAll}
+              className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink"
+            >
+              Recolher todas as recompensas ({pendingAll})
+            </button>
+          )}
         </>
+      )}
+      {!pass.purchased && pendingFree > 0 && (
+        <button
+          type="button"
+          onClick={claimPassAll}
+          className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink"
+        >
+          Recolher recompensas grátis ({pendingFree})
+        </button>
       )}
       {canExtras && (
         <div className="space-y-2 rounded-md border border-niens/30 bg-ink-2 p-3">

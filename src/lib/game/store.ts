@@ -68,13 +68,18 @@ import type {
   PlaceGhost,
   SaveState,
   SheetId,
-  TrainingJob,
   TransferRecord,
 } from "./types";
 import { canPlace, canPlaceWall, countType, generateBase, nid, snapPlace, wallRow } from "./world";
 import { isEdgeTile } from "./iso";
 import { sfxBuild, sfxClick, sfxCoin, sfxError, sfxHorn, sfxStar } from "./audio";
 import { auth } from "@/lib/firebase";
+import {
+  applyTraining,
+  armySize,
+  claimPassAllSim,
+  trainTroop,
+} from "./sim";
 import {
   cancelMarketOffer,
   cloudTransfer,
@@ -88,7 +93,6 @@ import {
   peekPlayer,
   pullCloud,
   renameCounty,
-  sendGlobalChat,
   startRaid,
   finishRaid,
   submitRaidResult,
@@ -102,6 +106,8 @@ let raidSessionId: string | null = null;
 let raidKind: "raid" | "alliance" = "raid";
 let lastPersist = 0;
 let lastIncomingAt = 0;
+let trainLock = false;
+let passAllLock = false;
 
 function isLive() {
   return Boolean(auth.currentUser);
@@ -127,7 +133,7 @@ function applyServerSave(save: SaveState, extra?: { toast?: string | null; offer
     marchLord: cur.marchLord,
     lookup: cur.lookup,
     raidTargets: extra?.raidTargets ?? cur.raidTargets,
-    chat: save.chat?.length ? save.chat : cur.chat,
+    chat: cur.chat,
     allianceChat: save.allianceChat?.length ? save.allianceChat : cur.allianceChat,
     ledger: save.ledger?.length ? save.ledger : cur.ledger,
     boostUntil: save.boostUntil ?? cur.boostUntil,
@@ -145,17 +151,6 @@ async function liveAction(action: string, payload: Record<string, unknown> = {})
 function liveFail(error: unknown) {
   useGame.setState({ toast: error instanceof Error ? error.message : "Não foi possível concluir." });
   sfxError();
-}
-
-function applyTraining(s: SaveState, dtMs: number) {
-  const army = { ...s.army };
-  const jobs: TrainingJob[] = [];
-  for (const j of s.training) {
-    const remaining = j.remaining - dtMs;
-    if (remaining <= 0) army[j.type] += 1;
-    else jobs.push({ ...j, remaining });
-  }
-  return { army, jobs };
 }
 
 interface GameStore extends SaveState {
@@ -195,7 +190,7 @@ interface GameStore extends SaveState {
   collectAll: () => void;
   upgrade: (id: string) => boolean;
   demolish: (id: string) => void;
-  train: (type: TroopType) => boolean;
+  train: (type: TroopType, qty?: number) => boolean;
   speedTrain: (id: string) => boolean;
   openRaid: () => void;
   beginAttack: (lord: Lord) => void;
@@ -229,6 +224,7 @@ interface GameStore extends SaveState {
   recruitDefender: () => boolean;
   buyPass: () => boolean;
   claimPass: (level: number) => boolean;
+  claimPassAll: () => boolean;
   foundAlliance: (name: string, minLevel?: number) => boolean;
   joinAlliance: (id: string) => boolean;
   leaveAlliance: () => void;
@@ -247,13 +243,6 @@ interface GameStore extends SaveState {
   upgradeWallRow: (id: string) => boolean;
   refreshLedger: () => Promise<void>;
   refreshTargets: () => Promise<void>;
-}
-
-function armySize(s: SaveState): number {
-  const a = s.army;
-  return (
-    a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender + s.training.length
-  );
 }
 
 function producerKind(t: BuildingType): "gold" | "bread" | null {
@@ -792,69 +781,33 @@ export const useGame = create<GameStore>((set, get) => ({
     persist({ ...get() });
   },
 
-  train: (type) => {
+  train: (type, qty = 1) => {
+    const amount = Math.max(1, Math.floor(Number(qty) || 1));
     if (isLive()) {
-      void liveAction("train", { type }).then(() => sfxClick()).catch(liveFail);
+      if (trainLock) {
+        set({ toast: "Recrutamento a processar..." });
+        return false;
+      }
+      trainLock = true;
+      void liveAction("train", { type, qty: amount })
+        .then(() => sfxClick())
+        .catch(liveFail)
+        .finally(() => {
+          trainLock = false;
+        });
       return true;
     }
-    const s = get();
-    if (countType(s.buildings, "barracks") < 1) {
-      set({ toast: "Construa um quartel primeiro." });
-      sfxError();
-      return false;
-    }
-    const def = TROOPS[type];
-    if (isHero(type) && s.army[type] + s.training.filter((t) => t.type === type).length >= 1) {
-      set({
-        toast: `Só um${type === "generaless" ? "a" : ""} ${def.name.toLowerCase()} por condado.`,
-      });
-      sfxError();
-      return false;
-    }
-    if (type === "defender") {
-      if (countType(s.buildings, "training") < 1) {
-        set({ toast: "Construa o Campo de Treino." });
-        return false;
-      }
-      if (
-        s.army.defender + s.training.filter((t) => t.type === "defender").length >=
-        defenderCap(s.campLevel)
-      ) {
-        set({ toast: "Capacidade de defensores no máximo. Melhore o campo." });
-        return false;
-      }
-      if (s.gold < DEFENDER_COST) {
-        set({ toast: `Faltam ${GOLD_NAME_PL}.` });
-        return false;
-      }
-      set({
-        gold: s.gold - DEFENDER_COST,
-        training: [...s.training, { id: nid("t"), type, remaining: def.trainMs }],
-        toast: "Recrutando defensor da guilda.",
-      });
+    try {
+      const r = trainTroop(get(), type, amount);
+      set({ ...r.save, toast: r.toast });
       persist({ ...get() });
       sfxClick();
       return true;
-    }
-    const cap = armyCapacity(countType(s.buildings, "camp"));
-    if (armySize(s) >= cap) {
-      set({ toast: "Acampamento lotado. Construa outro." });
+    } catch (error) {
+      set({ toast: error instanceof Error ? error.message : "Não foi possível recrutar." });
       sfxError();
       return false;
     }
-    if (s.bread < def.costBread) {
-      set({ toast: "Pão insuficiente." });
-      sfxError();
-      return false;
-    }
-    set({
-      bread: s.bread - def.costBread,
-      training: [...s.training, { id: nid("t"), type, remaining: def.trainMs }],
-      toast: `Recrutando ${def.name}.`,
-    });
-    persist({ ...get() });
-    sfxClick();
-    return true;
   },
 
   speedTrain: (id) => {
@@ -912,7 +865,7 @@ export const useGame = create<GameStore>((set, get) => ({
       return;
     }
     const s = get();
-    const armyN = armySize(s) - s.training.length;
+    const armyN = armySize({ army: s.army, training: [] });
     if (armyN <= 0) {
       set({ toast: "Sem tropas no acampamento." });
       sfxError();
@@ -1170,6 +1123,10 @@ export const useGame = create<GameStore>((set, get) => ({
     const t = text.trim();
     if (!t) return;
     const s = get();
+    if (liveChat || auth.currentUser) {
+      void liveAction("sendChat", { text: t }).catch(liveFail);
+      return;
+    }
     const msg: ChatMsg = {
       id: nid("m"),
       fromId: s.player.id,
@@ -1179,12 +1136,6 @@ export const useGame = create<GameStore>((set, get) => ({
       self: true,
     };
     set({ chat: [...s.chat, msg].slice(-40) });
-    if (liveChat || auth.currentUser) {
-      void sendGlobalChat({ playerId: s.player.id, nick: s.player.nick, text: t }).catch((e) => {
-        set({ toast: e instanceof Error ? e.message : "Chat indisponível." });
-      });
-      return;
-    }
     const replyLord = LORDS[Math.floor(Math.random() * LORDS.length)]!;
     const reply: ChatMsg = {
       id: nid("m"),
@@ -1704,6 +1655,31 @@ export const useGame = create<GameStore>((set, get) => ({
     persist({ ...get() });
     sfxStar();
     return true;
+  },
+
+  claimPassAll: () => {
+    if (isLive()) {
+      if (passAllLock) return false;
+      passAllLock = true;
+      void liveAction("claimPassAll")
+        .then(() => sfxStar())
+        .catch(liveFail)
+        .finally(() => {
+          passAllLock = false;
+        });
+      return true;
+    }
+    try {
+      const r = claimPassAllSim(get());
+      set({ ...r.save, toast: r.toast });
+      persist({ ...get() });
+      sfxStar();
+      return true;
+    } catch (error) {
+      set({ toast: error instanceof Error ? error.message : "Não foi possível recolher." });
+      sfxError();
+      return false;
+    }
   },
 
   claimPassFree: (level) => {

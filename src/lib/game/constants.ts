@@ -18,6 +18,8 @@ export const CAMP_CAP = 40;
 export const NIEN_COST_GOLD = 550_000;
 export const NIEN_SELL_GOLD = 165_000;
 export const SPEED_TRAIN_GOLD = 2_500;
+export const MAX_TRAIN_QTY = 200;
+export const CHAT_TTL_MS = 5 * 60 * 1000;
 
 export const LOOT_BANDS = [
   { at: 0.33, gold: 2700 },

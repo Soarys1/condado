@@ -3,6 +3,7 @@ import { getAdminFirestore } from "../../firebase-admin.server";
 import {
   ALLIANCE_FOUND_GOLD,
   ALLIANCE_WAR_CHEST,
+  CHAT_TTL_MS,
   SHIELD_MS,
   allianceSlots,
   applyAllianceXp,
@@ -30,6 +31,7 @@ import {
   buyNienSim,
   buyPassSim,
   claimFreePassSim,
+  claimPassAllSim,
   claimPassExtraSim,
   claimPassSim,
   collectAllBuildings,
@@ -90,17 +92,20 @@ type ActionResult = {
 };
 
 const RATE: Record<string, { n: number; windowMs: number }> = {
-  default: { n: 45, windowMs: 10_000 },
+  default: { n: 24, windowMs: 10_000 },
   transfer: { n: 8, windowMs: 60_000 },
   chat: { n: 8, windowMs: 10_000 },
   startRaid: { n: 6, windowMs: 60_000 },
   finishRaid: { n: 8, windowMs: 60_000 },
   createMarketOffer: { n: 8, windowMs: 60_000 },
   takeMarketOffer: { n: 8, windowMs: 60_000 },
-  collect: { n: 20, windowMs: 10_000 },
-  collectAll: { n: 10, windowMs: 10_000 },
+  collect: { n: 16, windowMs: 10_000 },
+  collectAll: { n: 8, windowMs: 10_000 },
   claimWeekly: { n: 4, windowMs: 60_000 },
-  sendChat: { n: 8, windowMs: 10_000 },
+  sendChat: { n: 6, windowMs: 10_000 },
+  train: { n: 10, windowMs: 10_000 },
+  speedTrain: { n: 16, windowMs: 10_000 },
+  claimPassAll: { n: 6, windowMs: 10_000 },
   foundAlliance: { n: 3, windowMs: 60_000 },
   joinAlliance: { n: 6, windowMs: 60_000 },
   startAllianceDuel: { n: 6, windowMs: 60_000 },
@@ -185,7 +190,7 @@ function profilePayload(
     JSON.stringify({
       save: {
         ...clean,
-        chat: clean.chat.slice(-40),
+        chat: [],
         allianceChat: clean.allianceChat.slice(-40),
         raids: clean.raids.slice(-24),
         ledger: clean.ledger.slice(0, 40),
@@ -412,19 +417,23 @@ export async function handleGameAction(
       if (!FAST_ACTIONS.has(action)) writeAudit(tx, player.uid, action, requestId, true);
       return out;
     });
+    if (action === "sendChat") void pruneExpiredChat();
     return result;
   } catch (error) {
-    try {
-      await col("condado_audit_logs").add({
-        userId: player.uid,
-        action,
-        requestId,
-        ok: false,
-        detail: error instanceof Error ? error.message : "fail",
-        timestamp: new Date().toISOString(),
-      });
-    } catch {
-      /* ignore */
+    const detail = error instanceof Error ? error.message : "fail";
+    if (!detail.includes("depressa demais")) {
+      try {
+        await col("condado_audit_logs").add({
+          userId: player.uid,
+          action,
+          requestId,
+          ok: false,
+          detail,
+          timestamp: new Date().toISOString(),
+        });
+      } catch {
+        /* ignore */
+      }
     }
     throw error;
   }
@@ -466,7 +475,9 @@ async function dispatch(
         rotateWalls(withoutMeta(p), String(payload.id ?? ""), Array.isArray(payload.rowIds) ? payload.rowIds.map(String) : undefined),
       );
     case "train":
-      return mutateFast(write(), player, requestId, (p) => trainTroop(withoutMeta(p), payload.type as TroopType));
+      return mutateFast(write(), player, requestId, (p) =>
+        trainTroop(withoutMeta(p), payload.type as TroopType, payload.qty),
+      );
     case "speedTrain":
       return mutateFast(write(), player, requestId, (p) => speedTrainJob(withoutMeta(p), String(payload.id ?? "")));
     case "placeBuilding":
@@ -499,6 +510,8 @@ async function dispatch(
       return mutate(write(), player, requestId, (p) => claimPassSim(withoutMeta(p), Number(payload.level)));
     case "claimFreePass":
       return mutate(write(), player, requestId, (p) => claimFreePassSim(withoutMeta(p), Number(payload.level)));
+    case "claimPassAll":
+      return mutate(write(), player, requestId, (p) => claimPassAllSim(withoutMeta(p)));
     case "claimPassExtra":
       return mutate(write(), player, requestId, (p) =>
         claimPassExtraSim(withoutMeta(p), payload.extra === "discount" ? "discount" : "boost"),
@@ -1196,10 +1209,24 @@ async function sendChatAction(tx: Transaction, player: PlayerAuth, textRaw: stri
     text,
     at: now,
     createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + CHAT_TTL_MS).toISOString(),
     channel: "global",
   });
   writeLedger(tx, player.uid, p.player.id, requestId, []);
-  return { save: withoutMeta(p) };
+  return {};
+}
+
+async function pruneExpiredChat() {
+  try {
+    const cutoff = new Date(Date.now() - CHAT_TTL_MS).toISOString();
+    const old = await col("condado_chat").where("createdAt", "<", cutoff).limit(40).get();
+    if (old.empty) return;
+    const batch = db().batch();
+    for (const d of old.docs) batch.delete(d.ref);
+    await batch.commit();
+  } catch {
+    /* ignore */
+  }
 }
 
 async function syncEmail(tx: Transaction, player: PlayerAuth, requestId: string): Promise<ActionResult> {
@@ -1525,6 +1552,7 @@ async function recruitAllianceAction(
     text: `Recruta: ${p.alliance.name} · condado ${p.alliance.minLevel}+ · ${p.alliance.members.length}/${p.alliance.slots} vagas`,
     at: now,
     createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + CHAT_TTL_MS).toISOString(),
     channel: "global",
     recruitAllianceId: p.alliance.id,
     recruitMinLevel: p.alliance.minLevel,

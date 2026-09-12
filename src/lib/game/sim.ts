@@ -11,6 +11,7 @@ import {
   GENERAL_MAX_LEVEL,
   GENERAL_UNLOCK_COUNTY,
   GOLD_NAME_PL,
+  MAX_TRAIN_QTY,
   NIEN_COST_GOLD,
   NIEN_SELL_GOLD,
   PASS_BOOST_MS,
@@ -73,9 +74,18 @@ export class GameError extends Error {
   }
 }
 
+export function jobCount(j: Pick<TrainingJob, "count">): number {
+  const n = Math.floor(Number(j.count ?? 1));
+  return n > 0 ? n : 1;
+}
+
+export function trainingQueued(jobs: Pick<TrainingJob, "count">[]): number {
+  return jobs.reduce((n, j) => n + jobCount(j), 0);
+}
+
 export function armySize(s: Pick<SaveState, "army" | "training">): number {
   const a = s.army;
-  return a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender + s.training.length;
+  return a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender + trainingQueued(s.training);
 }
 
 export function producerKind(t: BuildingType): "gold" | "bread" | null {
@@ -120,15 +130,40 @@ function pushLedger(
   });
 }
 
-function applyTraining(s: SaveState, dtMs: number): { army: ArmyCounts; jobs: TrainingJob[] } {
-  const army = { ...s.army };
-  const jobs: TrainingJob[] = [];
-  for (const j of s.training) {
-    const remaining = j.remaining - dtMs;
-    if (remaining <= 0) army[j.type] += 1;
-    else jobs.push({ ...j, remaining });
+function coalesceJobs(jobs: TrainingJob[]): TrainingJob[] {
+  const map = new Map<TroopType, TrainingJob>();
+  const order: TroopType[] = [];
+  for (const j of jobs) {
+    const prev = map.get(j.type);
+    if (!prev) {
+      map.set(j.type, { ...j, count: jobCount(j) });
+      order.push(j.type);
+    } else {
+      map.set(j.type, {
+        ...prev,
+        count: jobCount(prev) + jobCount(j),
+        remaining: Math.min(prev.remaining, j.remaining),
+      });
+    }
   }
-  return { army, jobs };
+  return order.map((t) => map.get(t)!);
+}
+
+export function applyTraining(s: SaveState, dtMs: number): { army: ArmyCounts; jobs: TrainingJob[] } {
+  const army = { ...s.army };
+  const raw: TrainingJob[] = [];
+  for (const j of s.training) {
+    let remaining = j.remaining - dtMs;
+    let count = jobCount(j);
+    const trainMs = Math.max(1, TROOPS[j.type]?.trainMs ?? 6_000);
+    while (count > 0 && remaining <= 0) {
+      army[j.type] += 1;
+      count -= 1;
+      if (count > 0) remaining += trainMs;
+    }
+    if (count > 0) raw.push({ id: j.id, type: j.type, remaining, count });
+  }
+  return { army, jobs: coalesceJobs(raw) };
 }
 
 export function settle(s: SaveState, now = Date.now()): { save: SaveState; ledger: LedgerEntry[] } {
@@ -151,14 +186,7 @@ export function settle(s: SaveState, now = Date.now()): { save: SaveState; ledge
   const war = s.war;
   const gold = s.gold;
 
-  const troopsNow =
-    trained.army.infantry +
-    trained.army.archers +
-    trained.army.cavalry +
-    trained.army.general +
-    trained.army.generaless +
-    trained.army.defender +
-    trained.jobs.length;
+  const troopsNow = armySize({ army: trained.army, training: trained.jobs });
   const upkeep = troopsNow * BREAD_UPKEEP_PER_TROOP_HOUR * (dtMs / 3600_000);
   let bread = s.bread;
   if (upkeep > 0) {
@@ -374,43 +402,76 @@ export function rotateWalls(s: SaveState, id: string, rowIds?: string[]): { save
   };
 }
 
-export function trainTroop(s: SaveState, type: TroopType): { save: SaveState; ledger: LedgerEntry[]; toast: string } {
+function enqueueTrain(training: TrainingJob[], type: TroopType, qty: number, trainMs: number): TrainingJob[] {
+  const i = training.findIndex((t) => t.type === type);
+  if (i >= 0) {
+    const cur = training[i]!;
+    const next = training.slice();
+    next[i] = { ...cur, count: jobCount(cur) + qty };
+    return next;
+  }
+  return [...training, { id: nid("t"), type, remaining: trainMs, count: qty }];
+}
+
+function clampTrainQty(raw: unknown): number {
+  const n = Math.floor(Number(raw ?? 1));
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(MAX_TRAIN_QTY, n);
+}
+
+export function trainTroop(
+  s: SaveState,
+  type: TroopType,
+  qtyRaw: unknown = 1,
+): { save: SaveState; ledger: LedgerEntry[]; toast: string } {
   const def = TROOPS[type];
   if (!def) throw new GameError("Tropa inválida.");
   if (countType(s.buildings, "barracks") < 1) throw new GameError("Construa um quartel primeiro.");
+  let qty = clampTrainQty(qtyRaw);
   const ledger: LedgerEntry[] = [];
-  if (isHero(type) && s.army[type] + s.training.filter((t) => t.type === type).length >= 1) {
-    throw new GameError(`Só um${type === "generaless" ? "a" : ""} ${def.name.toLowerCase()} por condado.`);
+  if (isHero(type)) {
+    if (s.army[type] + s.training.filter((t) => t.type === type).reduce((n, t) => n + jobCount(t), 0) >= 1) {
+      throw new GameError(`Só um${type === "generaless" ? "a" : ""} ${def.name.toLowerCase()} por condado.`);
+    }
+    qty = 1;
   }
   if (type === "defender") {
     if (countType(s.buildings, "training") < 1) throw new GameError("Construa o Campo de Treino.");
-    if (s.army.defender + s.training.filter((t) => t.type === "defender").length >= defenderCap(s.campLevel)) {
-      throw new GameError("Capacidade de defensores no máximo. Melhore o campo.");
-    }
-    if (s.gold < DEFENDER_COST) throw new GameError(`Faltam ${GOLD_NAME_PL}.`);
-    pushLedger(ledger, s, "train", "gold", -DEFENDER_COST, type);
+    const used = s.army.defender + s.training.filter((t) => t.type === "defender").reduce((n, t) => n + jobCount(t), 0);
+    const room = defenderCap(s.campLevel) - used;
+    qty = Math.min(qty, room);
+    if (qty < 1) throw new GameError("Capacidade de defensores no máximo. Melhore o campo.");
+    const campRoom = armyCapacity(countType(s.buildings, "camp")) - armySize(s);
+    qty = Math.min(qty, campRoom);
+    if (qty < 1) throw new GameError("Acampamento lotado. Construa outro.");
+    const cost = DEFENDER_COST * qty;
+    if (s.gold < cost) throw new GameError(`Faltam ${GOLD_NAME_PL}.`);
+    pushLedger(ledger, s, "train", "gold", -cost, type);
     return {
       save: {
         ...s,
-        gold: s.gold - DEFENDER_COST,
-        training: [...s.training, { id: nid("t"), type, remaining: def.trainMs }],
+        gold: s.gold - cost,
+        training: enqueueTrain(s.training, type, qty, def.trainMs),
       },
       ledger,
-      toast: "Recrutando defensor da guilda.",
+      toast: qty === 1 ? "Recrutando defensor da guilda." : `Recrutando ${qty} defensores da guilda.`,
     };
   }
   const cap = armyCapacity(countType(s.buildings, "camp"));
-  if (armySize(s) >= cap) throw new GameError("Acampamento lotado. Construa outro.");
-  if (s.bread < def.costBread) throw new GameError("Pão insuficiente.");
-  pushLedger(ledger, s, "train", "bread", -def.costBread, type);
+  const room = cap - armySize(s);
+  qty = Math.min(qty, room);
+  if (qty < 1) throw new GameError("Acampamento lotado. Construa outro.");
+  const cost = def.costBread * qty;
+  if (s.bread < cost) throw new GameError("Pão insuficiente.");
+  pushLedger(ledger, s, "train", "bread", -cost, type);
   return {
     save: {
       ...s,
-      bread: s.bread - def.costBread,
-      training: [...s.training, { id: nid("t"), type, remaining: def.trainMs }],
+      bread: s.bread - cost,
+      training: enqueueTrain(s.training, type, qty, def.trainMs),
     },
     ledger,
-    toast: `Recrutando ${def.name}.`,
+    toast: qty === 1 ? `Recrutando ${def.name}.` : `Recrutando ${qty} ${def.name}.`,
   };
 }
 
@@ -422,6 +483,13 @@ export function speedTrainJob(s: SaveState, id: string): { save: SaveState; ledg
   }
   const army = { ...s.army };
   army[job.type] += 1;
+  const left = jobCount(job) - 1;
+  const training =
+    left > 0
+      ? s.training.map((t) =>
+          t.id === id ? { ...t, count: left, remaining: TROOPS[job.type].trainMs } : t,
+        )
+      : s.training.filter((t) => t.id !== id);
   const ledger: LedgerEntry[] = [];
   pushLedger(ledger, s, "speed_train", "gold", -SPEED_TRAIN_GOLD, job.type);
   return {
@@ -429,7 +497,7 @@ export function speedTrainJob(s: SaveState, id: string): { save: SaveState; ledg
       ...s,
       gold: s.gold - SPEED_TRAIN_GOLD,
       army,
-      training: s.training.filter((t) => t.id !== id),
+      training,
     },
     ledger,
     toast: `${TROOPS[job.type].name} pronto.`,
@@ -663,6 +731,73 @@ export function claimFreePassSim(s: SaveState, level: number): { save: SaveState
     },
     ledger,
     toast: `Trilha grátis Nv.${level}: ${r.label}`,
+  };
+}
+
+export function claimPassAllSim(s: SaveState): { save: SaveState; ledger: LedgerEntry[]; toast: string } {
+  const reached = Math.min(PASS_LEVELS, Math.floor(s.pass.stars / PASS_STARS_PER_LEVEL));
+  const claimedFree = new Set(s.pass.claimedFree ?? []);
+  const claimedPaid = new Set(s.pass.claimed);
+  let gold = 0;
+  let bread = 0;
+  let niens = 0;
+  let troopCards = 0;
+  let generalCards = 0;
+  const nextFree = [...(s.pass.claimedFree ?? [])];
+  const nextPaid = [...s.pass.claimed];
+  let nFree = 0;
+  let nPaid = 0;
+  for (let lv = 1; lv <= reached; lv++) {
+    if (!claimedFree.has(lv)) {
+      const r = freePassReward(lv);
+      gold += r.gold;
+      bread += r.bread;
+      troopCards += r.troopCards;
+      generalCards += r.generalCards;
+      nextFree.push(lv);
+      nFree += 1;
+    }
+    if (s.pass.purchased && !claimedPaid.has(lv)) {
+      const r = passReward(lv);
+      gold += r.gold;
+      bread += r.bread;
+      niens += r.niens;
+      troopCards += r.troopCards;
+      generalCards += r.generalCards;
+      nextPaid.push(lv);
+      nPaid += 1;
+    }
+  }
+  if (nFree + nPaid < 1) throw new GameError("Não há recompensas por recolher.");
+  const ledger: LedgerEntry[] = [];
+  let cur: SaveState = s;
+  if (gold) {
+    pushLedger(ledger, cur, "claim_pass_all", "gold", gold, "pass");
+    cur = { ...cur, gold: cur.gold + gold };
+  }
+  if (bread) {
+    pushLedger(ledger, cur, "claim_pass_all", "bread", bread, "pass");
+    cur = { ...cur, bread: cur.bread + bread };
+  }
+  if (niens) {
+    pushLedger(ledger, cur, "claim_pass_all", "niens", niens, "pass");
+    cur = { ...cur, niens: cur.niens + niens };
+  }
+  if (troopCards) {
+    pushLedger(ledger, cur, "claim_pass_all", "troopCards", troopCards, "pass");
+    cur = { ...cur, troopCards: cur.troopCards + troopCards };
+  }
+  if (generalCards) {
+    pushLedger(ledger, cur, "claim_pass_all", "generalCards", generalCards, "pass");
+    cur = { ...cur, generalCards: cur.generalCards + generalCards };
+  }
+  return {
+    save: {
+      ...cur,
+      pass: { ...s.pass, claimed: nextPaid, claimedFree: nextFree },
+    },
+    ledger,
+    toast: `Recolhidas ${nFree + nPaid} recompensas do passe.`,
   };
 }
 

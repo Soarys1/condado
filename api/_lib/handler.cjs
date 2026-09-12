@@ -108,6 +108,7 @@ async function verifyPlayerToken(header) {
 const NIEN_COST_GOLD = 55e4;
 const NIEN_SELL_GOLD = 165e3;
 const SPEED_TRAIN_GOLD = 2500;
+const CHAT_TTL_MS = 3e5;
 const LOOT_BANDS = [
 	{
 		at: .33,
@@ -1194,9 +1195,16 @@ var GameError = class extends Error {
 		this.name = "GameError";
 	}
 };
+function jobCount(j) {
+	const n = Math.floor(Number(j.count ?? 1));
+	return n > 0 ? n : 1;
+}
+function trainingQueued(jobs) {
+	return jobs.reduce((n, j) => n + jobCount(j), 0);
+}
 function armySize(s) {
 	const a = s.army;
-	return a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender + s.training.length;
+	return a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender + trainingQueued(s.training);
 }
 function producerKind(t) {
 	if (t === "mine") return "gold";
@@ -1227,20 +1235,47 @@ function pushLedger(out, s, type, currency, amount, source) {
 		source
 	});
 }
+function coalesceJobs(jobs) {
+	const map = /* @__PURE__ */ new Map();
+	const order = [];
+	for (const j of jobs) {
+		const prev = map.get(j.type);
+		if (!prev) {
+			map.set(j.type, {
+				...j,
+				count: jobCount(j)
+			});
+			order.push(j.type);
+		} else map.set(j.type, {
+			...prev,
+			count: jobCount(prev) + jobCount(j),
+			remaining: Math.min(prev.remaining, j.remaining)
+		});
+	}
+	return order.map((t) => map.get(t));
+}
 function applyTraining(s, dtMs) {
 	const army = { ...s.army };
-	const jobs = [];
+	const raw = [];
 	for (const j of s.training) {
-		const remaining = j.remaining - dtMs;
-		if (remaining <= 0) army[j.type] += 1;
-		else jobs.push({
-			...j,
-			remaining
+		let remaining = j.remaining - dtMs;
+		let count = jobCount(j);
+		const trainMs = Math.max(1, TROOPS[j.type]?.trainMs ?? 6e3);
+		while (count > 0 && remaining <= 0) {
+			army[j.type] += 1;
+			count -= 1;
+			if (count > 0) remaining += trainMs;
+		}
+		if (count > 0) raw.push({
+			id: j.id,
+			type: j.type,
+			remaining,
+			count
 		});
 	}
 	return {
 		army,
-		jobs
+		jobs: coalesceJobs(raw)
 	};
 }
 function settle(s, now = Date.now()) {
@@ -1265,7 +1300,10 @@ function settle(s, now = Date.now()) {
 	};
 	const war = s.war;
 	const gold = s.gold;
-	const upkeep = (trained.army.infantry + trained.army.archers + trained.army.cavalry + trained.army.general + trained.army.generaless + trained.army.defender + trained.jobs.length) * 20 * (dtMs / 36e5);
+	const upkeep = armySize({
+		army: trained.army,
+		training: trained.jobs
+	}) * 20 * (dtMs / 36e5);
 	let bread = s.bread;
 	if (upkeep > 0) {
 		const spend = Math.min(bread, upkeep);
@@ -1503,47 +1541,75 @@ function rotateWalls(s, id, rowIds) {
 		toast: dir === "v" ? "Muro em pé (I)." : "Muro deitado (—)."
 	};
 }
-function trainTroop(s, type) {
+function enqueueTrain(training, type, qty, trainMs) {
+	const i = training.findIndex((t) => t.type === type);
+	if (i >= 0) {
+		const cur = training[i];
+		const next = training.slice();
+		next[i] = {
+			...cur,
+			count: jobCount(cur) + qty
+		};
+		return next;
+	}
+	return [...training, {
+		id: nid("t"),
+		type,
+		remaining: trainMs,
+		count: qty
+	}];
+}
+function clampTrainQty(raw) {
+	const n = Math.floor(Number(raw ?? 1));
+	if (!Number.isFinite(n) || n < 1) return 1;
+	return Math.min(200, n);
+}
+function trainTroop(s, type, qtyRaw = 1) {
 	const def = TROOPS[type];
 	if (!def) throw new GameError("Tropa inválida.");
 	if (countType(s.buildings, "barracks") < 1) throw new GameError("Construa um quartel primeiro.");
+	let qty = clampTrainQty(qtyRaw);
 	const ledger = [];
-	if (isHero(type) && s.army[type] + s.training.filter((t) => t.type === type).length >= 1) throw new GameError(`Só um${type === "generaless" ? "a" : ""} ${def.name.toLowerCase()} por condado.`);
+	if (isHero(type)) {
+		if (s.army[type] + s.training.filter((t) => t.type === type).reduce((n, t) => n + jobCount(t), 0) >= 1) throw new GameError(`Só um${type === "generaless" ? "a" : ""} ${def.name.toLowerCase()} por condado.`);
+		qty = 1;
+	}
 	if (type === "defender") {
 		if (countType(s.buildings, "training") < 1) throw new GameError("Construa o Campo de Treino.");
-		if (s.army.defender + s.training.filter((t) => t.type === "defender").length >= defenderCap(s.campLevel)) throw new GameError("Capacidade de defensores no máximo. Melhore o campo.");
-		if (s.gold < 5e3) throw new GameError(`Faltam ${GOLD_NAME_PL}.`);
-		pushLedger(ledger, s, "train", "gold", -5e3, type);
+		const used = s.army.defender + s.training.filter((t) => t.type === "defender").reduce((n, t) => n + jobCount(t), 0);
+		const room = defenderCap(s.campLevel) - used;
+		qty = Math.min(qty, room);
+		if (qty < 1) throw new GameError("Capacidade de defensores no máximo. Melhore o campo.");
+		const campRoom = armyCapacity(countType(s.buildings, "camp")) - armySize(s);
+		qty = Math.min(qty, campRoom);
+		if (qty < 1) throw new GameError("Acampamento lotado. Construa outro.");
+		const cost = DEFENDER_COST * qty;
+		if (s.gold < cost) throw new GameError(`Faltam ${GOLD_NAME_PL}.`);
+		pushLedger(ledger, s, "train", "gold", -cost, type);
 		return {
 			save: {
 				...s,
-				gold: s.gold - DEFENDER_COST,
-				training: [...s.training, {
-					id: nid("t"),
-					type,
-					remaining: def.trainMs
-				}]
+				gold: s.gold - cost,
+				training: enqueueTrain(s.training, type, qty, def.trainMs)
 			},
 			ledger,
-			toast: "Recrutando defensor da guilda."
+			toast: qty === 1 ? "Recrutando defensor da guilda." : `Recrutando ${qty} defensores da guilda.`
 		};
 	}
-	const cap = armyCapacity(countType(s.buildings, "camp"));
-	if (armySize(s) >= cap) throw new GameError("Acampamento lotado. Construa outro.");
-	if (s.bread < def.costBread) throw new GameError("Pão insuficiente.");
-	pushLedger(ledger, s, "train", "bread", -def.costBread, type);
+	const room = armyCapacity(countType(s.buildings, "camp")) - armySize(s);
+	qty = Math.min(qty, room);
+	if (qty < 1) throw new GameError("Acampamento lotado. Construa outro.");
+	const cost = def.costBread * qty;
+	if (s.bread < cost) throw new GameError("Pão insuficiente.");
+	pushLedger(ledger, s, "train", "bread", -cost, type);
 	return {
 		save: {
 			...s,
-			bread: s.bread - def.costBread,
-			training: [...s.training, {
-				id: nid("t"),
-				type,
-				remaining: def.trainMs
-			}]
+			bread: s.bread - cost,
+			training: enqueueTrain(s.training, type, qty, def.trainMs)
 		},
 		ledger,
-		toast: `Recrutando ${def.name}.`
+		toast: qty === 1 ? `Recrutando ${def.name}.` : `Recrutando ${qty} ${def.name}.`
 	};
 }
 function speedTrainJob(s, id) {
@@ -1552,6 +1618,12 @@ function speedTrainJob(s, id) {
 	if (s.gold < 2500) throw new GameError(`Precisa de ${SPEED_TRAIN_GOLD} ${GOLD_NAME_PL} para acelerar.`);
 	const army = { ...s.army };
 	army[job.type] += 1;
+	const left = jobCount(job) - 1;
+	const training = left > 0 ? s.training.map((t) => t.id === id ? {
+		...t,
+		count: left,
+		remaining: TROOPS[job.type].trainMs
+	} : t) : s.training.filter((t) => t.id !== id);
 	const ledger = [];
 	pushLedger(ledger, s, "speed_train", "gold", -2500, job.type);
 	return {
@@ -1559,7 +1631,7 @@ function speedTrainJob(s, id) {
 			...s,
 			gold: s.gold - SPEED_TRAIN_GOLD,
 			army,
-			training: s.training.filter((t) => t.id !== id)
+			training
 		},
 		ledger,
 		toast: `${TROOPS[job.type].name} pronto.`
@@ -1842,6 +1914,91 @@ function claimFreePassSim(s, level) {
 		toast: `Trilha grátis Nv.${level}: ${r.label}`
 	};
 }
+function claimPassAllSim(s) {
+	const reached = Math.min(50, Math.floor(s.pass.stars / 6));
+	const claimedFree = new Set(s.pass.claimedFree ?? []);
+	const claimedPaid = new Set(s.pass.claimed);
+	let gold = 0;
+	let bread = 0;
+	let niens = 0;
+	let troopCards = 0;
+	let generalCards = 0;
+	const nextFree = [...s.pass.claimedFree ?? []];
+	const nextPaid = [...s.pass.claimed];
+	let nFree = 0;
+	let nPaid = 0;
+	for (let lv = 1; lv <= reached; lv++) {
+		if (!claimedFree.has(lv)) {
+			const r = freePassReward(lv);
+			gold += r.gold;
+			bread += r.bread;
+			troopCards += r.troopCards;
+			generalCards += r.generalCards;
+			nextFree.push(lv);
+			nFree += 1;
+		}
+		if (s.pass.purchased && !claimedPaid.has(lv)) {
+			const r = passReward(lv);
+			gold += r.gold;
+			bread += r.bread;
+			niens += r.niens;
+			troopCards += r.troopCards;
+			generalCards += r.generalCards;
+			nextPaid.push(lv);
+			nPaid += 1;
+		}
+	}
+	if (nFree + nPaid < 1) throw new GameError("Não há recompensas por recolher.");
+	const ledger = [];
+	let cur = s;
+	if (gold) {
+		pushLedger(ledger, cur, "claim_pass_all", "gold", gold, "pass");
+		cur = {
+			...cur,
+			gold: cur.gold + gold
+		};
+	}
+	if (bread) {
+		pushLedger(ledger, cur, "claim_pass_all", "bread", bread, "pass");
+		cur = {
+			...cur,
+			bread: cur.bread + bread
+		};
+	}
+	if (niens) {
+		pushLedger(ledger, cur, "claim_pass_all", "niens", niens, "pass");
+		cur = {
+			...cur,
+			niens: cur.niens + niens
+		};
+	}
+	if (troopCards) {
+		pushLedger(ledger, cur, "claim_pass_all", "troopCards", troopCards, "pass");
+		cur = {
+			...cur,
+			troopCards: cur.troopCards + troopCards
+		};
+	}
+	if (generalCards) {
+		pushLedger(ledger, cur, "claim_pass_all", "generalCards", generalCards, "pass");
+		cur = {
+			...cur,
+			generalCards: cur.generalCards + generalCards
+		};
+	}
+	return {
+		save: {
+			...cur,
+			pass: {
+				...s.pass,
+				claimed: nextPaid,
+				claimedFree: nextFree
+			}
+		},
+		ledger,
+		toast: `Recolhidas ${nFree + nPaid} recompensas do passe.`
+	};
+}
 function claimPassExtraSim(s, extra, now = Date.now()) {
 	if (!s.pass.purchased) throw new GameError("Compre o passe primeiro.");
 	if (Math.min(50, Math.floor(s.pass.stars / 6)) < 50 && !s.pass.claimed.includes(50)) throw new GameError("Chega ao nível 50 do passe pago para resgatar os cupons.");
@@ -2007,7 +2164,7 @@ function registerAttack(s, targetId, warOn, now = Date.now()) {
 //#region src/lib/game/server/engine.server.ts
 const RATE = {
 	default: {
-		n: 45,
+		n: 24,
 		windowMs: 1e4
 	},
 	transfer: {
@@ -2035,11 +2192,11 @@ const RATE = {
 		windowMs: 6e4
 	},
 	collect: {
-		n: 20,
+		n: 16,
 		windowMs: 1e4
 	},
 	collectAll: {
-		n: 10,
+		n: 8,
 		windowMs: 1e4
 	},
 	claimWeekly: {
@@ -2047,7 +2204,19 @@ const RATE = {
 		windowMs: 6e4
 	},
 	sendChat: {
-		n: 8,
+		n: 6,
+		windowMs: 1e4
+	},
+	train: {
+		n: 10,
+		windowMs: 1e4
+	},
+	speedTrain: {
+		n: 16,
+		windowMs: 1e4
+	},
+	claimPassAll: {
+		n: 6,
 		windowMs: 1e4
 	},
 	foundAlliance: {
@@ -2128,7 +2297,7 @@ function profilePayload(save, extra) {
 	return JSON.parse(JSON.stringify({
 		save: {
 			...clean,
-			chat: clean.chat.slice(-40),
+			chat: [],
 			allianceChat: clean.allianceChat.slice(-40),
 			raids: clean.raids.slice(-24),
 			ledger: clean.ledger.slice(0, 40)
@@ -2310,7 +2479,7 @@ async function handleGameAction(player, action, payload, requestId) {
 	if (READ_ONLY.has(action)) return dispatch(null, player, action, payload, requestId);
 	const reqRef = col("condado_request_ids").doc(`${player.uid}_${requestId}`);
 	try {
-		return await db().runTransaction(async (tx) => {
+		const result = await db().runTransaction(async (tx) => {
 			const cached = await tx.get(reqRef);
 			if (cached.exists) return cached.data()?.result ?? {};
 			const rateRef = col("condado_rate_limits").doc(player.uid);
@@ -2327,14 +2496,17 @@ async function handleGameAction(player, action, payload, requestId) {
 			if (!FAST_ACTIONS.has(action)) writeAudit(tx, player.uid, action, requestId, true);
 			return out;
 		});
+		if (action === "sendChat") pruneExpiredChat();
+		return result;
 	} catch (error) {
-		try {
+		const detail = error instanceof Error ? error.message : "fail";
+		if (!detail.includes("depressa demais")) try {
 			await col("condado_audit_logs").add({
 				userId: player.uid,
 				action,
 				requestId,
 				ok: false,
-				detail: error instanceof Error ? error.message : "fail",
+				detail,
 				timestamp: (/* @__PURE__ */ new Date()).toISOString()
 			});
 		} catch {}
@@ -2358,7 +2530,7 @@ async function dispatch(tx, player, action, payload, requestId) {
 		case "upgradeWallRow": return mutateFast(write(), player, requestId, (p) => upgradeWallRowSim(withoutMeta(p), String(payload.id ?? "")));
 		case "demolish": return mutateFast(write(), player, requestId, (p) => demolishBuilding(withoutMeta(p), String(payload.id ?? "")));
 		case "rotateWall": return mutateFast(write(), player, requestId, (p) => rotateWalls(withoutMeta(p), String(payload.id ?? ""), Array.isArray(payload.rowIds) ? payload.rowIds.map(String) : void 0));
-		case "train": return mutateFast(write(), player, requestId, (p) => trainTroop(withoutMeta(p), payload.type));
+		case "train": return mutateFast(write(), player, requestId, (p) => trainTroop(withoutMeta(p), payload.type, payload.qty));
 		case "speedTrain": return mutateFast(write(), player, requestId, (p) => speedTrainJob(withoutMeta(p), String(payload.id ?? "")));
 		case "placeBuilding": return mutateFast(write(), player, requestId, (p) => placeBuilding(withoutMeta(p), {
 			type: payload.type,
@@ -2377,6 +2549,7 @@ async function dispatch(tx, player, action, payload, requestId) {
 		case "buyPass": return mutate(write(), player, requestId, (p) => buyPassSim(withoutMeta(p)));
 		case "claimPass": return mutate(write(), player, requestId, (p) => claimPassSim(withoutMeta(p), Number(payload.level)));
 		case "claimFreePass": return mutate(write(), player, requestId, (p) => claimFreePassSim(withoutMeta(p), Number(payload.level)));
+		case "claimPassAll": return mutate(write(), player, requestId, (p) => claimPassAllSim(withoutMeta(p)));
 		case "claimPassExtra": return mutate(write(), player, requestId, (p) => claimPassExtraSim(withoutMeta(p), payload.extra === "discount" ? "discount" : "boost"));
 		case "skipPass": return mutate(write(), player, requestId, (p) => skipPassSim(withoutMeta(p)));
 		case "foundAlliance": return foundAllianceAction(write(), player, payload, requestId);
@@ -3116,10 +3289,21 @@ async function sendChatAction(tx, player, textRaw, requestId) {
 		text,
 		at: now,
 		createdAt: new Date(now).toISOString(),
+		expiresAt: new Date(now + CHAT_TTL_MS).toISOString(),
 		channel: "global"
 	});
 	writeLedger(tx, player.uid, p.player.id, requestId, []);
-	return { save: withoutMeta(p) };
+	return {};
+}
+async function pruneExpiredChat() {
+	try {
+		const cutoff = (/* @__PURE__ */ new Date(Date.now() - CHAT_TTL_MS)).toISOString();
+		const old = await col("condado_chat").where("createdAt", "<", cutoff).limit(40).get();
+		if (old.empty) return;
+		const batch = db().batch();
+		for (const d of old.docs) batch.delete(d.ref);
+		await batch.commit();
+	} catch {}
 }
 async function syncEmail(tx, player, requestId) {
 	if (!player.email) throw new GameError("Nenhum e-mail está vinculado a esta conta.");
@@ -3432,6 +3616,7 @@ async function recruitAllianceAction(tx, player, requestId) {
 		text: `Recruta: ${p.alliance.name} · condado ${p.alliance.minLevel}+ · ${p.alliance.members.length}/${p.alliance.slots} vagas`,
 		at: now,
 		createdAt: new Date(now).toISOString(),
+		expiresAt: new Date(now + CHAT_TTL_MS).toISOString(),
 		channel: "global",
 		recruitAllianceId: p.alliance.id,
 		recruitMinLevel: p.alliance.minLevel

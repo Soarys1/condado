@@ -42,6 +42,8 @@ export interface TrainingJob {
   id: string;
   type: TroopType;
   remaining: number;
+  /** Units still in this job. Missing count is treated as 1 (saves antigos). */
+  count?: number;
 }
 
 export interface ChatMsg {

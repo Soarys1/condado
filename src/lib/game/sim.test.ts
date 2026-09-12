@@ -5,6 +5,7 @@ import {
   GameError,
   applyRaidFinish,
   buyNienSim,
+  claimPassAllSim,
   collectBuilding,
   creditResource,
   lootForStars,
@@ -167,6 +168,47 @@ describe("economia pura", () => {
     save.army.general = 1;
     save.bread = 5000;
     assert.throws(() => trainTroop(save, "general"), GameError);
+  });
+
+  it("recruta em lote, mostra custo e junta a fila", () => {
+    const save = defaultSave("Teste");
+    save.buildings.push({ id: "b-bar", type: "barracks", gx: 8, gy: 8, level: 1 });
+    save.bread = 5000;
+    const r = trainTroop(save, "infantry", 10);
+    assert.equal(r.save.training.length, 1);
+    assert.equal(r.save.training[0]!.count, 10);
+    assert.equal(r.save.bread, 5000 - 50 * 10);
+    const r2 = trainTroop(r.save, "infantry", 5);
+    assert.equal(r2.save.training.length, 1);
+    assert.equal(r2.save.training[0]!.count, 15);
+    assert.equal(r2.save.bread, 5000 - 50 * 15);
+  });
+
+  it("settle conclui várias tropas da mesma fila", () => {
+    const save = defaultSave("Teste");
+    save.training = [{ id: "t1", type: "infantry", remaining: 1000, count: 3 }];
+    const now = Date.now();
+    save.lastTick = now - 7000;
+    const r = settle(save, now);
+    assert.equal(r.save.army.infantry, save.army.infantry + 2);
+    assert.equal(r.save.training.length, 1);
+    assert.equal(r.save.training[0]!.count, 1);
+  });
+
+  it("Nien custa 550 mil Libras e vende por 165 mil", () => {
+    assert.equal(NIEN_COST_GOLD, 550_000);
+    assert.equal(NIEN_SELL_GOLD, 165_000);
+  });
+
+  it("recolhe todas as recompensas desbloqueadas do passe", () => {
+    const save = defaultSave("Teste");
+    save.pass.purchased = true;
+    save.pass.stars = 18;
+    const r = claimPassAllSim(save);
+    assert.deepEqual([...r.save.pass.claimed].sort((a, b) => a - b), [1, 2, 3]);
+    assert.deepEqual([...(r.save.pass.claimedFree ?? [])].sort((a, b) => a - b), [1, 2, 3]);
+    assert.ok(r.save.gold > save.gold);
+    assert.throws(() => claimPassAllSim(r.save), GameError);
   });
 
   it("trilha grátis do passe 50 não dá Nien", () => {

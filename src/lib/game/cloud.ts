@@ -7,6 +7,7 @@ import {
   type Unsubscribe,
 } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
+import { CHAT_TTL_MS } from "./constants";
 import type { ResourceKind, Tradable } from "./constants";
 import type { ChatMsg, Lord, MarketOffer, SaveState } from "./types";
 import { deviceFingerprint, getDeviceId } from "./device";
@@ -272,7 +273,7 @@ export function listenGlobalChat(onRows: (rows: ChatMsg[]) => void): Unsubscribe
             recruitMinLevel: r.recruitMinLevel ? Number(r.recruitMinLevel) : undefined,
           };
         })
-        .filter((m) => m.text)
+        .filter((m) => m.text && Date.now() - m.at <= CHAT_TTL_MS)
         .sort((a, b) => a.at - b.at);
       onRows(rows);
     },
