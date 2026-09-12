@@ -23,6 +23,7 @@ import {
   TROOPS,
   WAR_ATTACK_CAP,
   allianceSlots,
+  allianceAtWarToday,
   armyCapacity,
   brtDayKey,
   campUpgradeGold,
@@ -57,7 +58,7 @@ import {
   type WallDir,
 } from "./constants";
 import { Battle } from "./battle";
-import { ALLIANCES, botArmy, findLord, findNick, LORDS, lordsOfAlliance, pairWar, randomChat } from "./bots";
+import { ALLIANCES, botArmy, findLord, findNick, LORDS, lordsOfAlliance, randomChat } from "./bots";
 import { defaultSave, flushCloud, loadSave, persist, setCloudSync, wipeSave } from "./save";
 import type {
   BuildingInst,
@@ -232,6 +233,7 @@ interface GameStore extends SaveState {
   acceptJoin: (requestId: string) => void;
   rejectJoin: (requestId: string) => void;
   startAllianceDuel: (lord: Lord) => void;
+  declareWar: (allianceId: string) => void;
   claimPassFree: (level: number) => boolean;
   claimPassExtra: (extra: PassExtra) => boolean;
   sendAllianceChat: (text: string) => void;
@@ -471,21 +473,9 @@ export const useGame = create<GameStore>((set, get) => ({
       day: "2-digit",
     }).format(new Date(now));
     if (win.open && s.alliance) {
-      if (!war || war.week !== week) {
-        const pair = pairWar(s.alliance.id, week);
-        war = {
-          week,
-          foeId: pair.foeId,
-          foeName: pair.foeName,
-          chest: ALLIANCE_WAR_CHEST,
-          ourStars: 0,
-          theirStars: Math.floor(Math.random() * 8),
-          attacks: {},
-          sittingOut: pair.sittingOut,
-          resolved: false,
-          participants: [],
-        };
-      } else if (!war.sittingOut && Math.random() < dt * 0.02) {
+      if (war && war.week !== week) {
+        war = null;
+      } else if (war && allianceAtWarToday(war) && Math.random() < dt * 0.02) {
         war = { ...war, theirStars: war.theirStars + (Math.random() < 0.55 ? 1 : 2) };
       }
     }
@@ -1829,6 +1819,63 @@ export const useGame = create<GameStore>((set, get) => ({
     }
   },
 
+  declareWar: (allianceId) => {
+    const s = get();
+    if (!s.alliance) {
+      set({ toast: "Sem aliança." });
+      return;
+    }
+    if (s.alliance.leaderId !== s.player.id) {
+      set({ toast: "Só o líder declara a guerra." });
+      sfxError();
+      return;
+    }
+    if (isLive()) {
+      void liveAction("declareWar", { allianceId })
+        .then(() => sfxHorn())
+        .catch(liveFail);
+      return;
+    }
+    if (s.war && allianceAtWarToday(s.war)) {
+      set({ toast: `A tua aliança já está em guerra com ${s.war.foeName}.` });
+      sfxError();
+      return;
+    }
+    const foe = ALLIANCES.find((a) => a.id === allianceId);
+    if (!foe) {
+      set({ toast: "Aliança não encontrada." });
+      return;
+    }
+    const win = warWindow();
+    const note = {
+      id: nid("m"),
+      fromId: s.player.id,
+      fromNick: s.player.nick,
+      text: `Guerra declarada contra ${foe.name}.`,
+      at: Date.now(),
+      self: true,
+      channel: "alliance" as const,
+    };
+    set({
+      war: {
+        week: win.key,
+        foeId: foe.id,
+        foeName: foe.name,
+        chest: ALLIANCE_WAR_CHEST,
+        ourStars: 0,
+        theirStars: 0,
+        attacks: {},
+        sittingOut: false,
+        resolved: false,
+        participants: [],
+      },
+      allianceChat: [...s.allianceChat, note].slice(-40),
+      toast: `Guerra declarada contra ${foe.name}. Os duelos estão na aba Guerra.`,
+    });
+    persist({ ...get() });
+    sfxHorn();
+  },
+
   startAllianceDuel: (lord) => {
     const s = get();
     const armyN = s.army.infantry + s.army.archers + s.army.cavalry + s.army.general + s.army.generaless + s.army.defender;
@@ -1863,7 +1910,7 @@ export const useGame = create<GameStore>((set, get) => ({
       void liveAction("startAllianceDuel", { targetId: lord.id })
         .then((r) => {
           if (!r.sessionId) {
-            set({ toast: r.toast ?? "À espera de um rival para a guerra de hoje." });
+            set({ toast: r.toast ?? "O líder declara a guerra na aba Guerra." });
             return;
           }
           raidSessionId = r.sessionId;

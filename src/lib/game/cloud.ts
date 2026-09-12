@@ -9,7 +9,7 @@ import {
 import { auth, db } from "@/lib/firebase";
 import { CHAT_TTL_MS } from "./constants";
 import type { ResourceKind, Tradable } from "./constants";
-import type { ChatMsg, Lord, MarketOffer, SaveState } from "./types";
+import type { AllianceRival, ChatMsg, Lord, MarketOffer, SaveState } from "./types";
 import { deviceFingerprint, getDeviceId } from "./device";
 
 export type RankRow = {
@@ -50,6 +50,7 @@ export type GameActionResult = {
   lookup?: Record<string, unknown>;
   error?: string;
   foes?: Lord[];
+  rivals?: AllianceRival[];
   foeArmy?: SaveState["army"];
   foeLevels?: SaveState["troopLevels"];
   foeCamp?: number;

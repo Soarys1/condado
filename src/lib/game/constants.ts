@@ -576,6 +576,22 @@ export function warWindow(now = Date.now()): { open: boolean; start: number; end
   return { open: now >= start && now < end, start, end, key };
 }
 
+/** Active same-day war: has a foe, not sitting out, not yet paid out. */
+export function allianceAtWarToday(
+  a: {
+    warDay?: string | null;
+    week?: string | null;
+    foeId?: string | null;
+    sittingOut?: boolean;
+    resolved?: boolean;
+  },
+  now = Date.now(),
+): boolean {
+  const win = warWindow(now);
+  const day = a.warDay ?? a.week;
+  return day === win.key && !a.resolved && Boolean(a.foeId) && !a.sittingOut;
+}
+
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }

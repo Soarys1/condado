@@ -12,6 +12,7 @@ import {
   lootForStars,
   rankingWindow,
   warWindow,
+  allianceAtWarToday,
   weeklyPrize,
   type BuildingType,
   type ResourceKind,
@@ -85,6 +86,15 @@ type ActionResult = {
   sessionId?: string;
   lookup?: Record<string, unknown>;
   foes?: Lord[];
+  rivals?: Array<{
+    id: string;
+    name: string;
+    level: number;
+    members: number;
+    slots: number;
+    atWar: boolean;
+    foeName: string;
+  }>;
   duelGold?: number;
   foeArmy?: ArmyCounts;
   foeLevels?: SaveState["troopLevels"];
@@ -111,6 +121,7 @@ const RATE: Record<string, { n: number; windowMs: number }> = {
   acceptJoin: { n: 12, windowMs: 60_000 },
   rejectJoin: { n: 12, windowMs: 60_000 },
   startAllianceDuel: { n: 6, windowMs: 60_000 },
+  declareWar: { n: 4, windowMs: 60_000 },
 };
 
 const FAST_ACTIONS = new Set([
@@ -390,6 +401,7 @@ const READ_ONLY = new Set([
   "listRaidTargets",
   "adminLookup",
   "listAllianceFoes",
+  "listAllianceHall",
 ]);
 
 export async function handleGameAction(
@@ -533,7 +545,10 @@ async function dispatch(
     case "rejectJoin":
       return rejectJoinAction(write(), player, String(payload.requestId ?? ""), requestId);
     case "listAllianceFoes":
-      return listAllianceFoesAction(player);
+    case "listAllianceHall":
+      return listAllianceHallAction(player);
+    case "declareWar":
+      return declareWarAction(write(), player, String(payload.allianceId ?? ""), requestId);
     case "startAllianceDuel":
       return startAllianceDuelAction(write(), player, String(payload.targetId ?? ""), requestId);
     case "finishAllianceDuel":
@@ -1743,89 +1758,41 @@ async function sendAlliance(
     channel: "alliance",
   };
   const chat = trimAllianceChat([...a.chat, { ...msg, self: false }], a.joinRequests);
-  const profile: Profile = { ...p, allianceChat: [...p.allianceChat, msg].slice(-40), alliance: allianceStateOf({ ...a, chat }) };
+  const profile: Profile = {
+    ...p,
+    allianceChat: chat.map((m) => ({ ...m, self: m.fromId === p.player.id })),
+    alliance: allianceStateOf({ ...a, chat }),
+  };
   writeProfile(tx, profileRef(player.uid), profile);
   tx.set(aref, { chat }, { merge: true });
   writeLedger(tx, player.uid, p.player.id, requestId, []);
   return { save: withoutMeta(profile) };
 }
 
-async function pairAllianceWar(tx: Transaction, a: AllianceDoc): Promise<{ next: AllianceDoc; foe?: AllianceDoc; queueRef: DocumentReference; waiting: string[] }> {
-  const win = warWindow();
-  const qref = col("condado_war_queue").doc(win.key);
+async function dropWarQueue(tx: Transaction, winKey: string, ids: string[]) {
+  const qref = col("condado_war_queue").doc(winKey);
   const qsnap = await tx.get(qref);
   const waiting: string[] = Array.isArray(qsnap.data()?.waiting) ? qsnap.data()!.waiting.map(String) : [];
-  if (a.warDay === win.key && !a.resolved) {
-    let foe: AllianceDoc | undefined;
-    if (a.foeId) {
-      const foeSnap = await tx.get(allianceRef(a.foeId));
-      if (foeSnap.exists) foe = allianceFromDoc(foeSnap.id, foeSnap.data() as DocumentData);
-    }
-    return { next: a, foe, queueRef: qref, waiting };
-  }
-  const filtered = waiting.filter((id) => id !== a.id);
-  if (!filtered.length) {
-    const next: AllianceDoc = {
-      ...a,
-      warDay: win.key,
-      foeId: null,
-      foeName: "",
-      ourPoints: 0,
-      theirPoints: 0,
-      participants: [],
-      sittingOut: true,
-      resolved: false,
-    };
-    return { next, queueRef: qref, waiting: [...filtered, a.id] };
-  }
-  const foeId = filtered[0]!;
-  const foeSnap = await tx.get(allianceRef(foeId));
-  if (!foeSnap.exists) {
-    const next: AllianceDoc = {
-      ...a,
-      warDay: win.key,
-      foeId: null,
-      foeName: "",
-      ourPoints: 0,
-      theirPoints: 0,
-      participants: [],
-      sittingOut: true,
-      resolved: false,
-    };
-    return { next, queueRef: qref, waiting: [...filtered.slice(1), a.id] };
-  }
-  const foe = allianceFromDoc(foeId, foeSnap.data() as DocumentData);
-  const next: AllianceDoc = {
-    ...a,
-    warDay: win.key,
-    foeId: foe.id,
-    foeName: foe.name,
+  const next = waiting.filter((id) => !ids.includes(id));
+  if (next.length !== waiting.length) tx.set(qref, { waiting: next, day: winKey }, { merge: true });
+}
+
+function warLinkFields(foeId: string, foeName: string, winKey: string) {
+  return {
+    warDay: winKey,
+    foeId,
+    foeName,
     ourPoints: 0,
     theirPoints: 0,
-    participants: [],
+    participants: [] as string[],
     sittingOut: false,
     resolved: false,
   };
-  return { next, foe, queueRef: qref, waiting: filtered.slice(1) };
 }
 
-async function listAllianceFoesAction(player: PlayerAuth): Promise<ActionResult> {
-  const meSnap = await profileRef(player.uid).get();
-  if (!meSnap.exists) return { foes: [] };
-  const me = profileFromDoc(player.uid, meSnap.data() as DocumentData);
-  if (!me.alliance) return { foes: [] };
-  const aSnap = await allianceRef(me.alliance.id).get();
-  if (!aSnap.exists) return { foes: [] };
-  const a = allianceFromDoc(aSnap.id, aSnap.data() as DocumentData);
-  const allianceSave = {
-    ...withoutMeta(me),
-    alliance: allianceStateOf(a),
-    war: warFromAlliance(a),
-    allianceChat: a.chat.map((m) => ({ ...m, self: m.fromId === me.player.id })),
-  };
-  if (!a.foeId || a.sittingOut) return { foes: [], save: allianceSave };
-  const foeSnap = await allianceRef(a.foeId).get();
-  if (!foeSnap.exists) return { foes: [], save: allianceSave };
+async function loadFoeLords(foeId: string): Promise<Lord[]> {
+  const foeSnap = await allianceRef(foeId).get();
+  if (!foeSnap.exists) return [];
   const foe = allianceFromDoc(foeSnap.id, foeSnap.data() as DocumentData);
   const foes: Lord[] = [];
   for (const m of foe.members) {
@@ -1844,7 +1811,128 @@ async function listAllianceFoesAction(player: PlayerAuth): Promise<ActionResult>
       real: true,
     });
   }
-  return { foes, save: allianceSave };
+  return foes;
+}
+
+async function listAllianceHallAction(player: PlayerAuth): Promise<ActionResult> {
+  const meSnap = await profileRef(player.uid).get();
+  if (!meSnap.exists) return { foes: [], rivals: [] };
+  const me = profileFromDoc(player.uid, meSnap.data() as DocumentData);
+  if (!me.alliance) return { foes: [], rivals: [] };
+  const aSnap = await allianceRef(me.alliance.id).get();
+  if (!aSnap.exists) return { foes: [], rivals: [] };
+  const a = allianceFromDoc(aSnap.id, aSnap.data() as DocumentData);
+  const allianceSave = {
+    ...withoutMeta(me),
+    alliance: allianceStateOf(a),
+    war: warFromAlliance(a),
+    allianceChat: a.chat.map((m) => ({ ...m, self: m.fromId === me.player.id })),
+  };
+  const foes = a.foeId && !a.sittingOut ? await loadFoeLords(a.foeId) : [];
+  const all = await col("condado_alliances").limit(80).get();
+  const rivals = all.docs
+    .map((d) => allianceFromDoc(d.id, d.data() as DocumentData))
+    .filter((x) => x.id !== a.id && x.members.length > 0)
+    .map((x) => ({
+      id: x.id,
+      name: x.name,
+      level: x.level,
+      members: x.members.length,
+      slots: allianceSlots(x.level),
+      atWar: allianceAtWarToday(x),
+      foeName: allianceAtWarToday(x) ? x.foeName : "",
+    }))
+    .sort((p, q) => p.name.localeCompare(q.name, "pt"));
+  return { foes, rivals, save: allianceSave };
+}
+
+async function declareWarAction(
+  tx: Transaction,
+  player: PlayerAuth,
+  allianceIdRaw: string,
+  requestId: string,
+): Promise<ActionResult> {
+  const foeId = allianceIdRaw.trim();
+  if (!foeId) throw new GameError("Escolhe a aliança inimiga.");
+  const prep = await preparePlayer(tx, player.uid);
+  if (!prep.profile.alliance) throw new GameError("Sem aliança.");
+  if (foeId === prep.profile.alliance.id) throw new GameError("Não podes declarar guerra contra a tua aliança.");
+  const aref = allianceRef(prep.profile.alliance.id);
+  const asnap = await tx.get(aref);
+  if (!asnap.exists) throw new GameError("Aliança não encontrada.");
+  let a = allianceFromDoc(asnap.id, asnap.data() as DocumentData);
+  if (a.leaderId !== prep.profile.player.id && a.leaderUid !== player.uid) {
+    throw new GameError("Só o líder declara a guerra.");
+  }
+  const foeRef = allianceRef(foeId);
+  const foeSnap = await tx.get(foeRef);
+  if (!foeSnap.exists) throw new GameError("Aliança inimiga não encontrada.");
+  let foe = allianceFromDoc(foeSnap.id, foeSnap.data() as DocumentData);
+  if (!foe.members.length) throw new GameError("Essa aliança está vazia.");
+  const myPay = await readAlliancePayout(tx, a);
+  a = myPay.next;
+  const foePay = await readAlliancePayout(tx, foe);
+  foe = foePay.next;
+  const mine = myPay.rows.find((row) => row.uid === player.uid);
+  let baseProfile: Profile = mine ? { ...prep.profile, gold: mine.profile.gold } : prep.profile;
+  const extraLedger = mine ? mine.ledger : [];
+  if (myPay.settled) writeAlliancePayout(tx, myPay.rows, requestId, player.uid);
+  if (foePay.settled) writeAlliancePayout(tx, foePay.rows, requestId);
+  if (allianceAtWarToday(a)) {
+    throw new GameError(`A tua aliança já está em guerra com ${a.foeName || "outra aliança"}.`);
+  }
+  if (allianceAtWarToday(foe)) {
+    throw new GameError(`${foe.name} já está em guerra e não pode ser chamada.`);
+  }
+  const win = warWindow();
+  const ours = warLinkFields(foe.id, foe.name, win.key);
+  const theirs = warLinkFields(a.id, a.name, win.key);
+  const noteUs: ChatMsg = {
+    id: makeId("m"),
+    fromId: prep.profile.player.id,
+    fromNick: prep.profile.player.nick,
+    text: `Guerra declarada contra ${foe.name}.`,
+    at: Date.now(),
+    channel: "alliance",
+  };
+  const noteThem: ChatMsg = {
+    id: makeId("m"),
+    fromId: "CDN-ARAUTO",
+    fromNick: "Arauto",
+    text: `${a.name} declarou guerra contra nós.`,
+    at: Date.now(),
+    channel: "alliance",
+  };
+  a = {
+    ...a,
+    ...ours,
+    chat: trimAllianceChat([...a.chat, noteUs], a.joinRequests),
+  };
+  foe = {
+    ...foe,
+    ...theirs,
+    chat: trimAllianceChat([...foe.chat, noteThem], foe.joinRequests),
+  };
+  await dropWarQueue(tx, win.key, [a.id, foe.id]);
+  tx.set(
+    aref,
+    { ...ours, chat: a.chat },
+    { merge: true },
+  );
+  tx.set(
+    foeRef,
+    { ...theirs, chat: foe.chat },
+    { merge: true },
+  );
+  const war = { ...warFromAlliance(a), attacks: baseProfile.war?.week === win.key ? baseProfile.war.attacks : {} };
+  const profile: Profile = {
+    ...baseProfile,
+    alliance: allianceStateOf(a),
+    war,
+    allianceChat: a.chat.map((m) => ({ ...m, self: m.fromId === prep.profile.player.id })),
+  };
+  commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...extraLedger], prep.creditRefs);
+  return { save: withoutMeta(profile), toast: `Guerra declarada contra ${foe.name}. Os duelos estão na aba Guerra.` };
 }
 
 async function startAllianceDuelAction(
@@ -1867,39 +1955,23 @@ async function startAllianceDuelAction(
   const asnap = await tx.get(aref);
   if (!asnap.exists) throw new GameError("Aliança não encontrada.");
   let a = allianceFromDoc(asnap.id, asnap.data() as DocumentData);
-  const win = warWindow();
   const payout = await readAlliancePayout(tx, a);
   a = payout.next;
   const mine = payout.rows.find((row) => row.uid === player.uid);
-  let baseProfile: Profile = mine ? { ...prep.profile, gold: mine.profile.gold } : prep.profile;
+  const baseProfile: Profile = mine ? { ...prep.profile, gold: mine.profile.gold } : prep.profile;
   const extraLedger = mine ? mine.ledger : [];
-  const paired = await pairAllianceWar(tx, a);
-  a = paired.next;
+  if (payout.settled) writeAlliancePayout(tx, payout.rows, requestId, player.uid);
+  if (!allianceAtWarToday(a)) {
+    const waitingProfile: Profile = { ...baseProfile, alliance: allianceStateOf(a), war: warFromAlliance(a) };
+    commitPrepared(tx, player.uid, waitingProfile, requestId, [...prep.ledger, ...extraLedger], prep.creditRefs);
+    return { save: withoutMeta(waitingProfile), toast: "O líder declara a guerra na aba Guerra." };
+  }
   const idx = await tx.get(col("condado_player_index").doc(targetId));
   if (!idx.exists) throw new GameError("Alvo não encontrado.");
   const toUid = String(idx.data()?.userId ?? "");
   const destSnap = await tx.get(profileRef(toUid));
   if (!destSnap.exists) throw new GameError("Alvo não encontrado.");
   const dest = profileFromDoc(toUid, destSnap.data() as DocumentData);
-  if (payout.settled) writeAlliancePayout(tx, payout.rows, requestId, player.uid);
-  if (a.sittingOut || !a.foeId) {
-    tx.set(paired.queueRef, { waiting: paired.waiting, day: win.key }, { merge: true });
-    tx.set(aref, {
-      warDay: a.warDay,
-      foeId: a.foeId,
-      foeName: a.foeName,
-      ourPoints: a.ourPoints,
-      theirPoints: a.theirPoints,
-      participants: a.participants,
-      sittingOut: a.sittingOut,
-      resolved: a.resolved,
-      xp: a.xp,
-      level: a.level,
-    }, { merge: true });
-    const waitingProfile: Profile = { ...baseProfile, alliance: allianceStateOf(a), war: warFromAlliance(a) };
-    commitPrepared(tx, player.uid, waitingProfile, requestId, [...prep.ledger, ...extraLedger], prep.creditRefs);
-    return { save: withoutMeta(waitingProfile), toast: "À espera de um rival para a guerra de hoje. Tenta de novo em instantes." };
-  }
   if (dest.alliance?.id !== a.foeId) throw new GameError("Este senhor não está na aliança rival.");
   const used = baseProfile.war?.attacks[dest.player.id] ?? 0;
   if (used >= 2) throw new GameError("No máximo 2 duelos por rival neste dia.");
@@ -1909,28 +1981,6 @@ async function startAllianceDuelAction(
     attacks: { ...(baseProfile.war?.attacks ?? {}), [dest.player.id]: used + 1 },
   };
   const profile: Profile = { ...baseProfile, alliance: allianceStateOf(a), war };
-  tx.set(paired.queueRef, { waiting: paired.waiting, day: win.key }, { merge: true });
-  tx.set(aref, {
-    warDay: a.warDay,
-    foeId: a.foeId,
-    foeName: a.foeName,
-    ourPoints: a.ourPoints,
-    theirPoints: a.theirPoints,
-    participants: a.participants,
-    sittingOut: false,
-    resolved: false,
-    xp: a.xp,
-    level: a.level,
-  }, { merge: true });
-  if (paired.foe) {
-    tx.set(allianceRef(paired.foe.id), {
-      warDay: win.key,
-      foeId: a.id,
-      foeName: a.name,
-      sittingOut: false,
-      resolved: false,
-    }, { merge: true });
-  }
   commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...extraLedger], prep.creditRefs);
   tx.set(col("condado_raid_sessions").doc(sessionId), {
     kind: "alliance",

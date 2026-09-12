@@ -165,6 +165,16 @@ export interface WarState {
   participants: string[];
 }
 
+export interface AllianceRival {
+  id: string;
+  name: string;
+  level: number;
+  members: number;
+  slots: number;
+  atWar: boolean;
+  foeName: string;
+}
+
 export interface SaveState {
   version: number;
   player: PlayerProfile;

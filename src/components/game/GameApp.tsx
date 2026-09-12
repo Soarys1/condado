@@ -27,6 +27,7 @@ import {
 import {
   ALLIANCE_FOUND_NIENS,
   ALLIANCE_WAR_CHEST,
+  allianceAtWarToday,
   allianceSlots,
   BREAD_PACK,
   BREAD_PACK_BUY_GOLD,
@@ -83,7 +84,7 @@ import {
   type Tradable,
   type TroopType,
 } from "@/lib/game/constants";
-import { lordsOfAlliance } from "@/lib/game/bots";
+import { ALLIANCES, lordsOfAlliance } from "@/lib/game/bots";
 import { battle, raidTarget, useGame } from "@/lib/game/store";
 import { flushCloud, persist, wipeSave } from "@/lib/game/save";
 import { createRuntime } from "@/lib/game/render";
@@ -108,6 +109,7 @@ import {
   weeklyBoard,
   type RankRow,
 } from "@/lib/game/cloud";
+import type { AllianceRival } from "@/lib/game/types";
 
 export function GameApp() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1831,6 +1833,7 @@ function AllianceSheet() {
   const recruitAlliance = useGame((s) => s.recruitAlliance);
   const leaveAlliance = useGame((s) => s.leaveAlliance);
   const startAllianceDuel = useGame((s) => s.startAllianceDuel);
+  const declareWar = useGame((s) => s.declareWar);
   const allianceChat = useGame((s) => s.allianceChat);
   const war = useGame((s) => s.war);
   const niens = useGame((s) => s.niens);
@@ -1842,33 +1845,55 @@ function AllianceSheet() {
   const [name, setName] = useState("");
   const [openJoin, setOpenJoin] = useState(true);
   const [text, setText] = useState("");
+  const [tab, setTab] = useState<"hall" | "war" | "chat">("hall");
   const [foes, setFoes] = useState<typeof raidTargets>([]);
+  const [rivals, setRivals] = useState<AllianceRival[]>([]);
+  const chatEnd = useRef<HTMLDivElement>(null);
   const win = warWindow();
+  const atWar = !!(war && allianceAtWarToday(war));
   useEffect(() => {
     if (!alliance) return;
-    void playAction("listAllianceFoes")
-      .then((r) => {
-        if (r.foes) setFoes(r.foes);
-        if (r.save) {
-          useGame.setState({
-            alliance: r.save.alliance ?? alliance,
-            war: r.save.war ?? war,
-            allianceChat: r.save.allianceChat?.length ? r.save.allianceChat : allianceChat,
-          });
-        }
-      })
-      .catch(() => {
-        /* offline */
-      });
-  }, [alliance?.id]);
+    let stop = false;
+    const pull = () => {
+      void playAction("listAllianceHall")
+        .catch(() => playAction("listAllianceFoes"))
+        .then((r) => {
+          if (stop) return;
+          if (r.foes) setFoes(r.foes);
+          if (r.rivals) setRivals(r.rivals);
+          if (r.save) {
+            const cur = useGame.getState();
+            useGame.setState({
+              alliance: r.save.alliance ?? cur.alliance,
+              war: r.save.war ?? cur.war,
+              allianceChat: r.save.allianceChat ?? cur.allianceChat,
+            });
+          }
+        })
+        .catch(() => {
+          /* offline */
+        });
+    };
+    pull();
+    const id = window.setInterval(pull, 3500);
+    return () => {
+      stop = true;
+      window.clearInterval(id);
+    };
+  }, [alliance?.id, war?.foeId]);
+  useEffect(() => {
+    if (tab !== "chat") return;
+    chatEnd.current?.scrollIntoView({ block: "end" });
+  }, [tab, allianceChat.length]);
   if (!alliance) {
     return (
       <div className="space-y-3">
         <p className="text-sm text-parchment-dim">
           Fundar custa {ALLIANCE_FOUND_NIENS} Niens. Escolhe se quem chega entra livre ou precisa de
           pedido — o pedido fica no chat da aliança até o líder aceitar ou recusar. Guerra dura 1
-          dia: duelos no campo, 3 pontos na vitória, 1 na derrota. A aliança com mais pontos leva{" "}
-          {formatRes(ALLIANCE_WAR_CHEST)} {GOLD_NAME_PL} repartidos pelos que lutaram.
+          dia: o líder escolhe o rival na aba Guerra. Duelos no campo, 3 pontos na vitória, 1 na
+          derrota. A aliança com mais pontos leva {formatRes(ALLIANCE_WAR_CHEST)} {GOLD_NAME_PL}{" "}
+          repartidos pelos que lutaram. Quem já está em guerra não pode ser chamado.
         </p>
         <input
           value={name}
@@ -1904,141 +1929,234 @@ function AllianceSheet() {
   }
   const slots = alliance.slots || allianceSlots(alliance.level || 1);
   const leader = alliance.leaderId === player.id;
+  const pending = (alliance.joinRequests ?? []).length;
+  const live = Boolean(auth.currentUser);
+  const shownRivals: AllianceRival[] = live
+    ? rivals
+    : ALLIANCES.filter((a) => a.id !== alliance.id).map((a) => ({
+        id: a.id,
+        name: a.name,
+        level: 1,
+        members: a.members.length,
+        slots: 30,
+        atWar: false,
+        foeName: "",
+      }));
+  const shownFoes = live ? foes : war?.foeId ? lordsOfAlliance(war.foeId) : [];
+  const tabBtn = (id: typeof tab, label: string, badge?: number) => (
+    <button
+      key={id}
+      type="button"
+      onClick={() => setTab(id)}
+      className={`h-11 rounded-md border text-sm ${tab === id ? "border-niens bg-ink-2 text-parchment" : "border-line text-parchment-dim"}`}
+    >
+      {label}
+      {badge ? <span className="ml-1 text-niens">{badge}</span> : null}
+    </button>
+  );
   return (
-    <div className="space-y-3">
+    <div className="flex h-[56dvh] flex-col md:h-[calc(100dvh-8rem)]">
       <p className="font-display">{alliance.name}</p>
-      <p className="text-xs text-parchment-dim">
+      <p className="mb-2 text-xs text-parchment-dim">
         Nv.{alliance.level || 1} · {alliance.xp ?? 0} XP · {alliance.members.length}/{slots} vagas ·{" "}
         {alliance.openJoin ? "entrada livre" : "entrada com pedido"}
       </p>
-      <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border border-line bg-ink-2 p-2">
-        {alliance.members.map((m) => (
-          <div key={m.id} className="flex items-center justify-between px-2 py-1 text-sm">
-            <span>{m.nick}</span>
-            {m.id === alliance.leaderId ? (
-              <span className="text-[0.65rem] uppercase tracking-[0.16em] text-niens">Líder</span>
-            ) : (
-              <span className="text-[0.65rem] text-parchment-dim">Membro</span>
-            )}
-          </div>
-        ))}
+      <div className="mb-3 grid grid-cols-3 gap-2">
+        {tabBtn("hall", "Aliança")}
+        {tabBtn("war", "Guerra")}
+        {tabBtn("chat", "Chat", pending)}
       </div>
-      {war && (
-        <div className="rounded-md border border-line bg-ink-2 p-3 text-sm">
-          {war.sittingOut ? (
-            <p>À espera de um rival neste dia de guerra.</p>
+      {tab === "hall" && (
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
+          <div className="max-h-48 space-y-1 overflow-y-auto rounded-md border border-line bg-ink-2 p-2">
+            {alliance.members.map((m) => (
+              <div key={m.id} className="flex items-center justify-between px-2 py-1 text-sm">
+                <span>{m.nick}</span>
+                {m.id === alliance.leaderId ? (
+                  <span className="text-[0.65rem] uppercase tracking-[0.16em] text-niens">Líder</span>
+                ) : (
+                  <span className="text-[0.65rem] text-parchment-dim">Membro</span>
+                )}
+              </div>
+            ))}
+          </div>
+          {leader && (
+            <button
+              type="button"
+              onClick={recruitAlliance}
+              className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm"
+            >
+              Recrutar no chat global
+            </button>
+          )}
+          <button type="button" onClick={leaveAlliance} className="h-11 w-full rounded-md border border-line text-sm">
+            Sair da aliança
+          </button>
+          <p className="text-xs text-parchment-dim">
+            Teu condado Nv.{countyLevel}. XP de guerra: 1000 por vitória. Nv.2 pede 4000 XP, depois dobra até 7.
+          </p>
+        </div>
+      )}
+      {tab === "war" && (
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
+          {atWar ? (
+            <>
+              <div className="rounded-md border border-line bg-ink-2 p-3 text-sm">
+                <p>
+                  Guerra vs {war?.foeName} {win.open ? "aberta" : "encerrada"}
+                </p>
+                <p className="text-parchment-dim">
+                  Nós {war?.ourStars ?? 0} · Eles {war?.theirStars ?? 0} · Cofre{" "}
+                  {formatRes(war?.chest || ALLIANCE_WAR_CHEST)}
+                </p>
+                <p className="mt-1 text-xs text-parchment-dim">
+                  Duelo no campo. Máx. 2 por rival. Recuar dá 1 ponto ao inimigo. A aliança não pode
+                  entrar noutra guerra enquanto esta durar.
+                </p>
+              </div>
+              {shownFoes.length > 0 ? (
+                <div className="space-y-2">
+                  <p className="text-xs uppercase tracking-[0.18em] text-parchment-dim">Campo de guerra</p>
+                  {shownFoes.map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => startAllianceDuel(f)}
+                      className="flex h-11 w-full items-center justify-between rounded-md border border-line bg-ink-2 px-3 text-sm"
+                    >
+                      <span>{f.nick}</span>
+                      <span className="text-xs text-parchment-dim">Duelar</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-parchment-dim">A carregar os senhores do rival…</p>
+              )}
+            </>
           ) : (
             <>
-              <p>
-                Guerra vs {war.foeName} {win.open ? "aberta" : "encerrada"}
+              <p className="text-sm text-parchment-dim">
+                {leader
+                  ? "Escolhe a aliança inimiga para começar a guerra de hoje. Quem já luta com outra não pode ser chamada."
+                  : "Só o líder declara a guerra. Pede-lhe para escolher o rival nesta aba."}
               </p>
-              <p className="text-parchment-dim">
-                Nós {war.ourStars} · Eles {war.theirStars} · Cofre {formatRes(war.chest || ALLIANCE_WAR_CHEST)}
-              </p>
-              <p className="text-xs text-parchment-dim">Duelo no campo. Máx. 2 por rival. Recuar dá 1 ponto ao inimigo.</p>
+              {shownRivals.length === 0 && (
+                <p className="text-sm text-parchment-dim">Não há outras alianças ainda.</p>
+              )}
+              {shownRivals.map((r) => {
+                const busy = r.atWar;
+                const canCall = leader && !busy;
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    disabled={!canCall}
+                    onClick={() => canCall && declareWar(r.id)}
+                    className={`flex min-h-11 w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm ${
+                      busy ? "border-line bg-ink-2 text-parchment-dim" : "border-line bg-ink-2"
+                    } disabled:opacity-70`}
+                  >
+                    <span>
+                      <span className="block">{r.name}</span>
+                      <span className="text-xs text-parchment-dim">
+                        Nv.{r.level} · {r.members}/{r.slots} senhores
+                        {busy ? ` · em guerra vs ${r.foeName || "outra"}` : ""}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-xs text-parchment-dim">
+                      {busy ? "Ocupada" : leader ? "Declarar" : "Líder"}
+                    </span>
+                  </button>
+                );
+              })}
             </>
           )}
         </div>
       )}
-      {foes.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-xs uppercase tracking-[0.18em] text-parchment-dim">Campo de guerra</p>
-          {foes.map((f) => (
-            <button
-              key={f.id}
-              type="button"
-              onClick={() => startAllianceDuel(f)}
-              className="flex h-11 w-full items-center justify-between rounded-md border border-line bg-ink-2 px-3 text-sm"
-            >
-              <span>{f.nick}</span>
-              <span className="text-xs text-parchment-dim">Duelar</span>
+      {tab === "chat" && (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+            {allianceChat.length === 0 && pending === 0 && (
+              <p className="text-sm text-parchment-dim">Ainda não há mensagens. Escreve a primeira.</p>
+            )}
+            {allianceChat.map((m) => (
+              <div key={m.id} className={`rounded-md px-3 py-2 ${m.self ? "bg-moss/20 ml-6" : "bg-ink-2 mr-4"}`}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <p className="font-display text-[0.7rem] text-niens">{m.fromNick}</p>
+                  <p className="text-[0.65rem] tabular text-parchment-dim">
+                    {new Date(m.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                  </p>
+                </div>
+                <p className="text-sm leading-snug">{m.text}</p>
+                {leader && m.joinRequestId && (alliance.joinRequests ?? []).some((r) => r.id === m.joinRequestId) && (
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => acceptJoin(m.joinRequestId!)}
+                      className="h-10 rounded-md bg-parchment font-display text-xs text-ink"
+                    >
+                      Aceitar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => rejectJoin(m.joinRequestId!)}
+                      className="h-10 rounded-md border border-line text-xs"
+                    >
+                      Recusar
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+            {(alliance.joinRequests ?? [])
+              .filter((r) => !allianceChat.some((m) => m.joinRequestId === r.id))
+              .map((r) => (
+                <div key={r.id} className="rounded-md bg-ink-2 px-3 py-2">
+                  <p className="font-display text-[0.7rem] text-niens">{r.nick}</p>
+                  <p className="text-sm">{r.nick} pede para entrar.</p>
+                  {leader && (
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => acceptJoin(r.id)}
+                        className="h-10 rounded-md bg-parchment font-display text-xs text-ink"
+                      >
+                        Aceitar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => rejectJoin(r.id)}
+                        className="h-10 rounded-md border border-line text-xs"
+                      >
+                        Recusar
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            <div ref={chatEnd} />
+          </div>
+          <form
+            className="mt-3 flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              sendAllianceChat(text);
+              setText("");
+            }}
+          >
+            <input
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              className="h-11 flex-1 rounded-md border border-line bg-ink px-3 text-sm outline-none"
+              placeholder="Chat da aliança — só os membros vêem"
+              maxLength={160}
+            />
+            <button type="submit" className="h-11 rounded-md bg-parchment px-4 font-display text-sm text-ink">
+              Enviar
             </button>
-          ))}
+          </form>
         </div>
       )}
-      <div className="max-h-48 space-y-2 overflow-y-auto">
-        {allianceChat.map((m) => (
-          <div key={m.id} className={`rounded-md px-3 py-2 ${m.self ? "bg-moss/20" : "bg-ink-2"}`}>
-            <p className="font-display text-[0.7rem] text-niens">{m.fromNick}</p>
-            <p className="text-sm">{m.text}</p>
-            {leader && m.joinRequestId && (alliance.joinRequests ?? []).some((r) => r.id === m.joinRequestId) && (
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => acceptJoin(m.joinRequestId!)}
-                  className="h-10 rounded-md bg-parchment font-display text-xs text-ink"
-                >
-                  Aceitar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => rejectJoin(m.joinRequestId!)}
-                  className="h-10 rounded-md border border-line text-xs"
-                >
-                  Recusar
-                </button>
-              </div>
-            )}
-          </div>
-        ))}
-        {(alliance.joinRequests ?? []).filter((r) => !allianceChat.some((m) => m.joinRequestId === r.id)).map((r) => (
-          <div key={r.id} className="rounded-md bg-ink-2 px-3 py-2">
-            <p className="font-display text-[0.7rem] text-niens">{r.nick}</p>
-            <p className="text-sm">{r.nick} pede para entrar.</p>
-            {leader && (
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => acceptJoin(r.id)}
-                  className="h-10 rounded-md bg-parchment font-display text-xs text-ink"
-                >
-                  Aceitar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => rejectJoin(r.id)}
-                  className="h-10 rounded-md border border-line text-xs"
-                >
-                  Recusar
-                </button>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-      <form
-        className="flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          sendAllianceChat(text);
-          setText("");
-        }}
-      >
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          className="h-11 flex-1 rounded-md border border-line bg-ink px-3 text-sm"
-          placeholder="Chat da aliança"
-        />
-        <button type="submit" className="h-11 rounded-md bg-parchment px-3 font-display text-sm text-ink">
-          Enviar
-        </button>
-      </form>
-      {leader && (
-        <button
-          type="button"
-          onClick={recruitAlliance}
-          className="h-11 w-full rounded-md border border-niens/40 bg-ink-2 text-sm"
-        >
-          Recrutar no chat global
-        </button>
-      )}
-      <button type="button" onClick={leaveAlliance} className="h-11 w-full rounded-md border border-line text-sm">
-        Sair da aliança
-      </button>
-      <p className="text-xs text-parchment-dim">
-        Teu condado Nv.{countyLevel}. XP de guerra: 1000 por vitória. Nv.2 pede 4000 XP, depois dobra até 7.
-      </p>
     </div>
   );
 }

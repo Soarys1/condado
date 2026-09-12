@@ -18,7 +18,7 @@ import {
   upgradeCountySim,
   settle,
 } from "./sim";
-import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT, trainCostFor, ALLIANCE_FOUND_NIENS } from "./constants";
+import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT, trainCostFor, ALLIANCE_FOUND_NIENS, allianceAtWarToday, warWindow } from "./constants";
 
 describe("economia pura", () => {
   it("recolha de mina usa timestamp, não tick", () => {
@@ -157,6 +157,15 @@ describe("economia pura", () => {
     assert.equal(r.save.niens, 0);
     assert.equal(r.save.alliance?.openJoin, false);
     assert.equal(r.save.alliance?.members.length, 1);
+  });
+
+  it("aliança em guerra não pode ser chamada para outra", () => {
+    const win = warWindow();
+    assert.equal(allianceAtWarToday({ warDay: win.key, foeId: "AL-X", sittingOut: false, resolved: false }), true);
+    assert.equal(allianceAtWarToday({ week: win.key, foeId: "AL-X", sittingOut: false, resolved: false }), true);
+    assert.equal(allianceAtWarToday({ warDay: win.key, foeId: null, sittingOut: true, resolved: false }), false);
+    assert.equal(allianceAtWarToday({ warDay: win.key, foeId: "AL-X", sittingOut: false, resolved: true }), false);
+    assert.equal(allianceAtWarToday({ warDay: "1999-01-01", foeId: "AL-X", sittingOut: false, resolved: false }), false);
   });
 
   it("débito recusa saldo negativo", () => {
