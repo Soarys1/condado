@@ -13,11 +13,12 @@ import {
   spendForTransfer,
   storedAmount,
   trainTroop,
+  foundAllianceSim,
   upgradeBuilding,
   upgradeCountySim,
   settle,
 } from "./sim";
-import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT } from "./constants";
+import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT, trainCostFor, ALLIANCE_FOUND_NIENS } from "./constants";
 
 describe("economia pura", () => {
   it("recolha de mina usa timestamp, não tick", () => {
@@ -114,6 +115,48 @@ describe("economia pura", () => {
     assert.equal(r.save.army.infantry, 10 - 6 + 6);
     assert.equal(r.save.army.archers, 4);
     assert.equal(r.save.army.general, 0);
+  });
+
+  it("tropas mortas não voltam ao condado", () => {
+    const save = defaultSave("Teste");
+    save.army = { infantry: 10, archers: 4, cavalry: 2, general: 0, generaless: 0, defender: 0 };
+    const started = { ...save.army };
+    const r = applyRaidFinish(save, {
+      stars: 1,
+      survivors: { infantry: 3, archers: 1, cavalry: 0, general: 0, generaless: 0, defender: 0 },
+      startedArmy: started,
+      goldTaken: 0,
+      defenderNick: "Alvo",
+    });
+    assert.equal(r.save.army.infantry, 3);
+    assert.equal(r.save.army.archers, 1);
+    assert.equal(r.save.army.cavalry, 0);
+  });
+
+  it("custo de recruta dobra a cada nível", () => {
+    assert.equal(trainCostFor("cavalry", 1).amount, 150);
+    assert.equal(trainCostFor("cavalry", 3).amount, 600);
+    assert.equal(trainCostFor("infantry", 3).amount, 200);
+    assert.equal(trainCostFor("archers", 3).amount, 120);
+    assert.equal(trainCostFor("general", 3).amount, 4000);
+    assert.equal(trainCostFor("generaless", 3).amount, 3600);
+    const save = defaultSave("Teste");
+    save.buildings.push({ id: "b-bar", type: "barracks", gx: 8, gy: 8, level: 1 });
+    save.troopLevels.cavalry = 3;
+    save.bread = 600;
+    const r = trainTroop(save, "cavalry", 1);
+    assert.equal(r.save.bread, 0);
+  });
+
+  it("fundar aliança custa 5 Niens", () => {
+    const save = defaultSave("Teste");
+    save.niens = 4;
+    assert.throws(() => foundAllianceSim(save, "Lobos"), GameError);
+    save.niens = ALLIANCE_FOUND_NIENS;
+    const r = foundAllianceSim(save, "Lobos", false);
+    assert.equal(r.save.niens, 0);
+    assert.equal(r.save.alliance?.openJoin, false);
+    assert.equal(r.save.alliance?.members.length, 1);
   });
 
   it("débito recusa saldo negativo", () => {
@@ -241,6 +284,8 @@ describe("economia pura", () => {
       xp: 0,
       leaderId: save.player.id,
       slots: 30,
+      openJoin: true,
+      joinRequests: [],
     };
     save.war = {
       week: "2000-01-01",

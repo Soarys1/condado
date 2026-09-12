@@ -56,6 +56,15 @@ export interface ChatMsg {
   channel?: "global" | "alliance";
   recruitAllianceId?: string;
   recruitMinLevel?: number;
+  joinRequestId?: string;
+}
+
+export interface AllianceJoinRequest {
+  id: string;
+  playerId: string;
+  nick: string;
+  uid?: string;
+  at: number;
 }
 
 export interface RaidLog {
@@ -139,6 +148,8 @@ export interface AllianceState {
   xp: number;
   leaderId: string;
   slots: number;
+  openJoin: boolean;
+  joinRequests: AllianceJoinRequest[];
 }
 
 export interface WarState {

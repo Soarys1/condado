@@ -31,6 +31,7 @@ export const LOOT_PER_COUNTY = 0.05;
 
 export const SHIELD_MS = 60 * 60 * 1000;
 export const REFERRAL_GOLD = 300_000;
+export const ALLIANCE_FOUND_NIENS = 5;
 export const ALLIANCE_FOUND_GOLD = 5_000_000;
 export const DEFENDER_COST = 5_000;
 export const PASS_LEVELS = 50;
@@ -395,6 +396,13 @@ export function armyCapacity(campCount: number): number {
 
 export function isHero(type: TroopType): boolean {
   return type === "general" || type === "generaless";
+}
+
+export function trainCostFor(type: TroopType, level: number): { kind: "bread" | "gold"; amount: number } {
+  const lv = Math.max(1, Math.floor(level || 1));
+  const mul = 2 ** (lv - 1);
+  if (type === "defender") return { kind: "gold", amount: DEFENDER_COST * mul };
+  return { kind: "bread", amount: TROOPS[type].costBread * mul };
 }
 
 export function troopAsset(type: TroopType): "infantry" | "archer" | "cavalry" | "general" | "generaless" | "defender" {

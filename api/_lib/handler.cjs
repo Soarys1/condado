@@ -126,7 +126,6 @@ const LOOT_BANDS = [
 const LOOT_CAP = 8400;
 const SHIELD_MS = 36e5;
 const REFERRAL_GOLD = 3e5;
-const ALLIANCE_FOUND_GOLD = 5e6;
 const DEFENDER_COST = 5e3;
 const PASS_BOOST_MULT = 1.4;
 const PASS_BOOST_MS = 2592e6;
@@ -381,6 +380,17 @@ function armyCapacity(campCount) {
 }
 function isHero(type) {
 	return type === "general" || type === "generaless";
+}
+function trainCostFor(type, level) {
+	const mul = 2 ** (Math.max(1, Math.floor(level || 1)) - 1);
+	if (type === "defender") return {
+		kind: "gold",
+		amount: DEFENDER_COST * mul
+	};
+	return {
+		kind: "bread",
+		amount: TROOPS[type].costBread * mul
+	};
 }
 function troopCardsFor(nextLevel) {
 	if (nextLevel < 2) return 0;
@@ -1103,7 +1113,15 @@ function migrate(s) {
 		level: Math.max(1, Number(s.alliance.level ?? 1)),
 		xp: Math.max(0, Number(s.alliance.xp ?? 0)),
 		leaderId: String(s.alliance.leaderId ?? s.player?.id ?? ""),
-		slots: Math.max(30, Number(s.alliance.slots ?? 30))
+		slots: Math.max(30, Number(s.alliance.slots ?? 30)),
+		openJoin: s.alliance.openJoin !== false,
+		joinRequests: Array.isArray(s.alliance.joinRequests) ? s.alliance.joinRequests.map((r) => ({
+			id: String(r.id),
+			playerId: String(r.playerId),
+			nick: String(r.nick ?? "Senhor"),
+			uid: r.uid ? String(r.uid) : void 0,
+			at: Number(r.at ?? 0)
+		})) : []
 	} : null;
 	const war = s.war ? {
 		week: String(s.war.week ?? ""),
@@ -1583,7 +1601,7 @@ function trainTroop(s, type, qtyRaw = 1) {
 		const campRoom = armyCapacity(countType(s.buildings, "camp")) - armySize(s);
 		qty = Math.min(qty, campRoom);
 		if (qty < 1) throw new GameError("Acampamento lotado. Construa outro.");
-		const cost = DEFENDER_COST * qty;
+		const cost = trainCostFor(type, s.troopLevels[type] ?? 1).amount * qty;
 		if (s.gold < cost) throw new GameError(`Faltam ${GOLD_NAME_PL}.`);
 		pushLedger(ledger, s, "train", "gold", -cost, type);
 		return {
@@ -1599,7 +1617,7 @@ function trainTroop(s, type, qtyRaw = 1) {
 	const room = armyCapacity(countType(s.buildings, "camp")) - armySize(s);
 	qty = Math.min(qty, room);
 	if (qty < 1) throw new GameError("Acampamento lotado. Construa outro.");
-	const cost = def.costBread * qty;
+	const cost = trainCostFor(type, s.troopLevels[type] ?? 1).amount * qty;
 	if (s.bread < cost) throw new GameError("Pão insuficiente.");
 	pushLedger(ledger, s, "train", "bread", -cost, type);
 	return {
@@ -2227,6 +2245,14 @@ const RATE = {
 		n: 6,
 		windowMs: 6e4
 	},
+	acceptJoin: {
+		n: 12,
+		windowMs: 6e4
+	},
+	rejectJoin: {
+		n: 12,
+		windowMs: 6e4
+	},
 	startAllianceDuel: {
 		n: 6,
 		windowMs: 6e4
@@ -2556,6 +2582,8 @@ async function dispatch(tx, player, action, payload, requestId) {
 		case "joinAlliance": return joinAllianceAction(write(), player, String(payload.allianceId ?? ""), requestId);
 		case "leaveAlliance": return leaveAllianceAction(write(), player, requestId);
 		case "recruitAlliance": return recruitAllianceAction(write(), player, requestId);
+		case "acceptJoin": return acceptJoinAction(write(), player, String(payload.requestId ?? ""), requestId);
+		case "rejectJoin": return rejectJoinAction(write(), player, String(payload.requestId ?? ""), requestId);
 		case "listAllianceFoes": return listAllianceFoesAction(player);
 		case "startAllianceDuel": return startAllianceDuelAction(write(), player, String(payload.targetId ?? ""), requestId);
 		case "finishAllianceDuel": return finishAllianceDuelAction(write(), player, payload, requestId);
@@ -3363,7 +3391,7 @@ function allianceFromDoc(id, data) {
 		name: String(data.name ?? "Aliança"),
 		leaderId: String(data.leaderId ?? ""),
 		leaderUid: String(data.leaderUid ?? ""),
-		minLevel: Number(data.minLevel ?? 3) === 5 ? 5 : 3,
+		minLevel: Math.max(1, Number(data.minLevel ?? 1)),
 		level: Math.max(1, Number(data.level ?? 1)),
 		xp: Math.max(0, Number(data.xp ?? 0)),
 		members: Array.isArray(data.members) ? data.members.map((m) => ({
@@ -3379,7 +3407,15 @@ function allianceFromDoc(id, data) {
 		theirPoints: Number(data.theirPoints ?? 0),
 		participants: Array.isArray(data.participants) ? data.participants.map(String) : [],
 		sittingOut: !!data.sittingOut,
-		resolved: !!data.resolved
+		resolved: !!data.resolved,
+		openJoin: data.openJoin !== false,
+		joinRequests: Array.isArray(data.joinRequests) ? data.joinRequests.map((r) => ({
+			id: String(r.id ?? ""),
+			playerId: String(r.playerId ?? ""),
+			nick: String(r.nick ?? "Senhor"),
+			uid: r.uid ? String(r.uid) : void 0,
+			at: Number(r.at ?? 0)
+		})) : []
 	};
 }
 function allianceStateOf(a) {
@@ -3395,8 +3431,23 @@ function allianceStateOf(a) {
 		level: a.level,
 		xp: a.xp,
 		leaderId: a.leaderId,
-		slots: allianceSlots(a.level)
+		slots: allianceSlots(a.level),
+		openJoin: a.openJoin,
+		joinRequests: a.joinRequests
 	};
+}
+function trimAllianceChat(chat, requests) {
+	const pending = new Set(requests.map((r) => r.id));
+	const sticky = chat.filter((m) => m.joinRequestId && pending.has(m.joinRequestId));
+	const rest = chat.filter((m) => !(m.joinRequestId && pending.has(m.joinRequestId))).slice(-40);
+	const seen = new Set(sticky.map((m) => m.id));
+	const out = [...sticky];
+	for (const m of rest) {
+		if (seen.has(m.id)) continue;
+		out.push(m);
+		seen.add(m.id);
+	}
+	return out.sort((a, b) => a.at - b.at);
 }
 function warFromAlliance(a) {
 	return {
@@ -3479,10 +3530,10 @@ function writeAlliancePayout(tx, rows, requestId, exceptUid) {
 async function foundAllianceAction(tx, player, payload, requestId) {
 	const name = String(payload.name ?? "").trim().replace(/\s+/g, " ").slice(0, 22);
 	if (name.length < 3) throw new GameError("O nome da aliança precisa de ao menos 3 letras.");
-	const minLevel = Number(payload.minLevel) === 5 ? 5 : 3;
+	const openJoin = payload.openJoin !== false;
 	const prep = await preparePlayer(tx, player.uid);
 	if (prep.profile.alliance) throw new GameError("Já tens aliança.");
-	if (prep.profile.gold < 5e6) throw new GameError(`Precisa de 5.000.000 de Libras.`);
+	if (prep.profile.niens < 5) throw new GameError(`Precisa de 5 Niens.`);
 	const nameRef = col("condado_alliance_names").doc(name.toLowerCase());
 	if ((await tx.get(nameRef)).exists) throw new GameError("Este nome de aliança já está em uso.");
 	const id = makeId("AL");
@@ -3497,7 +3548,7 @@ async function foundAllianceAction(tx, player, payload, requestId) {
 		name,
 		leaderId: prep.profile.player.id,
 		leaderUid: player.uid,
-		minLevel,
+		minLevel: 1,
 		level: 1,
 		xp: 0,
 		members: [member],
@@ -3509,21 +3560,23 @@ async function foundAllianceAction(tx, player, payload, requestId) {
 		theirPoints: 0,
 		participants: [],
 		sittingOut: false,
-		resolved: true
+		resolved: true,
+		openJoin,
+		joinRequests: []
 	};
-	const gold = prep.profile.gold - ALLIANCE_FOUND_GOLD;
+	const niens = prep.profile.niens - 5;
 	const profile = {
 		...prep.profile,
-		gold,
+		niens,
 		alliance: allianceStateOf(doc),
 		allianceChat: []
 	};
 	const ledger = [{
 		type: "found_alliance",
-		currency: "gold",
-		amount: -5e6,
-		balanceBefore: prep.profile.gold,
-		balanceAfter: gold,
+		currency: "niens",
+		amount: -5,
+		balanceBefore: prep.profile.niens,
+		balanceAfter: niens,
 		source: id
 	}];
 	commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...ledger], prep.creditRefs);
@@ -3537,7 +3590,7 @@ async function foundAllianceAction(tx, player, payload, requestId) {
 	});
 	return {
 		save: withoutMeta(profile),
-		toast: `Aliança ${name} fundada. Entrada a partir do condado ${minLevel}.`
+		toast: openJoin ? `Aliança ${name} fundada. Entrada livre.` : `Aliança ${name} fundada. Pedidos no chat da aliança.`
 	};
 }
 async function joinAllianceAction(tx, player, allianceIdRaw, requestId) {
@@ -3549,9 +3602,35 @@ async function joinAllianceAction(tx, player, allianceIdRaw, requestId) {
 	const asnap = await tx.get(aref);
 	if (!asnap.exists) throw new GameError("Aliança não encontrada.");
 	const a = allianceFromDoc(allianceId, asnap.data());
-	if (prep.profile.countyLevel < a.minLevel) throw new GameError(`Esta aliança pede condado nível ${a.minLevel}.`);
 	if (a.members.length >= allianceSlots(a.level)) throw new GameError("Aliança lotada.");
 	if (a.members.some((m) => m.id === prep.profile.player.id)) throw new GameError("Já estás nesta aliança.");
+	if (!a.openJoin) {
+		if (a.joinRequests.some((r) => r.playerId === prep.profile.player.id || r.uid === player.uid)) throw new GameError("Pedido já enviado. Espera o líder no chat da aliança.");
+		const req = {
+			id: makeId("JR"),
+			playerId: prep.profile.player.id,
+			nick: prep.profile.player.nick,
+			uid: player.uid,
+			at: Date.now()
+		};
+		const msg = {
+			id: makeId("m"),
+			fromId: prep.profile.player.id,
+			fromNick: prep.profile.player.nick,
+			text: `${prep.profile.player.nick} pede para entrar.`,
+			at: req.at,
+			channel: "alliance",
+			joinRequestId: req.id
+		};
+		a.joinRequests = [...a.joinRequests, req];
+		a.chat = trimAllianceChat([...a.chat, msg], a.joinRequests);
+		commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
+		tx.set(aref, {
+			joinRequests: a.joinRequests,
+			chat: a.chat
+		}, { merge: true });
+		return { toast: "Pedido enviado. O líder vê no chat da aliança até aceitar ou recusar." };
+	}
 	a.members.push({
 		id: prep.profile.player.id,
 		nick: prep.profile.player.nick,
@@ -3613,18 +3692,129 @@ async function recruitAllianceAction(tx, player, requestId) {
 		fromPlayerId: p.player.id,
 		fromId: p.player.id,
 		fromNick: p.player.nick,
-		text: `Recruta: ${p.alliance.name} · condado ${p.alliance.minLevel}+ · ${p.alliance.members.length}/${p.alliance.slots} vagas`,
+		text: p.alliance.openJoin ? `Recruta: ${p.alliance.name} · entrada livre · ${p.alliance.members.length}/${p.alliance.slots} vagas` : `Recruta: ${p.alliance.name} · pede aprovação · ${p.alliance.members.length}/${p.alliance.slots} vagas`,
 		at: now,
 		createdAt: new Date(now).toISOString(),
 		expiresAt: new Date(now + CHAT_TTL_MS).toISOString(),
 		channel: "global",
-		recruitAllianceId: p.alliance.id,
-		recruitMinLevel: p.alliance.minLevel
+		recruitAllianceId: p.alliance.id
 	});
 	writeLedger(tx, player.uid, p.player.id, requestId, []);
 	return {
 		save: withoutMeta(p),
 		toast: "Pedido de recrutamento no chat global."
+	};
+}
+async function acceptJoinAction(tx, player, requestIdRaw, requestId) {
+	const reqId = requestIdRaw.trim();
+	if (!reqId) throw new GameError("Pedido inválido.");
+	const prep = await preparePlayer(tx, player.uid);
+	if (!prep.profile.alliance) throw new GameError("Sem aliança.");
+	if (prep.profile.alliance.leaderId !== prep.profile.player.id) throw new GameError("Só o líder aceita pedidos.");
+	const aref = allianceRef(prep.profile.alliance.id);
+	const asnap = await tx.get(aref);
+	if (!asnap.exists) throw new GameError("Aliança não encontrada.");
+	const a = allianceFromDoc(asnap.id, asnap.data());
+	const req = a.joinRequests.find((r) => r.id === reqId);
+	if (!req) throw new GameError("Este pedido já foi resolvido.");
+	if (a.members.length >= allianceSlots(a.level)) throw new GameError("Aliança lotada.");
+	if (a.members.some((m) => m.id === req.playerId)) {
+		a.joinRequests = a.joinRequests.filter((r) => r.id !== reqId);
+		a.chat = trimAllianceChat(a.chat, a.joinRequests);
+		tx.set(aref, {
+			joinRequests: a.joinRequests,
+			chat: a.chat
+		}, { merge: true });
+		throw new GameError("Este senhor já está na aliança.");
+	}
+	const uid = String(req.uid ?? "");
+	if (!uid) throw new GameError("Pedido inválido.");
+	const joinerSnap = await tx.get(profileRef(uid));
+	if (!joinerSnap.exists) throw new GameError("Condado não encontrado.");
+	const joiner = profileFromDoc(uid, joinerSnap.data());
+	if (joiner.alliance) throw new GameError("Este senhor já tem aliança.");
+	a.members.push({
+		id: req.playerId,
+		nick: req.nick,
+		uid
+	});
+	a.joinRequests = a.joinRequests.filter((r) => r.id !== reqId);
+	const note = {
+		id: makeId("m"),
+		fromId: prep.profile.player.id,
+		fromNick: prep.profile.player.nick,
+		text: `${req.nick} foi aceite na aliança.`,
+		at: Date.now(),
+		channel: "alliance"
+	};
+	a.chat = trimAllianceChat([...a.chat.filter((m) => m.joinRequestId !== reqId), note], a.joinRequests);
+	const leader = {
+		...prep.profile,
+		alliance: allianceStateOf(a),
+		allianceChat: a.chat.map((m) => ({
+			...m,
+			self: m.fromId === prep.profile.player.id
+		}))
+	};
+	const guest = {
+		...joiner,
+		alliance: allianceStateOf(a),
+		allianceChat: a.chat.map((m) => ({
+			...m,
+			self: m.fromId === joiner.player.id
+		})),
+		war: warFromAlliance(a)
+	};
+	commitPrepared(tx, player.uid, leader, requestId, prep.ledger, prep.creditRefs);
+	writeProfile(tx, profileRef(uid), guest);
+	tx.set(aref, {
+		members: a.members,
+		joinRequests: a.joinRequests,
+		chat: a.chat
+	}, { merge: true });
+	return {
+		save: withoutMeta(leader),
+		toast: `${req.nick} entrou na aliança.`
+	};
+}
+async function rejectJoinAction(tx, player, requestIdRaw, requestId) {
+	const reqId = requestIdRaw.trim();
+	if (!reqId) throw new GameError("Pedido inválido.");
+	const prep = await preparePlayer(tx, player.uid);
+	if (!prep.profile.alliance) throw new GameError("Sem aliança.");
+	if (prep.profile.alliance.leaderId !== prep.profile.player.id) throw new GameError("Só o líder recusa pedidos.");
+	const aref = allianceRef(prep.profile.alliance.id);
+	const asnap = await tx.get(aref);
+	if (!asnap.exists) throw new GameError("Aliança não encontrada.");
+	const a = allianceFromDoc(asnap.id, asnap.data());
+	const req = a.joinRequests.find((r) => r.id === reqId);
+	if (!req) throw new GameError("Este pedido já foi resolvido.");
+	a.joinRequests = a.joinRequests.filter((r) => r.id !== reqId);
+	const note = {
+		id: makeId("m"),
+		fromId: prep.profile.player.id,
+		fromNick: prep.profile.player.nick,
+		text: `Pedido de ${req.nick} recusado.`,
+		at: Date.now(),
+		channel: "alliance"
+	};
+	a.chat = trimAllianceChat([...a.chat.filter((m) => m.joinRequestId !== reqId), note], a.joinRequests);
+	const profile = {
+		...prep.profile,
+		alliance: allianceStateOf(a),
+		allianceChat: a.chat.map((m) => ({
+			...m,
+			self: m.fromId === prep.profile.player.id
+		}))
+	};
+	commitPrepared(tx, player.uid, profile, requestId, prep.ledger, prep.creditRefs);
+	tx.set(aref, {
+		joinRequests: a.joinRequests,
+		chat: a.chat
+	}, { merge: true });
+	return {
+		save: withoutMeta(profile),
+		toast: `Pedido de ${req.nick} recusado.`
 	};
 }
 async function sendAlliance(tx, player, textRaw, requestId) {
@@ -3645,10 +3835,10 @@ async function sendAlliance(tx, player, textRaw, requestId) {
 		self: true,
 		channel: "alliance"
 	};
-	const chat = [...a.chat, {
+	const chat = trimAllianceChat([...a.chat, {
 		...msg,
 		self: false
-	}].slice(-40);
+	}], a.joinRequests);
 	const profile = {
 		...p,
 		allianceChat: [...p.allianceChat, msg].slice(-40),
@@ -3739,16 +3929,24 @@ async function listAllianceFoesAction(player) {
 	const aSnap = await allianceRef(me.alliance.id).get();
 	if (!aSnap.exists) return { foes: [] };
 	const a = allianceFromDoc(aSnap.id, aSnap.data());
+	const allianceSave = {
+		...withoutMeta(me),
+		alliance: allianceStateOf(a),
+		war: warFromAlliance(a),
+		allianceChat: a.chat.map((m) => ({
+			...m,
+			self: m.fromId === me.player.id
+		}))
+	};
 	if (!a.foeId || a.sittingOut) return {
 		foes: [],
-		save: {
-			...withoutMeta(me),
-			alliance: allianceStateOf(a),
-			war: warFromAlliance(a)
-		}
+		save: allianceSave
 	};
 	const foeSnap = await allianceRef(a.foeId).get();
-	if (!foeSnap.exists) return { foes: [] };
+	if (!foeSnap.exists) return {
+		foes: [],
+		save: allianceSave
+	};
 	const foe = allianceFromDoc(foeSnap.id, foeSnap.data());
 	const foes = [];
 	for (const m of foe.members) {
@@ -3769,12 +3967,7 @@ async function listAllianceFoesAction(player) {
 	}
 	return {
 		foes,
-		save: {
-			...withoutMeta(me),
-			alliance: allianceStateOf(a),
-			war: warFromAlliance(a),
-			allianceChat: a.chat
-		}
+		save: allianceSave
 	};
 }
 async function startAllianceDuelAction(tx, player, targetId, requestId) {

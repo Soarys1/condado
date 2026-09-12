@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import {
-  ALLIANCE_FOUND_GOLD,
+  ALLIANCE_FOUND_NIENS,
   ALLIANCE_WAR_CHEST,
   BREAD_PACK,
   BREAD_PACK_BUY_GOLD,
@@ -225,10 +225,12 @@ interface GameStore extends SaveState {
   buyPass: () => boolean;
   claimPass: (level: number) => boolean;
   claimPassAll: () => boolean;
-  foundAlliance: (name: string, minLevel?: number) => boolean;
+  foundAlliance: (name: string, openJoin?: boolean) => boolean;
   joinAlliance: (id: string) => boolean;
   leaveAlliance: () => void;
   recruitAlliance: () => void;
+  acceptJoin: (requestId: string) => void;
+  rejectJoin: (requestId: string) => void;
   startAllianceDuel: (lord: Lord) => void;
   claimPassFree: (level: number) => boolean;
   claimPassExtra: (extra: PassExtra) => boolean;
@@ -951,15 +953,17 @@ export const useGame = create<GameStore>((set, get) => ({
     if (!battle) return false;
     const s = get();
     const type = s.deployType;
-    const ok = battle.deploy(type, gx, gy);
-    if (!ok) {
+    const n = battle.deployAll(type, gx, gy);
+    if (n < 1) {
       if (battle.mode === "field") set({ toast: "Neste campo, coloca as tropas na borda oeste." });
       else if (!isEdgeTile(gx, gy)) set({ toast: "Posicione nas bordas douradas." });
       return false;
     }
-    const army = { ...s.army };
-    army[type] = Math.max(0, army[type] - 1);
-    set({ army, toast: `${TROOPS[type].name} em campo.` });
+    const army = { ...s.army, [type]: battle.remainingOf(type) };
+    set({
+      army,
+      toast: n === 1 ? `${TROOPS[type].name} em campo.` : `${n} ${TROOPS[type].name} em campo.`,
+    });
     return true;
   },
 
@@ -1001,15 +1005,7 @@ export const useGame = create<GameStore>((set, get) => ({
     if (get().screen === "results") return;
     const r = battle.result;
     const s = get();
-    const army = { ...s.army };
-    if (!battle.spectator) {
-      army.infantry += r.survivors.infantry;
-      army.archers += r.survivors.archers;
-      army.cavalry += r.survivors.cavalry;
-      army.general += r.survivors.general;
-      army.generaless += r.survivors.generaless;
-      army.defender += r.survivors.defender;
-    }
+    const army = battle.spectator ? s.army : battle.armyHome();
     const pass = {
       ...s.pass,
       stars: s.pass.stars + (battle.spectator || battle.mode === "field" ? 0 : r.stars),
@@ -1740,9 +1736,9 @@ export const useGame = create<GameStore>((set, get) => ({
     return true;
   },
 
-  foundAlliance: (name, minLevel = 3) => {
+  foundAlliance: (name, openJoin = true) => {
     if (isLive()) {
-      void liveAction("foundAlliance", { name, minLevel }).then(() => sfxStar()).catch(liveFail);
+      void liveAction("foundAlliance", { name, openJoin }).then(() => sfxStar()).catch(liveFail);
       return true;
     }
     const s = get();
@@ -1750,30 +1746,27 @@ export const useGame = create<GameStore>((set, get) => ({
       set({ toast: "Já tens aliança." });
       return false;
     }
-    if (s.gold < ALLIANCE_FOUND_GOLD) {
-      set({ toast: `Precisa de 5.000.000 de ${GOLD_NAME_PL}.` });
+    if (s.niens < ALLIANCE_FOUND_NIENS) {
+      set({ toast: `Precisa de ${ALLIANCE_FOUND_NIENS} Niens.` });
       sfxError();
       return false;
     }
-    const req = minLevel === 5 ? 5 : 3;
     const id = `AL-${s.player.id.slice(4, 8)}`;
     set({
-      gold: s.gold - ALLIANCE_FOUND_GOLD,
+      niens: s.niens - ALLIANCE_FOUND_NIENS,
       alliance: {
         id,
         name: name.trim().slice(0, 22) || "Aliança do Condado",
-        members: [
-          { id: s.player.id, nick: s.player.nick },
-          { id: "CDN-ALDRIC", nick: "Sir Aldric" },
-          { id: "CDN-ISOLDE", nick: "Dama Isolde" },
-        ],
-        minLevel: req,
+        members: [{ id: s.player.id, nick: s.player.nick }],
+        minLevel: 1,
         level: 1,
         xp: 0,
         leaderId: s.player.id,
         slots: allianceSlots(1),
+        openJoin,
+        joinRequests: [],
       },
-      toast: `Aliança fundada. Entrada a partir do condado ${req}.`,
+      toast: openJoin ? "Aliança fundada. Entrada livre." : "Aliança fundada. Quem entra precisa de pedido.",
     });
     persist({ ...get() });
     sfxStar();
@@ -1810,15 +1803,30 @@ export const useGame = create<GameStore>((set, get) => ({
       id: nid("m"),
       fromId: s.player.id,
       fromNick: s.player.nick,
-      text: `Recruta: ${s.alliance.name} · condado ${s.alliance.minLevel}+`,
+      text: s.alliance.openJoin
+        ? `Recruta: ${s.alliance.name} · entrada livre`
+        : `Recruta: ${s.alliance.name} · pede aprovação`,
       at: Date.now(),
       self: true,
       channel: "global" as const,
       recruitAllianceId: s.alliance.id,
-      recruitMinLevel: s.alliance.minLevel,
     };
     set({ chat: [...s.chat, msg].slice(-40), toast: "Pedido de recrutamento no chat." });
     persist({ ...get() });
+  },
+
+  acceptJoin: (requestId) => {
+    if (!requestId) return;
+    if (isLive()) {
+      void liveAction("acceptJoin", { requestId }).then(() => sfxStar()).catch(liveFail);
+    }
+  },
+
+  rejectJoin: (requestId) => {
+    if (!requestId) return;
+    if (isLive()) {
+      void liveAction("rejectJoin", { requestId }).then(() => sfxClick()).catch(liveFail);
+    }
   },
 
   startAllianceDuel: (lord) => {

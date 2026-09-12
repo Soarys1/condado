@@ -25,7 +25,7 @@ import {
   Undo2,
 } from "lucide-react";
 import {
-  ALLIANCE_FOUND_GOLD,
+  ALLIANCE_FOUND_NIENS,
   ALLIANCE_WAR_CHEST,
   allianceSlots,
   BREAD_PACK,
@@ -69,6 +69,7 @@ import {
   rankingWindow,
   resourceLabel,
   scaledTroop,
+  trainCostFor,
   troopAsset,
   troopCardsFor,
   troopUpgradeBread,
@@ -762,8 +763,9 @@ function RecruitRow({
 }) {
   const d = TROOPS[type];
   const hero = isHero(type);
-  const unitCost = type === "defender" ? DEFENDER_COST : d.costBread;
-  const unitKind = type === "defender" ? GOLD_NAME_PL : "pão";
+  const cost = trainCostFor(type, troopLevel);
+  const unitCost = cost.amount;
+  const unitKind = cost.kind === "gold" ? GOLD_NAME_PL : "pão";
   const defenderRoom =
     type === "defender" ? Math.max(0, defenderCap(campLevel) - army - queued) : campRoom;
   const maxQty = hero
@@ -824,10 +826,10 @@ function RecruitRow({
       </div>
       <p className="mt-1 text-[0.7rem] text-parchment-dim">
         {hero
-          ? `1 ${d.name.toLowerCase()} por condado · ${formatRes(unitCost)} ${unitKind}`
+          ? `1 ${d.name.toLowerCase()} por condado · Nv.${troopLevel} · ${formatRes(unitCost)} ${unitKind}`
           : maxQty < 1
             ? "Sem vaga no acampamento."
-            : `${formatRes(unitCost)} ${unitKind} cada · máx. ${maxQty}`}
+            : `Nv.${troopLevel} · ${formatRes(unitCost)} ${unitKind} cada`}
       </p>
     </div>
   );
@@ -877,7 +879,7 @@ function ChatSheet() {
                   onClick={() => useGame.getState().joinAlliance(m.recruitAllianceId!)}
                   className="mt-2 h-10 w-full rounded-md border border-niens/40 text-xs"
                 >
-                  Pedir entrada · Nv.{m.recruitMinLevel ?? 3}+
+                  Pedir entrada
                 </button>
               )}
             </div>
@@ -1015,13 +1017,13 @@ function MarketSheet() {
       </div>
       <div>
         <p className="mb-2 font-display text-sm">Ofertas universais</p>
-        <div className="space-y-2">
+        <div className="max-h-[36dvh] space-y-2 overflow-y-auto rounded-md border border-line bg-ink-2 p-2 md:max-h-[48dvh]">
           {offers.map((o) => {
             const mine = o.sellerId === player.id;
             return (
               <div
                 key={o.id}
-                className="flex items-center justify-between rounded-md border border-line px-3 py-2"
+                className="flex items-center justify-between rounded-md border border-line bg-ink px-3 py-2"
               >
                 <div>
                   <p className="text-sm">{o.sellerNick}</p>
@@ -1032,7 +1034,7 @@ function MarketSheet() {
                 </div>
                 <button
                   type="button"
-                  className="text-sm text-niens"
+                  className="h-11 shrink-0 px-3 text-sm text-niens"
                   onClick={() => void (mine ? withdrawOffer(o.id) : buyOffer(o.id))}
                 >
                   {mine ? "Retirar" : "Aceitar"}
@@ -1041,7 +1043,7 @@ function MarketSheet() {
             );
           })}
           {offers.length === 0 && (
-            <p className="text-sm text-parchment-dim">Nenhuma oferta no reino agora.</p>
+            <p className="px-1 py-3 text-sm text-parchment-dim">Nenhuma oferta no reino agora.</p>
           )}
         </div>
       </div>
@@ -1831,12 +1833,14 @@ function AllianceSheet() {
   const startAllianceDuel = useGame((s) => s.startAllianceDuel);
   const allianceChat = useGame((s) => s.allianceChat);
   const war = useGame((s) => s.war);
-  const gold = useGame((s) => s.gold);
+  const niens = useGame((s) => s.niens);
   const player = useGame((s) => s.player);
   const countyLevel = useGame((s) => s.countyLevel);
   const raidTargets = useGame((s) => s.raidTargets);
+  const acceptJoin = useGame((s) => s.acceptJoin);
+  const rejectJoin = useGame((s) => s.rejectJoin);
   const [name, setName] = useState("");
-  const [minLevel, setMinLevel] = useState(3);
+  const [openJoin, setOpenJoin] = useState(true);
   const [text, setText] = useState("");
   const [foes, setFoes] = useState<typeof raidTargets>([]);
   const win = warWindow();
@@ -1861,10 +1865,10 @@ function AllianceSheet() {
     return (
       <div className="space-y-3">
         <p className="text-sm text-parchment-dim">
-          Fundar custa {formatRes(ALLIANCE_FOUND_GOLD)} {GOLD_NAME_PL}. Escolhe o nome e o nível
-          mínimo (3 ou 5). Guerra dura 1 dia: duelos no campo, 3 pontos na vitória, 1 na derrota.
-          A aliança com mais pontos leva {formatRes(ALLIANCE_WAR_CHEST)} {GOLD_NAME_PL} repartidos
-          pelos que lutaram.
+          Fundar custa {ALLIANCE_FOUND_NIENS} Niens. Escolhe se quem chega entra livre ou precisa de
+          pedido — o pedido fica no chat da aliança até o líder aceitar ou recusar. Guerra dura 1
+          dia: duelos no campo, 3 pontos na vitória, 1 na derrota. A aliança com mais pontos leva{" "}
+          {formatRes(ALLIANCE_WAR_CHEST)} {GOLD_NAME_PL} repartidos pelos que lutaram.
         </p>
         <input
           value={name}
@@ -1875,26 +1879,25 @@ function AllianceSheet() {
         <div className="grid grid-cols-2 gap-2">
           <button
             type="button"
-            onClick={() => setMinLevel(3)}
-            className={`h-11 rounded-md border text-sm ${minLevel === 3 ? "border-niens bg-ink-2" : "border-line"}`}
+            onClick={() => setOpenJoin(true)}
+            className={`h-11 rounded-md border text-sm ${openJoin ? "border-niens bg-ink-2" : "border-line"}`}
           >
-            Entrada Nv.3
+            Entrada livre
           </button>
           <button
             type="button"
-            onClick={() => setMinLevel(5)}
-            className={`h-11 rounded-md border text-sm ${minLevel === 5 ? "border-niens bg-ink-2" : "border-line"}`}
+            onClick={() => setOpenJoin(false)}
+            className={`h-11 rounded-md border text-sm ${!openJoin ? "border-niens bg-ink-2" : "border-line"}`}
           >
-            Entrada Nv.5
+            Pedir para entrar
           </button>
         </div>
         <button
           type="button"
-          onClick={() => foundAlliance(name, minLevel)}
+          onClick={() => foundAlliance(name, openJoin)}
           className="h-11 w-full rounded-md bg-parchment font-display text-sm text-ink"
         >
-          Fundar · {formatRes(ALLIANCE_FOUND_GOLD)}{" "}
-          {gold < ALLIANCE_FOUND_GOLD ? `(faltam ${GOLD_NAME_PL.toLowerCase()})` : ""}
+          Fundar · {ALLIANCE_FOUND_NIENS} Niens {niens < ALLIANCE_FOUND_NIENS ? "(faltam gemas)" : ""}
         </button>
       </div>
     );
@@ -1905,10 +1908,21 @@ function AllianceSheet() {
     <div className="space-y-3">
       <p className="font-display">{alliance.name}</p>
       <p className="text-xs text-parchment-dim">
-        Nv.{alliance.level || 1} · {alliance.xp ?? 0} XP · {alliance.members.length}/{slots} vagas ·
-        entrada condado {alliance.minLevel || 1}+
+        Nv.{alliance.level || 1} · {alliance.xp ?? 0} XP · {alliance.members.length}/{slots} vagas ·{" "}
+        {alliance.openJoin ? "entrada livre" : "entrada com pedido"}
       </p>
-      <p className="text-xs text-parchment-dim">{alliance.members.map((m) => m.nick).join(" · ")}</p>
+      <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border border-line bg-ink-2 p-2">
+        {alliance.members.map((m) => (
+          <div key={m.id} className="flex items-center justify-between px-2 py-1 text-sm">
+            <span>{m.nick}</span>
+            {m.id === alliance.leaderId ? (
+              <span className="text-[0.65rem] uppercase tracking-[0.16em] text-niens">Líder</span>
+            ) : (
+              <span className="text-[0.65rem] text-parchment-dim">Membro</span>
+            )}
+          </div>
+        ))}
+      </div>
       {war && (
         <div className="rounded-md border border-line bg-ink-2 p-3 text-sm">
           {war.sittingOut ? (
@@ -1942,11 +1956,53 @@ function AllianceSheet() {
           ))}
         </div>
       )}
-      <div className="max-h-40 space-y-2 overflow-y-auto">
+      <div className="max-h-48 space-y-2 overflow-y-auto">
         {allianceChat.map((m) => (
           <div key={m.id} className={`rounded-md px-3 py-2 ${m.self ? "bg-moss/20" : "bg-ink-2"}`}>
             <p className="font-display text-[0.7rem] text-niens">{m.fromNick}</p>
             <p className="text-sm">{m.text}</p>
+            {leader && m.joinRequestId && (alliance.joinRequests ?? []).some((r) => r.id === m.joinRequestId) && (
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => acceptJoin(m.joinRequestId!)}
+                  className="h-10 rounded-md bg-parchment font-display text-xs text-ink"
+                >
+                  Aceitar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => rejectJoin(m.joinRequestId!)}
+                  className="h-10 rounded-md border border-line text-xs"
+                >
+                  Recusar
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+        {(alliance.joinRequests ?? []).filter((r) => !allianceChat.some((m) => m.joinRequestId === r.id)).map((r) => (
+          <div key={r.id} className="rounded-md bg-ink-2 px-3 py-2">
+            <p className="font-display text-[0.7rem] text-niens">{r.nick}</p>
+            <p className="text-sm">{r.nick} pede para entrar.</p>
+            {leader && (
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => acceptJoin(r.id)}
+                  className="h-10 rounded-md bg-parchment font-display text-xs text-ink"
+                >
+                  Aceitar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => rejectJoin(r.id)}
+                  className="h-10 rounded-md border border-line text-xs"
+                >
+                  Recusar
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -2182,7 +2238,7 @@ function BattleHUD() {
       {screen === "prep" && (
         <div className="pointer-events-auto absolute inset-x-0 bottom-0 pb-[max(0.6rem,env(safe-area-inset-bottom))]">
           <p className="mb-2 text-center text-xs text-parchment-dim">
-            Posicione tropas nas bordas douradas. Podes colocar mais depois de iniciar.
+            Escolhe o tipo e toca o mapa: entram todas as tropas desse tipo nas bordas livres.
           </p>
           <div className="mx-auto flex max-w-xl gap-1 overflow-x-auto px-3">
             {TROOP_ORDER.map((t) => (
@@ -2215,7 +2271,7 @@ function BattleHUD() {
       {screen === "battle" && (
         <div className="pointer-events-auto absolute inset-x-0 bottom-0 pb-[max(0.6rem,env(safe-area-inset-bottom))]">
           <p className="mb-2 text-center text-xs text-parchment-dim">
-            Toca um grupo e arrasta para enviar. Bordas douradas: mais tropas.
+            Toca um grupo e arrasta para enviar. Toca a borda para pôr todas as tropas do tipo escolhido.
           </p>
           <div className="mx-auto flex max-w-xl gap-1 overflow-x-auto px-3">
             {TROOP_ORDER.map((t) => (

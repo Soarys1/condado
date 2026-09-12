@@ -241,6 +241,10 @@ export class Battle {
         }
       }
     }
+    for (const t of this.troops) {
+      if (!t.alive) continue;
+      this.occupied.add(`${Math.floor(t.x)},${Math.floor(t.y)}`);
+    }
   }
 
   remainingOf(type: TroopType, side: TroopSide = "atk"): number {
@@ -295,6 +299,7 @@ export class Battle {
     if (side === "atk") this.armyLeft[type] = Math.max(0, this.armyLeft[type] - 1);
     else this.foeArmy[type] = Math.max(0, this.foeArmy[type] - 1);
     if (isHero(type) && side === "atk") this.heroesUsed.add(type);
+    this.occupied.add(`${gx},${gy}`);
     if (this.phase === "fight") {
       const placed = this.troops[this.troops.length - 1];
       if (placed) {
@@ -303,6 +308,53 @@ export class Battle {
       }
     }
     return true;
+  }
+
+  deployAll(type: TroopType, gx: number, gy: number, side: TroopSide = "atk"): number {
+    const bag = side === "atk" ? this.armyLeft : this.foeArmy;
+    if (bag[type] <= 0) return 0;
+    if (isHero(type)) return this.deploy(type, gx, gy, side) ? 1 : 0;
+    const tiles = this.nearbyDeployTiles(gx, gy, side);
+    let n = 0;
+    for (const [x, y] of tiles) {
+      if (bag[type] <= 0) break;
+      if (this.deploy(type, x, y, side)) n += 1;
+    }
+    return n;
+  }
+
+  armyHome(): ArmyCounts {
+    const s = this.result?.survivors ?? {
+      infantry: 0,
+      archers: 0,
+      cavalry: 0,
+      general: 0,
+      generaless: 0,
+      defender: 0,
+    };
+    return {
+      infantry: this.armyLeft.infantry + s.infantry,
+      archers: this.armyLeft.archers + s.archers,
+      cavalry: this.armyLeft.cavalry + s.cavalry,
+      general: this.armyLeft.general + s.general,
+      generaless: this.armyLeft.generaless + s.generaless,
+      defender: this.armyLeft.defender + s.defender,
+    };
+  }
+
+  private nearbyDeployTiles(gx: number, gy: number, side: TroopSide): Array<[number, number]> {
+    const tiles: Array<[number, number, number]> = [];
+    for (let y = 0; y < GRID; y++) {
+      for (let x = 0; x < GRID; x++) {
+        if (!this.deployEdge(x, y, side)) continue;
+        if (x < 0 || y < 0 || x >= GRID || y >= GRID) continue;
+        if (this.occupied.has(`${x},${y}`)) continue;
+        const d = Math.abs(x - gx) + Math.abs(y - gy);
+        tiles.push([x, y, d]);
+      }
+    }
+    tiles.sort((a, b) => a[2] - b[2] || a[1] - b[1] || a[0] - b[0]);
+    return tiles.map(([x, y]) => [x, y]);
   }
 
   autoDeploy() {

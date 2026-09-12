@@ -1,5 +1,5 @@
 import {
-  ALLIANCE_FOUND_GOLD,
+  ALLIANCE_FOUND_NIENS,
   BREAD_PACK,
   BREAD_PACK_BUY_GOLD,
   BREAD_PACK_SELL_GOLD,
@@ -42,6 +42,7 @@ import {
   rankingWindow,
   resourceLabel,
   storageCap,
+  trainCostFor,
   troopCardsFor,
   troopUpgradeBread,
   troopUpgradeGold,
@@ -444,7 +445,8 @@ export function trainTroop(
     const campRoom = armyCapacity(countType(s.buildings, "camp")) - armySize(s);
     qty = Math.min(qty, campRoom);
     if (qty < 1) throw new GameError("Acampamento lotado. Construa outro.");
-    const cost = DEFENDER_COST * qty;
+    const unit = trainCostFor(type, s.troopLevels[type] ?? 1);
+    const cost = unit.amount * qty;
     if (s.gold < cost) throw new GameError(`Faltam ${GOLD_NAME_PL}.`);
     pushLedger(ledger, s, "train", "gold", -cost, type);
     return {
@@ -461,7 +463,8 @@ export function trainTroop(
   const room = cap - armySize(s);
   qty = Math.min(qty, room);
   if (qty < 1) throw new GameError("Acampamento lotado. Construa outro.");
-  const cost = def.costBread * qty;
+  const unit = trainCostFor(type, s.troopLevels[type] ?? 1);
+  const cost = unit.amount * qty;
   if (s.bread < cost) throw new GameError("Pão insuficiente.");
   pushLedger(ledger, s, "train", "bread", -cost, type);
   return {
@@ -869,35 +872,32 @@ export function skipPassSim(s: SaveState, now = Date.now()): { save: SaveState; 
 export function foundAllianceSim(
   s: SaveState,
   name: string,
-  minLevel = 3,
+  openJoin = true,
 ): { save: SaveState; ledger: LedgerEntry[]; toast: string } {
   if (s.alliance) throw new GameError("Já tens aliança.");
-  if (s.gold < ALLIANCE_FOUND_GOLD) throw new GameError(`Precisa de 5.000.000 de ${GOLD_NAME_PL}.`);
-  const req = minLevel === 5 ? 5 : 3;
+  if (s.niens < ALLIANCE_FOUND_NIENS) throw new GameError(`Precisa de ${ALLIANCE_FOUND_NIENS} Niens.`);
   const id = `AL-${s.player.id.slice(4, 8)}`;
   const ledger: LedgerEntry[] = [];
-  pushLedger(ledger, s, "found_alliance", "gold", -ALLIANCE_FOUND_GOLD, id);
+  pushLedger(ledger, s, "found_alliance", "niens", -ALLIANCE_FOUND_NIENS, id);
   return {
     save: {
       ...s,
-      gold: s.gold - ALLIANCE_FOUND_GOLD,
+      niens: s.niens - ALLIANCE_FOUND_NIENS,
       alliance: {
         id,
         name: name.trim().slice(0, 22) || "Aliança do Condado",
-        members: [
-          { id: s.player.id, nick: s.player.nick },
-          { id: "CDN-ALDRIC", nick: "Sir Aldric" },
-          { id: "CDN-ISOLDE", nick: "Dama Isolde" },
-        ],
-        minLevel: req,
+        members: [{ id: s.player.id, nick: s.player.nick }],
+        minLevel: 1,
         level: 1,
         xp: 0,
         leaderId: s.player.id,
         slots: allianceSlots(1),
+        openJoin,
+        joinRequests: [],
       },
     },
     ledger,
-    toast: `Aliança fundada. Entrada a partir do condado ${req}.`,
+    toast: openJoin ? `Aliança ${name.trim()} fundada. Entrada livre.` : `Aliança ${name.trim()} fundada. Entrada com pedido.`,
   };
 }
 

@@ -170,6 +170,16 @@ function migrate(s: SaveState): SaveState {
         xp: Math.max(0, Number(s.alliance.xp ?? 0)),
         leaderId: String(s.alliance.leaderId ?? s.player?.id ?? ""),
         slots: Math.max(30, Number(s.alliance.slots ?? 30)),
+        openJoin: s.alliance.openJoin !== false,
+        joinRequests: Array.isArray(s.alliance.joinRequests)
+          ? s.alliance.joinRequests.map((r) => ({
+              id: String(r.id),
+              playerId: String(r.playerId),
+              nick: String(r.nick ?? "Senhor"),
+              uid: r.uid ? String(r.uid) : undefined,
+              at: Number(r.at ?? 0),
+            }))
+          : [],
       }
     : null;
   const war = s.war
