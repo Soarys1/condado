@@ -1220,6 +1220,51 @@ var GameError = class extends Error {
 		this.name = "GameError";
 	}
 };
+const EMPTY_ARMY = {
+	infantry: 0,
+	archers: 0,
+	cavalry: 0,
+	general: 0,
+	generaless: 0,
+	defender: 0
+};
+function armyCountOf(a) {
+	if (!a) return 0;
+	return (a.infantry || 0) + (a.archers || 0) + (a.cavalry || 0) + (a.general || 0) + (a.generaless || 0) + (a.defender || 0);
+}
+function normalizeArmy(raw, fallback) {
+	if (!raw || typeof raw !== "object") return fallback ?? { ...EMPTY_ARMY };
+	const a = raw;
+	if (!("infantry" in a || "archers" in a || "cavalry" in a || "defender" in a || "general" in a || "generaless" in a)) return fallback ?? { ...EMPTY_ARMY };
+	return {
+		infantry: Math.max(0, Math.floor(Number(a.infantry) || 0)),
+		archers: Math.max(0, Math.floor(Number(a.archers) || 0)),
+		cavalry: Math.max(0, Math.floor(Number(a.cavalry) || 0)),
+		general: Math.min(1, Math.max(0, Math.floor(Number(a.general) || 0))),
+		generaless: Math.min(1, Math.max(0, Math.floor(Number(a.generaless) || 0))),
+		defender: Math.max(0, Math.floor(Number(a.defender) || 0))
+	};
+}
+function resolveDuelStatus(status, opts = {}) {
+	const now = opts.now ?? Date.now();
+	const s = String(status ?? "pending");
+	if (s === "pending") {
+		const until = Number(opts.until ?? opts.challengeUntil ?? 0);
+		if (until && now > until) return "expired";
+		return "pending";
+	}
+	if (s === "prep" || s === "fight") {
+		const fightEndsAt = Number(opts.fightEndsAt ?? 0);
+		const until = Number(opts.until ?? 0);
+		const createdAt = Number(opts.createdAt ?? 0);
+		const challengeUntil = Number(opts.challengeUntil ?? 0);
+		const deadline = fightEndsAt || until || (createdAt ? createdAt + 51e4 : 0) || (challengeUntil ? challengeUntil + 51e4 : 0);
+		if (!deadline || now > deadline) return "expired";
+		return s;
+	}
+	if (s === "declined" || s === "expired" || s === "done") return s;
+	return "expired";
+}
 function jobCount(j) {
 	const n = Math.floor(Number(j.count ?? 1));
 	return n > 0 ? n : 1;
@@ -2279,6 +2324,10 @@ const RATE = {
 	finishAllianceDuel: {
 		n: 8,
 		windowMs: 6e4
+	},
+	abandonAllianceDuel: {
+		n: 8,
+		windowMs: 6e4
 	}
 };
 const FAST_ACTIONS = /* @__PURE__ */ new Set([
@@ -2618,6 +2667,7 @@ async function dispatch(tx, player, action, payload, requestId) {
 		case "pollAllianceDuel": return pollAllianceDuelAction(player, String(payload.sessionId ?? ""));
 		case "syncAllianceDuel": return syncAllianceDuelAction(write(), player, payload, requestId);
 		case "finishAllianceDuel": return finishAllianceDuelAction(write(), player, payload, requestId);
+		case "abandonAllianceDuel": return abandonAllianceDuelAction(write(), player, String(payload.sessionId ?? ""), requestId);
 		case "sendAllianceChat": return sendAlliance(write(), player, String(payload.text ?? ""), requestId);
 		case "setPrefs": return setPrefs(write(), player, payload, requestId);
 		case "transfer": return transferAction(write(), player, payload, requestId);
@@ -4073,8 +4123,7 @@ async function declareWarAction(tx, player, allianceIdRaw, requestId) {
 	};
 }
 function armyCount(a) {
-	if (!a) return 0;
-	return a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender;
+	return armyCountOf(a);
 }
 function inboxRef(uid) {
 	return col("condado_duel_inbox").doc(uid);
@@ -4085,8 +4134,10 @@ function parseInbox(data) {
 	const out = [];
 	for (const r of raw) {
 		const until = Number(r.until ?? 0);
-		let status = String(r.status ?? "pending");
-		if (status === "pending" && until && now > until) status = "expired";
+		const status = resolveDuelStatus(String(r.status ?? "pending"), {
+			until,
+			now
+		});
 		if (![
 			"pending",
 			"prep",
@@ -4127,11 +4178,20 @@ async function readInbox(tx, uid) {
 function writeInbox(tx, uid, items) {
 	tx.set(inboxRef(uid), { items: items.slice(-12) }, { merge: true });
 }
-function patchInbox(items, sessionId, status) {
+function patchInbox(items, sessionId, status, extra) {
 	return items.map((i) => i.sessionId === sessionId ? {
 		...i,
-		status
+		status,
+		...extra
 	} : i);
+}
+function sessionStatus(session, now = Date.now()) {
+	return resolveDuelStatus(String(session.status ?? "pending"), {
+		fightEndsAt: Number(session.fightEndsAt ?? 0),
+		createdAt: Number(session.createdAt ?? 0),
+		challengeUntil: Number(session.challengeUntil ?? 0),
+		now
+	});
 }
 function applySurvivors(current, started, survivors) {
 	const clamp = (have, took, back) => Math.max(0, have - took + Math.min(took, Math.max(0, back)));
@@ -4290,8 +4350,8 @@ async function respondAllianceDuelAction(tx, player, sessionId, accept, requestI
 	if (armyCount(prep.profile.army) <= 0) throw new GameError("Sem tropas no acampamento.");
 	const prepEndsAt = Date.now() + PREP_MS;
 	const fightEndsAt = prepEndsAt + BATTLE_MS;
-	writeInbox(tx, String(session.attackerUid), patchInbox(atkBox, sessionId, "prep"));
-	writeInbox(tx, String(session.defenderUid), patchInbox(defBox, sessionId, "prep"));
+	writeInbox(tx, String(session.attackerUid), patchInbox(atkBox, sessionId, "prep", { until: fightEndsAt }));
+	writeInbox(tx, String(session.defenderUid), patchInbox(defBox, sessionId, "prep", { until: fightEndsAt }));
 	tx.set(sessionRef, {
 		status: "prep",
 		phase: "prep",
@@ -4310,10 +4370,10 @@ async function respondAllianceDuelAction(tx, player, sessionId, accept, requestI
 		sessionId,
 		status: "prep",
 		side: "def",
-		atkArmy: session.attackerArmy ?? {},
+		atkArmy: normalizeArmy(session.attackerArmy),
 		atkLevels: session.attackerLevels ?? {},
 		atkCamp: Number(session.attackerCamp ?? 1),
-		foeArmy: prep.profile.army,
+		foeArmy: normalizeArmy(prep.profile.army),
 		foeLevels: prep.profile.troopLevels,
 		foeCamp: prep.profile.campLevel,
 		nick: String(session.attackerNick ?? "Rival"),
@@ -4330,26 +4390,36 @@ async function respondAllianceDuelAction(tx, player, sessionId, accept, requestI
 }
 async function pollAllianceDuelAction(player, sessionId) {
 	if (!sessionId) return { status: "expired" };
-	const snap = await col("condado_raid_sessions").doc(sessionId).get();
+	const sessionRef = col("condado_raid_sessions").doc(sessionId);
+	const snap = await sessionRef.get();
 	if (!snap.exists) return { status: "expired" };
 	const session = snap.data();
 	if (session.attackerUid !== player.uid && session.defenderUid !== player.uid) throw new GameError("Este duelo não é teu.");
-	let status = String(session.status ?? "pending");
-	if (status === "pending" && Number(session.challengeUntil ?? 0) < Date.now()) status = "expired";
+	let status = sessionStatus(session);
+	if (status === "expired" && String(session.status) !== "expired" && String(session.status) !== "done") {
+		await sessionRef.set({
+			status: "expired",
+			open: false
+		}, { merge: true });
+		const atkUid = String(session.attackerUid);
+		const defUid = String(session.defenderUid);
+		const [atkBox, defBox] = await Promise.all([inboxRef(atkUid).get(), inboxRef(defUid).get()]);
+		await Promise.all([inboxRef(atkUid).set({ items: patchInbox(parseInbox(atkBox.data()), sessionId, "expired") }, { merge: true }), inboxRef(defUid).set({ items: patchInbox(parseInbox(defBox.data()), sessionId, "expired") }, { merge: true })]);
+	}
 	const side = session.attackerUid === player.uid ? "atk" : "def";
 	return {
 		sessionId,
 		status,
 		side,
 		nick: side === "atk" ? String(session.defenderNick ?? "") : String(session.attackerNick ?? ""),
-		atkArmy: session.attackerArmy ?? {},
+		atkArmy: normalizeArmy(session.attackerArmy),
 		atkLevels: session.attackerLevels ?? {},
 		atkCamp: Number(session.attackerCamp ?? 1),
-		foeArmy: session.defenderArmy ?? {},
+		foeArmy: normalizeArmy(session.defenderArmy),
 		foeLevels: session.defenderLevels ?? {},
 		foeCamp: Number(session.defenderCamp ?? 1),
 		duel: {
-			phase: session.phase ?? status,
+			phase: status === "expired" ? "expired" : session.phase ?? status,
 			snapshot: session.snapshot ?? null,
 			pendingDeploys: session.pendingDeploys ?? [],
 			attackerReady: !!session.attackerReady,
@@ -4372,6 +4442,25 @@ async function syncAllianceDuelAction(tx, player, payload, requestId) {
 	if (session.attackerUid !== player.uid && session.defenderUid !== player.uid) throw new GameError("Este duelo não é teu.");
 	const isAtk = session.attackerUid === player.uid;
 	const side = isAtk ? "atk" : "def";
+	const live = sessionStatus(session);
+	if (live === "expired" || live === "done" || live === "declined") {
+		if (live === "expired" && String(session.status) !== "expired") {
+			const atkBox = await readInbox(tx, String(session.attackerUid));
+			const defBox = await readInbox(tx, String(session.defenderUid));
+			tx.set(sessionRef, {
+				status: "expired",
+				open: false
+			}, { merge: true });
+			writeInbox(tx, String(session.attackerUid), patchInbox(atkBox, sessionId, "expired"));
+			writeInbox(tx, String(session.defenderUid), patchInbox(defBox, sessionId, "expired"));
+		}
+		return {
+			sessionId,
+			status: live,
+			side,
+			duel: { phase: live }
+		};
+	}
 	const patch = {};
 	let status = String(session.status ?? "pending");
 	let phase = String(session.phase ?? status);
@@ -4426,6 +4515,51 @@ async function syncAllianceDuelAction(tx, player, payload, requestId) {
 			fightEndsAt: session.fightEndsAt ?? 0,
 			winner: session.winner ?? null
 		}
+	};
+}
+async function abandonAllianceDuelAction(tx, player, sessionId, requestId) {
+	if (!sessionId) throw new GameError("Duelo inválido.");
+	const sessionRef = col("condado_raid_sessions").doc(sessionId);
+	const sessionSnap = await tx.get(sessionRef);
+	const prep = await preparePlayer(tx, player.uid);
+	if (!sessionSnap.exists) {
+		const next = (await readInbox(tx, player.uid)).filter((i) => i.sessionId !== sessionId);
+		writeInbox(tx, player.uid, next);
+		commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
+		return {
+			save: withoutMeta(prep.profile),
+			status: "expired",
+			sessionId,
+			challenges: toChallenges(player.uid, next),
+			toast: "O duelo já tinha acabado. Já podes jogar."
+		};
+	}
+	const session = sessionSnap.data();
+	if (session.attackerUid !== player.uid && session.defenderUid !== player.uid) throw new GameError("Este duelo não é teu.");
+	const live = sessionStatus(session);
+	const atkUid = String(session.attackerUid);
+	const defUid = String(session.defenderUid);
+	const atkBox = await readInbox(tx, atkUid);
+	const defBox = await readInbox(tx, defUid);
+	if (live === "fight") return finishAllianceDuelAction(tx, player, {
+		sessionId,
+		retreated: true,
+		winner: session.attackerUid === player.uid ? "def" : "atk"
+	}, requestId);
+	writeInbox(tx, atkUid, patchInbox(atkBox, sessionId, "expired"));
+	writeInbox(tx, defUid, patchInbox(defBox, sessionId, "expired"));
+	tx.set(sessionRef, {
+		status: "expired",
+		open: false,
+		abandonedBy: player.uid
+	}, { merge: true });
+	commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
+	return {
+		save: withoutMeta(prep.profile),
+		status: "expired",
+		sessionId,
+		challenges: toChallenges(player.uid, patchInbox(player.uid === atkUid ? atkBox : defBox, sessionId, "expired")),
+		toast: live === "pending" ? "Desafio cancelado." : "Saíste do campo. O duelo foi anulado."
 	};
 }
 async function finishAllianceDuelAction(tx, player, payload, requestId) {

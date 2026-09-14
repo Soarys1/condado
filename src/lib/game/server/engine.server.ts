@@ -47,6 +47,7 @@ import {
   GameError,
   applyRaidFinish,
   applyWeeklyPrize,
+  armyCountOf,
   buyBreadPackSim,
   buyNienSim,
   buyPassSim,
@@ -60,8 +61,10 @@ import {
   demolishBuilding,
   grantReferralSim,
   kindField,
+  normalizeArmy,
   placeBuilding,
   registerAttack,
+  resolveDuelStatus,
   rotateWalls,
   sellBreadPackSim,
   sellNienSim,
@@ -151,6 +154,7 @@ const RATE: Record<string, { n: number; windowMs: number }> = {
   respondAllianceDuel: { n: 12, windowMs: 60_000 },
   syncAllianceDuel: { n: 30, windowMs: 10_000 },
   finishAllianceDuel: { n: 8, windowMs: 60_000 },
+  abandonAllianceDuel: { n: 8, windowMs: 60_000 },
 };
 
 const FAST_ACTIONS = new Set([
@@ -590,6 +594,8 @@ async function dispatch(
       return syncAllianceDuelAction(write(), player, payload, requestId);
     case "finishAllianceDuel":
       return finishAllianceDuelAction(write(), player, payload, requestId);
+    case "abandonAllianceDuel":
+      return abandonAllianceDuelAction(write(), player, String(payload.sessionId ?? ""), requestId);
     case "sendAllianceChat":
       return sendAlliance(write(), player, String(payload.text ?? ""), requestId);
     case "setPrefs":
@@ -1987,8 +1993,7 @@ async function declareWarAction(
 }
 
 function armyCount(a: ArmyCounts | undefined): number {
-  if (!a) return 0;
-  return a.infantry + a.archers + a.cavalry + a.general + a.generaless + a.defender;
+  return armyCountOf(a);
 }
 
 function inboxRef(uid: string) {
@@ -2013,8 +2018,7 @@ function parseInbox(data: DocumentData | undefined): InboxItem[] {
   const out: InboxItem[] = [];
   for (const r of raw) {
     const until = Number(r.until ?? 0);
-    let status = String(r.status ?? "pending") as DuelStatus;
-    if (status === "pending" && until && now > until) status = "expired";
+    const status = resolveDuelStatus(String(r.status ?? "pending"), { until, now });
     if (!["pending", "prep", "fight"].includes(status) && now - until > 120_000) continue;
     out.push({
       sessionId: String(r.sessionId ?? ""),
@@ -2060,8 +2064,17 @@ function writeInbox(tx: Transaction, uid: string, items: InboxItem[]) {
   tx.set(inboxRef(uid), { items: items.slice(-12) }, { merge: true });
 }
 
-function patchInbox(items: InboxItem[], sessionId: string, status: DuelStatus): InboxItem[] {
-  return items.map((i) => (i.sessionId === sessionId ? { ...i, status } : i));
+function patchInbox(items: InboxItem[], sessionId: string, status: DuelStatus, extra?: Partial<InboxItem>): InboxItem[] {
+  return items.map((i) => (i.sessionId === sessionId ? { ...i, status, ...extra } : i));
+}
+
+function sessionStatus(session: DocumentData, now = Date.now()): DuelStatus {
+  return resolveDuelStatus(String(session.status ?? "pending"), {
+    fightEndsAt: Number(session.fightEndsAt ?? 0),
+    createdAt: Number(session.createdAt ?? 0),
+    challengeUntil: Number(session.challengeUntil ?? 0),
+    now,
+  });
 }
 
 function applySurvivors(current: ArmyCounts, started: ArmyCounts, survivors: ArmyCounts): ArmyCounts {
@@ -2216,8 +2229,8 @@ async function respondAllianceDuelAction(
   const now = Date.now();
   const prepEndsAt = now + PREP_MS;
   const fightEndsAt = prepEndsAt + BATTLE_MS;
-  writeInbox(tx, String(session.attackerUid), patchInbox(atkBox, sessionId, "prep"));
-  writeInbox(tx, String(session.defenderUid), patchInbox(defBox, sessionId, "prep"));
+  writeInbox(tx, String(session.attackerUid), patchInbox(atkBox, sessionId, "prep", { until: fightEndsAt }));
+  writeInbox(tx, String(session.defenderUid), patchInbox(defBox, sessionId, "prep", { until: fightEndsAt }));
   tx.set(
     sessionRef,
     {
@@ -2240,10 +2253,10 @@ async function respondAllianceDuelAction(
     sessionId,
     status: "prep",
     side: "def",
-    atkArmy: (session.attackerArmy ?? {}) as ArmyCounts,
+    atkArmy: normalizeArmy(session.attackerArmy),
     atkLevels: (session.attackerLevels ?? {}) as SaveState["troopLevels"],
     atkCamp: Number(session.attackerCamp ?? 1),
-    foeArmy: prep.profile.army,
+    foeArmy: normalizeArmy(prep.profile.army),
     foeLevels: prep.profile.troopLevels,
     foeCamp: prep.profile.campLevel,
     nick: String(session.attackerNick ?? "Rival"),
@@ -2255,28 +2268,44 @@ async function respondAllianceDuelAction(
 
 async function pollAllianceDuelAction(player: PlayerAuth, sessionId: string): Promise<ActionResult> {
   if (!sessionId) return { status: "expired" };
-  const snap = await col("condado_raid_sessions").doc(sessionId).get();
+  const sessionRef = col("condado_raid_sessions").doc(sessionId);
+  const snap = await sessionRef.get();
   if (!snap.exists) return { status: "expired" };
   const session = snap.data() as DocumentData;
   if (session.attackerUid !== player.uid && session.defenderUid !== player.uid) {
     throw new GameError("Este duelo não é teu.");
   }
-  let status = String(session.status ?? "pending") as DuelStatus;
-  if (status === "pending" && Number(session.challengeUntil ?? 0) < Date.now()) status = "expired";
+  let status = sessionStatus(session);
+  if (status === "expired" && String(session.status) !== "expired" && String(session.status) !== "done") {
+    await sessionRef.set({ status: "expired", open: false }, { merge: true });
+    const atkUid = String(session.attackerUid);
+    const defUid = String(session.defenderUid);
+    const [atkBox, defBox] = await Promise.all([inboxRef(atkUid).get(), inboxRef(defUid).get()]);
+    await Promise.all([
+      inboxRef(atkUid).set(
+        { items: patchInbox(parseInbox(atkBox.data() as DocumentData | undefined), sessionId, "expired") },
+        { merge: true },
+      ),
+      inboxRef(defUid).set(
+        { items: patchInbox(parseInbox(defBox.data() as DocumentData | undefined), sessionId, "expired") },
+        { merge: true },
+      ),
+    ]);
+  }
   const side: "atk" | "def" = session.attackerUid === player.uid ? "atk" : "def";
   return {
     sessionId,
     status,
     side,
     nick: side === "atk" ? String(session.defenderNick ?? "") : String(session.attackerNick ?? ""),
-    atkArmy: (session.attackerArmy ?? {}) as ArmyCounts,
+    atkArmy: normalizeArmy(session.attackerArmy),
     atkLevels: (session.attackerLevels ?? {}) as SaveState["troopLevels"],
     atkCamp: Number(session.attackerCamp ?? 1),
-    foeArmy: (session.defenderArmy ?? {}) as ArmyCounts,
+    foeArmy: normalizeArmy(session.defenderArmy),
     foeLevels: (session.defenderLevels ?? {}) as SaveState["troopLevels"],
     foeCamp: Number(session.defenderCamp ?? 1),
     duel: {
-      phase: session.phase ?? status,
+      phase: status === "expired" ? "expired" : session.phase ?? status,
       snapshot: session.snapshot ?? null,
       pendingDeploys: session.pendingDeploys ?? [],
       attackerReady: !!session.attackerReady,
@@ -2305,6 +2334,17 @@ async function syncAllianceDuelAction(
   if (session.attackerUid !== player.uid && session.defenderUid !== player.uid) throw new GameError("Este duelo não é teu.");
   const isAtk = session.attackerUid === player.uid;
   const side = isAtk ? "atk" : "def";
+  const live = sessionStatus(session);
+  if (live === "expired" || live === "done" || live === "declined") {
+    if (live === "expired" && String(session.status) !== "expired") {
+      const atkBox = await readInbox(tx, String(session.attackerUid));
+      const defBox = await readInbox(tx, String(session.defenderUid));
+      tx.set(sessionRef, { status: "expired", open: false }, { merge: true });
+      writeInbox(tx, String(session.attackerUid), patchInbox(atkBox, sessionId, "expired"));
+      writeInbox(tx, String(session.defenderUid), patchInbox(defBox, sessionId, "expired"));
+    }
+    return { sessionId, status: live, side, duel: { phase: live } };
+  }
   const patch: Record<string, unknown> = {};
   let status = String(session.status ?? "pending");
   let phase = String(session.phase ?? status);
@@ -2366,6 +2406,59 @@ async function syncAllianceDuelAction(
       fightEndsAt: session.fightEndsAt ?? 0,
       winner: session.winner ?? null,
     },
+  };
+}
+
+async function abandonAllianceDuelAction(
+  tx: Transaction,
+  player: PlayerAuth,
+  sessionId: string,
+  requestId: string,
+): Promise<ActionResult> {
+  if (!sessionId) throw new GameError("Duelo inválido.");
+  const sessionRef = col("condado_raid_sessions").doc(sessionId);
+  const sessionSnap = await tx.get(sessionRef);
+  const prep = await preparePlayer(tx, player.uid);
+  if (!sessionSnap.exists) {
+    const box = await readInbox(tx, player.uid);
+    const next = box.filter((i) => i.sessionId !== sessionId);
+    writeInbox(tx, player.uid, next);
+    commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
+    return {
+      save: withoutMeta(prep.profile),
+      status: "expired",
+      sessionId,
+      challenges: toChallenges(player.uid, next),
+      toast: "O duelo já tinha acabado. Já podes jogar.",
+    };
+  }
+  const session = sessionSnap.data() as DocumentData;
+  if (session.attackerUid !== player.uid && session.defenderUid !== player.uid) {
+    throw new GameError("Este duelo não é teu.");
+  }
+  const live = sessionStatus(session);
+  const atkUid = String(session.attackerUid);
+  const defUid = String(session.defenderUid);
+  const atkBox = await readInbox(tx, atkUid);
+  const defBox = await readInbox(tx, defUid);
+  if (live === "fight") {
+    return finishAllianceDuelAction(
+      tx,
+      player,
+      { sessionId, retreated: true, winner: session.attackerUid === player.uid ? "def" : "atk" },
+      requestId,
+    );
+  }
+  writeInbox(tx, atkUid, patchInbox(atkBox, sessionId, "expired"));
+  writeInbox(tx, defUid, patchInbox(defBox, sessionId, "expired"));
+  tx.set(sessionRef, { status: "expired", open: false, abandonedBy: player.uid }, { merge: true });
+  commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
+  return {
+    save: withoutMeta(prep.profile),
+    status: "expired",
+    sessionId,
+    challenges: toChallenges(player.uid, patchInbox(player.uid === atkUid ? atkBox : defBox, sessionId, "expired")),
+    toast: live === "pending" ? "Desafio cancelado." : "Saíste do campo. O duelo foi anulado.",
   };
 }
 

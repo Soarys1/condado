@@ -47,6 +47,7 @@ import {
   DEFENDER_COST,
   GOLD_NAME,
   GOLD_NAME_PL,
+  GRID,
   MARCH_MS,
   MAX_TRAIN_QTY,
   NIEN_COST_GOLD,
@@ -365,6 +366,8 @@ function Splash({ signedIn }: { signedIn: boolean }) {
 function DuelBanner() {
   const inbox = useGame((s) => s.duelInbox);
   const respondDuel = useGame((s) => s.respondDuel);
+  const enterDuelFromInbox = useGame((s) => s.enterDuelFromInbox);
+  const abandonDuel = useGame((s) => s.abandonDuel);
   const screen = useGame((s) => s.screen);
   const [, bump] = useState(0);
   useEffect(() => {
@@ -372,6 +375,36 @@ function DuelBanner() {
     return () => window.clearInterval(id);
   }, []);
   if (screen !== "village") return null;
+  const live = inbox.find((c) => c.status === "prep" || c.status === "fight");
+  if (live) {
+    const rival = live.incoming ? live.fromNick : live.toNick;
+    return (
+      <div className="pointer-events-none absolute inset-x-0 top-[max(4.6rem,calc(env(safe-area-inset-top)+3.4rem))] z-30 flex justify-center px-3">
+        <div className="pointer-events-auto w-full max-w-md rounded-md border border-niens/50 bg-panel p-3 shadow-panel">
+          <p className="font-display text-sm">Duelo no campo com {rival}</p>
+          <p className="text-xs text-parchment-dim">
+            O jogo não te puxa sozinho para o campo. Entra quando quiseres, ou sai para jogar no condado.
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => enterDuelFromInbox(live.sessionId)}
+              className="h-11 rounded-md bg-parchment font-display text-sm text-ink"
+            >
+              Entrar no campo
+            </button>
+            <button
+              type="button"
+              onClick={() => abandonDuel(live.sessionId)}
+              className="h-11 rounded-md border border-line text-sm"
+            >
+              Sair do duelo
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   const incoming = inbox.find((c) => c.incoming && c.status === "pending" && c.until > Date.now());
   const outgoing = inbox.find((c) => !c.incoming && c.status === "pending" && c.until > Date.now());
   if (!incoming && !outgoing) return null;
@@ -2442,6 +2475,8 @@ function BattleHUD() {
   const campLevel = useGame((s) => s.campLevel);
   const skipPrep = useGame((s) => s.skipPrep);
   const retreat = useGame((s) => s.retreat);
+  const leaveDuelField = useGame((s) => s.leaveDuelField);
+  const deploy = useGame((s) => s.deploy);
   const screen = useGame((s) => s.screen);
   const [confirm, setConfirm] = useState(false);
 
@@ -2469,7 +2504,7 @@ function BattleHUD() {
       {screen === "prep" && (
         <div className="pointer-events-auto absolute inset-x-0 bottom-0 pb-[max(0.6rem,env(safe-area-inset-bottom))]">
           <p className="mb-2 text-center text-xs text-parchment-dim">
-            Escolhe o tipo e toca o mapa: entram todas as tropas desse tipo na {edge}.
+            Escolhe o tipo e toca a {edge} dourada, ou põe todas pelo botão.
           </p>
           <div className="mx-auto flex max-w-xl gap-1 overflow-x-auto px-3">
             {TROOP_ORDER.map((t) => (
@@ -2489,13 +2524,31 @@ function BattleHUD() {
               </button>
             ))}
           </div>
-          <button
-            type="button"
-            onClick={skipPrep}
-            className="mx-auto mt-2 flex h-11 w-[min(90%,20rem)] items-center justify-center rounded-md bg-parchment font-display text-sm text-ink"
-          >
-            {battle.pvp ? "Estou pronto" : "Iniciar ataque"}
-          </button>
+          <div className="mx-auto mt-2 flex w-[min(92%,24rem)] flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => deploy(side === "def" ? GRID - 2 : 1, Math.floor(GRID / 2))}
+              className="flex h-11 w-full items-center justify-center rounded-md border border-niens bg-panel-2 font-display text-sm"
+            >
+              Pôr todas na {edge}
+            </button>
+            <button
+              type="button"
+              onClick={skipPrep}
+              className="flex h-11 w-full items-center justify-center rounded-md bg-parchment font-display text-sm text-ink"
+            >
+              {battle.pvp ? "Estou pronto" : "Iniciar ataque"}
+            </button>
+            {battle.pvp && (
+              <button
+                type="button"
+                onClick={leaveDuelField}
+                className="flex h-11 w-full items-center justify-center rounded-md border border-line bg-panel/90 text-sm"
+              >
+                Voltar ao condado
+              </button>
+            )}
+          </div>
         </div>
       )}
 

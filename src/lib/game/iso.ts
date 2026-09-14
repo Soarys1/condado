@@ -69,6 +69,13 @@ export function isEdgeTile(gx: number, gy: number): boolean {
   return gx <= 2 || gy <= 2 || gx >= GRID - 3 || gy >= GRID - 3;
 }
 
+export function isFieldDeployTile(gx: number, gy: number, side: "atk" | "def"): boolean {
+  if (gy < 0 || gy >= GRID || gx < 0 || gx >= GRID) return false;
+  if (side === "atk") return gx <= 2;
+  return gx >= GRID - 3;
+}
+
+
 export function diamond(
   gx: number,
   gy: number,

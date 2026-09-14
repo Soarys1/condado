@@ -78,12 +78,15 @@ import type {
 } from "./types";
 import { canPlace, canPlaceWall, countType, generateBase, nid, snapPlace, wallRow } from "./world";
 import { isEdgeTile } from "./iso";
+import { requestCamFocus } from "./camFocus";
 import { sfxBuild, sfxClick, sfxCoin, sfxError, sfxHorn, sfxStar } from "./audio";
 import { auth } from "@/lib/firebase";
 import {
   applyTraining,
   armySize,
   claimPassAllSim,
+  normalizeArmy,
+  pickDeployType,
   trainTroop,
 } from "./sim";
 import {
@@ -173,6 +176,45 @@ function stopDuelLoop() {
   pendingDeploys = [];
 }
 
+function exitFieldToVillage(toast?: string, opts?: { abandon?: boolean }) {
+  const sid = raidKind === "alliance" ? raidSessionId : null;
+  stopDuelLoop();
+  battle = null;
+  raidTarget = null;
+  raidSessionId = null;
+  raidKind = "raid";
+  requestCamFocus("village");
+  const cur = useGame.getState();
+  useGame.setState({
+    screen: "village",
+    sheet: null,
+    toast: toast ?? cur.toast,
+    duelInbox: sid ? cur.duelInbox.filter((c) => c.sessionId !== sid) : cur.duelInbox,
+  });
+  if (opts?.abandon && sid && isLive()) {
+    void playAction("abandonAllianceDuel", { sessionId: sid })
+      .then((r) => {
+        if (r.challenges) useGame.setState({ duelInbox: r.challenges });
+        if (r.save) applyServerSave(r.save, { toast: r.toast ?? toast });
+        else if (r.toast) useGame.setState({ toast: r.toast });
+      })
+      .catch(liveFail);
+  }
+}
+
+function inboxLord(pending: { incoming?: boolean; fromId: string; fromNick: string; toId: string; toNick: string }): Lord {
+  return {
+    id: pending.incoming ? pending.fromId : pending.toId,
+    nick: pending.incoming ? pending.fromNick : pending.toNick,
+    title: "Campo",
+    rank: 1,
+    lootGold: 0,
+    lootBread: 0,
+    real: true,
+    allianceId: useGame.getState().war?.foeId ?? undefined,
+  };
+}
+
 function enterAllianceField(opts: {
   sessionId: string;
   side: TroopSide;
@@ -185,29 +227,38 @@ function enterAllianceField(opts: {
   defCamp: number;
   toast?: string;
 }) {
+  const mine = useGame.getState().army;
+  const atkArmy = normalizeArmy(opts.atkArmy, opts.side === "atk" ? mine : undefined);
+  const defArmy = normalizeArmy(opts.defArmy, opts.side === "def" ? mine : undefined);
   raidSessionId = opts.sessionId;
   raidKind = "alliance";
   duelSide = opts.side;
   duelHost = opts.side === "atk";
   raidTarget = opts.lord;
-  battle = new Battle([], { ...opts.atkArmy }, 0, {
+  battle = new Battle([], { ...atkArmy }, 0, {
     mode: "field",
     pvp: true,
     controlSide: opts.side,
     hostSim: opts.side === "atk",
     levels: opts.atkLevels,
     campLevel: opts.atkCamp,
-    foeArmy: { ...opts.defArmy },
+    foeArmy: { ...defArmy },
     foeLevels: opts.defLevels,
     foeCamp: opts.defCamp,
   });
+  const bag = opts.side === "atk" ? atkArmy : defArmy;
   useGame.setState({
     screen: "prep",
     sheet: null,
-    deployType: (opts.side === "atk" ? opts.atkArmy : opts.defArmy).infantry > 0 ? "infantry" : "archers",
+    deployType: pickDeployType(bag),
     marchLord: opts.lord,
-    toast: opts.toast ?? (opts.side === "atk" ? "Campo limpo. Coloca as tropas na borda oeste." : "Campo limpo. Coloca as tropas na borda leste."),
+    toast:
+      opts.toast ??
+      (opts.side === "atk"
+        ? "Campo limpo. Tropas na borda oeste dourada, ou usa o botão."
+        : "Campo limpo. Tropas na borda leste dourada, ou usa o botão."),
   });
+  requestCamFocus(opts.side);
   startDuelLoop();
 }
 
@@ -241,10 +292,9 @@ function applyDuelWire(r: { status?: string; side?: "atk" | "def"; duel?: Record
   const d = r.duel ?? {};
   const phase = String(d.phase ?? r.status ?? "");
   if (r.status === "declined" || r.status === "expired") {
-    stopDuelLoop();
-    battle = null;
-    raidSessionId = null;
-    useGame.setState({ screen: "village", toast: r.status === "declined" ? "O lorde recusou. Escolhe outro." : "O desafio expirou. Escolhe outro lorde." });
+    exitFieldToVillage(
+      r.status === "declined" ? "O lorde recusou. Escolhe outro." : "O desafio expirou. Já podes jogar no condado.",
+    );
     return;
   }
   if (r.status === "done") {
@@ -259,7 +309,11 @@ function applyDuelWire(r: { status?: string; side?: "atk" | "def"; duel?: Record
       battle.deploy(dep.type, Number(dep.gx ?? 0), Number(dep.gy ?? 0), dep.side ?? "def");
     }
   } else if (d.snapshot && typeof d.snapshot === "object") {
-    battle.applySnapshot(d.snapshot as import("./battle").DuelSnap);
+    try {
+      battle.applySnapshot(d.snapshot as import("./battle").DuelSnap);
+    } catch {
+      /* snapshot inválido — não fecha o jogo */
+    }
   }
   if (phase === "fight" && battle.phase === "prep") {
     battle.startFight();
@@ -359,6 +413,9 @@ interface GameStore extends SaveState {
   startAllianceDuel: (lord: Lord) => void;
   declareWar: (allianceId: string) => void;
   respondDuel: (sessionId: string, accept: boolean) => void;
+  enterDuelFromInbox: (sessionId: string) => void;
+  abandonDuel: (sessionId?: string) => void;
+  leaveDuelField: () => void;
   refreshWarHall: () => Promise<void>;
   claimPassFree: (level: number) => boolean;
   claimPassExtra: (extra: PassExtra) => boolean;
@@ -2071,10 +2128,11 @@ export const useGame = create<GameStore>((set, get) => ({
       set({
         screen: "prep",
         sheet: null,
-        deployType: s.army.infantry > 0 ? "infantry" : s.army.archers > 0 ? "archers" : "defender",
+        deployType: pickDeployType(get().army),
         marchLord: lord,
-        toast: "Campo de guerra. Coloca as tropas na borda oeste.",
+        toast: "Campo de guerra. Coloca as tropas na borda oeste dourada, ou usa o botão.",
       });
+      requestCamFocus("atk");
     };
     if (isLive()) {
       void liveAction("startAllianceDuel", { targetId: lord.id })
@@ -2117,29 +2175,22 @@ export const useGame = create<GameStore>((set, get) => ({
             return;
           }
           if (r.sessionId && r.status === "prep") {
-            const lord: Lord = {
-              id: String(r.nick ? "" : ""),
-              nick: r.nick || "Rival",
-              title: "Campo",
-              rank: 1,
-              lootGold: 0,
-              lootBread: 0,
-              real: true,
-            };
             const inbox = get().duelInbox.find((c) => c.sessionId === r.sessionId);
             enterAllianceField({
               sessionId: r.sessionId,
               side: "def",
-              lord: {
-                id: inbox?.fromId || "CDN-RIVAL",
-                nick: inbox?.fromNick || r.nick || "Rival",
-                title: "Campo",
-                rank: 1,
-                lootGold: 0,
-                lootBread: 0,
-                real: true,
-                allianceId: get().war?.foeId ?? undefined,
-              },
+              lord: inbox
+                ? inboxLord({ ...inbox, incoming: true })
+                : {
+                    id: "CDN-RIVAL",
+                    nick: r.nick || "Rival",
+                    title: "Campo",
+                    rank: 1,
+                    lootGold: 0,
+                    lootBread: 0,
+                    real: true,
+                    allianceId: get().war?.foeId ?? undefined,
+                  },
               atkArmy: r.atkArmy ?? get().army,
               defArmy: r.foeArmy ?? get().army,
               atkLevels: r.atkLevels ?? get().troopLevels,
@@ -2148,7 +2199,6 @@ export const useGame = create<GameStore>((set, get) => ({
               defCamp: r.foeCamp ?? get().campLevel,
               toast: r.toast,
             });
-            void lord;
             sfxHorn();
           }
         })
@@ -2156,45 +2206,103 @@ export const useGame = create<GameStore>((set, get) => ({
     }
   },
 
-  refreshWarHall: async () => {
-    if (!isLive() || !get().alliance) return;
-    try {
-      const r = await playAction("listAllianceHall");
-      const cur = get();
-      useGame.setState({
-        alliance: r.save?.alliance ?? cur.alliance,
-        war: r.save?.war ?? cur.war,
-        allianceChat: r.save?.allianceChat ?? cur.allianceChat,
-        duelInbox: r.challenges ?? cur.duelInbox,
-      });
-      const screen = get().screen;
-      const pending = (r.challenges ?? []).find((c) => c.status === "prep" || c.status === "fight");
-      if (pending && screen === "village" && raidSessionId !== pending.sessionId) {
-        const poll = await playAction("pollAllianceDuel", { sessionId: pending.sessionId });
+  enterDuelFromInbox: (sessionId) => {
+    if (!sessionId) return;
+    if (raidSessionId === sessionId && battle?.pvp) return;
+    if (!isLive()) return;
+    void playAction("pollAllianceDuel", { sessionId })
+      .then((poll) => {
+        if (poll.status !== "prep" && poll.status !== "fight") {
+          set({
+            toast:
+              poll.status === "expired"
+                ? "Este duelo já acabou. Já podes jogar no condado."
+                : poll.status === "done"
+                  ? "Este duelo já foi resolvido."
+                  : "O desafio ainda não foi aceite.",
+            duelInbox:
+              poll.status === "pending"
+                ? get().duelInbox
+                : get().duelInbox.filter((c) => c.sessionId !== sessionId),
+          });
+          return;
+        }
         const side = poll.side === "def" ? "def" : "atk";
-        const incoming = pending.incoming;
+        const inbox = get().duelInbox.find((c) => c.sessionId === sessionId);
         enterAllianceField({
-          sessionId: pending.sessionId,
+          sessionId,
           side,
-          lord: {
-            id: incoming ? pending.fromId : pending.toId,
-            nick: incoming ? pending.fromNick : pending.toNick,
-            title: "Campo",
-            rank: 1,
-            lootGold: 0,
-            lootBread: 0,
-            real: true,
-            allianceId: get().war?.foeId ?? undefined,
-          },
+          lord: inbox
+            ? inboxLord(inbox)
+            : {
+                id: "CDN-RIVAL",
+                nick: poll.nick || "Rival",
+                title: "Campo",
+                rank: 1,
+                lootGold: 0,
+                lootBread: 0,
+                real: true,
+                allianceId: get().war?.foeId ?? undefined,
+              },
           atkArmy: poll.atkArmy ?? get().army,
           defArmy: poll.foeArmy ?? get().army,
           atkLevels: poll.atkLevels ?? get().troopLevels,
           defLevels: poll.foeLevels ?? get().troopLevels,
           atkCamp: poll.atkCamp ?? 1,
           defCamp: poll.foeCamp ?? get().campLevel,
-          toast: "O duelo foi aceite. Para o campo.",
+          toast: poll.toast,
         });
-      }
+        if (poll.status === "fight" && battle?.phase === "prep") {
+          battle.startFight();
+          set({ screen: "battle" });
+        }
+        sfxHorn();
+      })
+      .catch(liveFail);
+  },
+
+  abandonDuel: (sessionId) => {
+    const sid = sessionId || raidSessionId;
+    if (!sid) return;
+    if (raidSessionId === sid && battle?.pvp) {
+      exitFieldToVillage("Saíste do campo.", { abandon: true });
+      return;
+    }
+    if (isLive()) {
+      void liveAction("abandonAllianceDuel", { sessionId: sid })
+        .then((r) => {
+          if (r.challenges) set({ duelInbox: r.challenges });
+        })
+        .catch(liveFail);
+      return;
+    }
+    set({ duelInbox: get().duelInbox.filter((c) => c.sessionId !== sid), toast: "Duelo anulado." });
+  },
+
+  leaveDuelField: () => {
+    if (battle?.pvp && battle.phase === "fight") {
+      get().retreat();
+      return;
+    }
+    exitFieldToVillage("Saíste do campo. O duelo foi anulado.", { abandon: true });
+  },
+
+  refreshWarHall: async () => {
+    if (!isLive() || !get().alliance) return;
+    try {
+      const r = await playAction("listAllianceHall");
+      const cur = get();
+      const nextInbox = r.challenges ?? cur.duelInbox;
+      const live = nextInbox.find((c) => c.status === "prep" || c.status === "fight");
+      const prev = live ? cur.duelInbox.find((c) => c.sessionId === live.sessionId) : undefined;
+      const acceptedNow = live && live.status === "prep" && prev?.status === "pending" && cur.screen === "village";
+      useGame.setState({
+        alliance: r.save?.alliance ?? cur.alliance,
+        war: r.save?.war ?? cur.war,
+        allianceChat: r.save?.allianceChat ?? cur.allianceChat,
+        duelInbox: nextInbox,
+        ...(acceptedNow && live ? { toast: `${live.incoming ? live.fromNick : live.toNick} aceitou o 1v1. Entra no campo.` } : {}),
+      });
     } catch {
       /* offline */
     }
@@ -2308,11 +2416,16 @@ export const useGame = create<GameStore>((set, get) => ({
   setToast: (toast) => set({ toast }),
 
   returnVillage: () => {
+    if (raidKind === "alliance" && raidSessionId && battle?.pvp && get().screen !== "results") {
+      exitFieldToVillage("Saíste do campo.", { abandon: true });
+      return;
+    }
     stopDuelLoop();
     battle = null;
     raidTarget = null;
     raidSessionId = null;
     raidKind = "raid";
+    requestCamFocus("village");
     set({ screen: "village", sheet: null });
   },
 

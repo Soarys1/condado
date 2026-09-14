@@ -11,10 +11,11 @@ import {
   type TroopType,
   type WallDir,
 } from "./constants";
-import { clampCam, diamond, iso, isEdgeTile, tileCenter, worldToGrid } from "./iso";
+import { clampCam, diamond, iso, isEdgeTile, isFieldDeployTile, tileCenter, worldToGrid } from "./iso";
 import { getAsset, loadAssets } from "./assets";
 import { battle, raidTarget, useGame } from "./store";
 import type { BuildingInst } from "./types";
+import { takeCamFocus } from "./camFocus";
 
 export interface Runtime {
   destroy: () => void;
@@ -338,7 +339,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
         ctx!.lineTo(b.x, b.y);
         ctx!.lineTo(l.x, l.y);
         ctx!.closePath();
-        if (deploy && isEdgeTile(x, y)) {
+        if (deploy && isDeployHighlight(x, y)) {
           ctx!.fillStyle = "rgba(198, 162, 62, 0.18)";
           ctx!.fill();
         }
@@ -346,6 +347,33 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
         ctx!.stroke();
       }
     }
+  }
+
+  function isDeployHighlight(x: number, y: number): boolean {
+    if (battle?.mode === "field") {
+      const side = battle.pvp ? battle.controlSide : "atk";
+      return isFieldDeployTile(x, y, side);
+    }
+    return isEdgeTile(x, y);
+  }
+
+  function applyRequestedCam() {
+    const focus = takeCamFocus();
+    if (!focus) return;
+    if (focus === "village") {
+      const home = useGame.getState().buildings.find((b) => b.type === "castle");
+      const castle = tileCenter(home?.gx ?? 20, home?.gy ?? 20, 3);
+      cam.x = castle.x;
+      cam.y = castle.y;
+      cam.z = 0.72;
+      return;
+    }
+    const gx = focus === "atk" ? 1 : GRID - 2;
+    const gy = Math.floor(GRID / 2);
+    const c = tileCenter(gx, gy, 1);
+    cam.x = c.x;
+    cam.y = c.y;
+    cam.z = 0.9;
   }
 
   function drawDecor() {
@@ -678,17 +706,12 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
         }
         useGame.getState().tick(Date.now());
       }
+      applyRequestedCam();
       const clamped = clampCam(cam.x, cam.y, cam.z, w, h);
       cam.x = clamped.x;
       cam.y = clamped.y;
       draw();
     } catch (err) {
-      ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx!.fillStyle = "#3a2018";
-      ctx!.fillRect(0, 0, w, h);
-      ctx!.fillStyle = "#e6d5b3";
-      ctx!.font = "14px sans-serif";
-      ctx!.fillText(String(err), 16, 40);
       console.error(err);
     }
     raf = requestAnimationFrame(loop);

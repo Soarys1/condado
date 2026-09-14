@@ -49,6 +49,7 @@ import {
   upgradeCost,
   wallCap,
   weeklyPrize,
+  ALLIANCE_DUEL_STALE_MS,
   type BuildingType,
   type PassExtra,
   type ResourceKind,
@@ -56,7 +57,7 @@ import {
   type TroopType,
   type WallDir,
 } from "./constants";
-import type { ArmyCounts, BuildingInst, SaveState, TrainingJob } from "./types";
+import type { ArmyCounts, BuildingInst, DuelStatus, SaveState, TrainingJob } from "./types";
 import { canPlace, canPlaceWall, countType, nid, snapPlace, wallRow } from "./world";
 
 export type LedgerEntry = {
@@ -73,6 +74,91 @@ export class GameError extends Error {
     super(message);
     this.name = "GameError";
   }
+}
+
+export const EMPTY_ARMY: ArmyCounts = {
+  infantry: 0,
+  archers: 0,
+  cavalry: 0,
+  general: 0,
+  generaless: 0,
+  defender: 0,
+};
+
+export function armyCountOf(a: Partial<ArmyCounts> | null | undefined): number {
+  if (!a) return 0;
+  return (
+    (a.infantry || 0) +
+    (a.archers || 0) +
+    (a.cavalry || 0) +
+    (a.general || 0) +
+    (a.generaless || 0) +
+    (a.defender || 0)
+  );
+}
+
+export function normalizeArmy(raw: unknown, fallback?: ArmyCounts): ArmyCounts {
+  if (!raw || typeof raw !== "object") return fallback ?? { ...EMPTY_ARMY };
+  const a = raw as Record<string, unknown>;
+  const has =
+    "infantry" in a ||
+    "archers" in a ||
+    "cavalry" in a ||
+    "defender" in a ||
+    "general" in a ||
+    "generaless" in a;
+  if (!has) return fallback ?? { ...EMPTY_ARMY };
+  return {
+    infantry: Math.max(0, Math.floor(Number(a.infantry) || 0)),
+    archers: Math.max(0, Math.floor(Number(a.archers) || 0)),
+    cavalry: Math.max(0, Math.floor(Number(a.cavalry) || 0)),
+    general: Math.min(1, Math.max(0, Math.floor(Number(a.general) || 0))),
+    generaless: Math.min(1, Math.max(0, Math.floor(Number(a.generaless) || 0))),
+    defender: Math.max(0, Math.floor(Number(a.defender) || 0)),
+  };
+}
+
+export function pickDeployType(army: ArmyCounts): TroopType {
+  if (army.infantry > 0) return "infantry";
+  if (army.archers > 0) return "archers";
+  if (army.defender > 0) return "defender";
+  if (army.cavalry > 0) return "cavalry";
+  if (army.general > 0) return "general";
+  return "generaless";
+}
+
+export function resolveDuelStatus(
+  status: DuelStatus | string,
+  opts: {
+    until?: number;
+    fightEndsAt?: number;
+    createdAt?: number;
+    challengeUntil?: number;
+    now?: number;
+  } = {},
+): DuelStatus {
+  const now = opts.now ?? Date.now();
+  const s = String(status ?? "pending") as DuelStatus;
+  if (s === "pending") {
+    const until = Number(opts.until ?? opts.challengeUntil ?? 0);
+    if (until && now > until) return "expired";
+    return "pending";
+  }
+  if (s === "prep" || s === "fight") {
+    const fightEndsAt = Number(opts.fightEndsAt ?? 0);
+    const until = Number(opts.until ?? 0);
+    const createdAt = Number(opts.createdAt ?? 0);
+    const challengeUntil = Number(opts.challengeUntil ?? 0);
+    const deadline =
+      fightEndsAt ||
+      until ||
+      (createdAt ? createdAt + ALLIANCE_DUEL_STALE_MS : 0) ||
+      (challengeUntil ? challengeUntil + ALLIANCE_DUEL_STALE_MS : 0);
+    if (!deadline || now > deadline) return "expired";
+    return s;
+  }
+  if (s === "declined" || s === "expired" || s === "done") return s;
+  return "expired";
 }
 
 export function jobCount(j: Pick<TrainingJob, "count">): number {

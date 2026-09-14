@@ -77,6 +77,9 @@ export const ALLIANCE_DUEL_LOSS_GOLD = 6_000;
 export const ALLIANCE_DUEL_WIN_POT = 20_000;
 export const ALLIANCE_DUEL_LOSS_POT = 8_000;
 export const ALLIANCE_CHALLENGE_MS = 90_000;
+/** Prep + fight + challenge window, used to expire stuck PvP sessions. */
+export const ALLIANCE_DUEL_STALE_MS = PREP_MS + BATTLE_MS + ALLIANCE_CHALLENGE_MS + 60_000;
+
 
 export type BuildingType =
   | "castle"

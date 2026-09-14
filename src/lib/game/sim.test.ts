@@ -8,7 +8,11 @@ import {
   claimPassAllSim,
   collectBuilding,
   creditResource,
+  EMPTY_ARMY,
   lootForStars,
+  normalizeArmy,
+  pickDeployType,
+  resolveDuelStatus,
   sellNienSim,
   spendForTransfer,
   storedAmount,
@@ -18,7 +22,8 @@ import {
   upgradeCountySim,
   settle,
 } from "./sim";
-import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT, trainCostFor, ALLIANCE_FOUND_NIENS, allianceAtWarToday, allianceXpToNext, applyAllianceXp, warWindow } from "./constants";
+import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT, trainCostFor, ALLIANCE_FOUND_NIENS, allianceAtWarToday, allianceXpToNext, applyAllianceXp, warWindow, GRID } from "./constants";
+import { isFieldDeployTile } from "./iso";
 
 describe("economia pura", () => {
   it("recolha de mina usa timestamp, não tick", () => {
@@ -322,5 +327,24 @@ describe("economia pura", () => {
     const r = settle(save, Date.now());
     assert.equal(r.save.gold, save.gold);
     assert.equal(r.save.war?.resolved, false);
+  });
+
+  it("duelo preso de guerra expira e o exército vazio cai no fallback", () => {
+    const now = 1_000_000;
+    assert.equal(resolveDuelStatus("pending", { until: now - 1, now }), "expired");
+    assert.equal(resolveDuelStatus("pending", { until: now + 10_000, now }), "pending");
+    assert.equal(resolveDuelStatus("prep", { until: now - 1, now }), "expired");
+    assert.equal(resolveDuelStatus("fight", { fightEndsAt: now + 5_000, now }), "fight");
+    assert.equal(resolveDuelStatus("fight", { fightEndsAt: now - 1, now }), "expired");
+    assert.equal(resolveDuelStatus("prep", { now }), "expired");
+    const fallback = { ...EMPTY_ARMY, infantry: 8, archers: 2 };
+    assert.deepEqual(normalizeArmy({}, fallback), fallback);
+    assert.deepEqual(normalizeArmy(undefined, fallback), fallback);
+    assert.equal(normalizeArmy({ infantry: 0, archers: 0, cavalry: 0, general: 0, generaless: 0, defender: 0 }).infantry, 0);
+    assert.equal(pickDeployType(fallback), "infantry");
+    assert.equal(isFieldDeployTile(1, 20, "atk"), true);
+    assert.equal(isFieldDeployTile(GRID - 2, 20, "atk"), false);
+    assert.equal(isFieldDeployTile(GRID - 2, 20, "def"), true);
+    assert.equal(isFieldDeployTile(1, 20, "def"), false);
   });
 });

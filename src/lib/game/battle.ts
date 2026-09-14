@@ -16,10 +16,11 @@ import {
   type TroopType,
   type WallDir,
 } from "./constants";
-import { isEdgeTile } from "./iso";
+import { isEdgeTile, isFieldDeployTile } from "./iso";
 import { approachCells, findPath, makeBlocked, pathCost } from "./pathfinding";
 import { sfxArrow, sfxBoom, sfxHit, sfxHorn } from "./audio";
 import type { ArmyCounts, BuildingInst, TroopLevels } from "./types";
+import { normalizeArmy } from "./sim";
 
 export type BattlePhase = "prep" | "fight" | "ended";
 export type BattleMode = "raid" | "field";
@@ -258,22 +259,19 @@ export class Battle {
   }
 
   remainingOf(type: TroopType, side: TroopSide = "atk"): number {
-    return side === "atk" ? this.armyLeft[type] : this.foeArmy[type];
+    const bag = side === "atk" ? this.armyLeft : this.foeArmy;
+    return Math.max(0, bag[type] || 0);
   }
 
   private deployEdge(gx: number, gy: number, side: TroopSide): boolean {
-    if (this.mode === "field") {
-      if (side === "atk") return gx <= 2 && gy >= 0 && gy < GRID;
-      return gx >= GRID - 3 && gy >= 0 && gy < GRID;
-    }
+    if (this.mode === "field") return isFieldDeployTile(gx, gy, side);
     return isEdgeTile(gx, gy);
   }
 
   canDeploy(type: TroopType, gx: number, gy: number, side: TroopSide = "atk"): boolean {
     if (this.phase !== "prep" && this.phase !== "fight") return false;
     if (this.spectator) return false;
-    if (side === "atk" && this.armyLeft[type] <= 0) return false;
-    if (side === "def" && this.foeArmy[type] <= 0) return false;
+    if (this.remainingOf(type, side) <= 0) return false;
     if (isHero(type)) {
       const used = this.troops.some((t) => t.alive && t.side === side && t.type === type);
       if (used) return false;
@@ -321,13 +319,13 @@ export class Battle {
   }
 
   deployAll(type: TroopType, gx: number, gy: number, side: TroopSide = "atk"): number {
-    const bag = side === "atk" ? this.armyLeft : this.foeArmy;
-    if (bag[type] <= 0) return 0;
+    if (this.remainingOf(type, side) <= 0) return 0;
     if (isHero(type)) return this.deploy(type, gx, gy, side) ? 1 : 0;
+    const bag = side === "atk" ? this.armyLeft : this.foeArmy;
     const tiles = this.nearbyDeployTiles(gx, gy, side);
     let n = 0;
     for (const [x, y] of tiles) {
-      if (bag[type] <= 0) break;
+      if ((bag[type] || 0) <= 0) break;
       if (this.deploy(type, x, y, side)) n += 1;
     }
     return n;
@@ -1296,14 +1294,15 @@ export class Battle {
   }
 
   applySnapshot(snap: DuelSnap) {
+    if (!snap || typeof snap !== "object") return;
     this.phase = snap.phase === "fight" || snap.phase === "ended" || snap.phase === "prep" ? snap.phase : this.phase;
-    this.prepLeft = snap.prepLeft;
-    this.fightLeft = snap.fightLeft;
-    this.armyLeft = { ...snap.armyLeft };
-    this.foeArmy = { ...snap.foeArmy };
+    if (typeof snap.prepLeft === "number") this.prepLeft = snap.prepLeft;
+    if (typeof snap.fightLeft === "number") this.fightLeft = snap.fightLeft;
+    if (snap.armyLeft) this.armyLeft = normalizeArmy(snap.armyLeft, this.armyLeft);
+    if (snap.foeArmy) this.foeArmy = normalizeArmy(snap.foeArmy, this.foeArmy);
     const keep = this.hostSim ? this.controlSide : null;
     const local = keep ? this.troops.filter((t) => t.side === keep) : [];
-    const remote = snap.troops.filter((t) => !keep || t.side !== keep);
+    const remote = Array.isArray(snap.troops) ? snap.troops.filter((t) => !keep || t.side !== keep) : [];
     const rebuilt: BattleTroop[] = [
       ...local,
       ...remote.map((t) => ({
