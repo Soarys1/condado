@@ -114,6 +114,7 @@ export let raidTarget: Lord | null = null;
 export let duelSide: TroopSide = "atk";
 let raidSessionId: string | null = null;
 let raidKind: "raid" | "alliance" = "raid";
+let raidStartedArmy: SaveState["army"] | null = null;
 let duelHost = true;
 let pendingDeploys: Array<{ type: TroopType; gx: number; gy: number }> = [];
 let duelTimer: ReturnType<typeof setInterval> | null = null;
@@ -235,6 +236,7 @@ function enterAllianceField(opts: {
   duelSide = opts.side;
   duelHost = opts.side === "atk";
   raidTarget = opts.lord;
+  raidStartedArmy = { ...(opts.side === "atk" ? atkArmy : defArmy) };
   battle = new Battle([], { ...atkArmy }, 0, {
     mode: "field",
     pvp: true,
@@ -1033,6 +1035,7 @@ export const useGame = create<GameStore>((set, get) => ({
             real: true,
           };
           raidTarget = target;
+          raidStartedArmy = { ...useGame.getState().army };
           set({ screen: "march", sheet: null, marchLord: target });
           sfxClick();
         } catch (error) {
@@ -1086,6 +1089,7 @@ export const useGame = create<GameStore>((set, get) => ({
       return;
     }
     raidTarget = lord;
+    raidStartedArmy = { ...s.army };
     set({
       screen: "march",
       sheet: null,
@@ -1103,6 +1107,7 @@ export const useGame = create<GameStore>((set, get) => ({
       return;
     }
     raidTarget = lord;
+    if (!raidStartedArmy) raidStartedArmy = { ...s.army };
     const layout =
       lord.real && lord.buildings && lord.buildings.length > 0
         ? lord.buildings
@@ -1206,7 +1211,7 @@ export const useGame = create<GameStore>((set, get) => ({
     const army = battle.spectator ? s.army : battle.armyHome(battle.pvp ? duelSide : "atk");
     const pass = {
       ...s.pass,
-      stars: s.pass.stars + (battle.spectator || battle.mode === "field" ? 0 : r.stars),
+      stars: s.pass.stars + (battle.spectator ? 0 : r.stars),
     };
     let war = s.war;
     if (
@@ -1239,7 +1244,7 @@ export const useGame = create<GameStore>((set, get) => ({
     const win = rankingWindow();
     let weekStars = s.weekKey === win.key ? s.weekStars : 0;
     const weekKey = win.key;
-    if (!battle.spectator && win.open && battle.mode !== "field") weekStars += r.stars;
+    if (!battle.spectator && win.open) weekStars += r.stars;
     let goldGain = battle.spectator ? 0 : r.gold;
     if (!isLive() && battle.mode === "field" && r.fieldWinner === "atk") {
       goldGain = ALLIANCE_DUEL_WIN_GOLD;
@@ -1254,7 +1259,7 @@ export const useGame = create<GameStore>((set, get) => ({
       gold: Math.max(0, s.gold + goldGain - stolen),
       bread: s.bread,
       niens: s.niens,
-      stars: s.stars + (battle.spectator || battle.mode === "field" ? 0 : r.stars),
+      stars: s.stars + (battle.spectator ? 0 : r.stars),
       weekStars,
       weekKey,
       raidsWon: s.raidsWon + (r.stars > 0 && !battle.spectator ? 1 : 0),
@@ -1311,6 +1316,19 @@ export const useGame = create<GameStore>((set, get) => ({
           if (res.save) applyServerSave(res.save);
         })
         .catch(liveFail);
+      return;
+    }
+    if (!battle.spectator && isLive() && battle.mode !== "field" && !raidTarget.real) {
+      void liveAction("finishTrainingRaid", {
+        stars: r.stars,
+        goldTaken: r.gold,
+        destruction: r.destruction,
+        troopsLost,
+        survivors: army,
+        startedArmy: raidStartedArmy ?? army,
+        targetId: raidTarget.id,
+        targetNick: raidTarget.nick,
+      }).catch(liveFail);
       return;
     }
     if (!battle.spectator && raidTarget.real) {

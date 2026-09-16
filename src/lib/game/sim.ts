@@ -1021,6 +1021,25 @@ export function applyWeeklyPrize(
   };
 }
 
+export function addWeekStars(
+  s: SaveState,
+  stars: number,
+  now = Date.now(),
+  opts?: { countRaid?: boolean },
+): SaveState {
+  const n = Math.max(0, Math.min(3, Math.floor(Number(stars) || 0)));
+  const win = rankingWindow(now);
+  const weekStars = (s.weekKey === win.key ? s.weekStars : 0) + (win.open ? n : 0);
+  return {
+    ...s,
+    stars: s.stars + n,
+    weekStars,
+    weekKey: win.key,
+    pass: { ...s.pass, stars: s.pass.stars + n },
+    raidsWon: s.raidsWon + (opts?.countRaid !== false && n > 0 ? 1 : 0),
+  };
+}
+
 export function applyRaidFinish(
   s: SaveState,
   input: {
@@ -1045,15 +1064,12 @@ export function applyRaidFinish(
     generaless: clampSurvivor("generaless", input.survivors, input.startedArmy),
     defender: clampSurvivor("defender", input.survivors, input.startedArmy),
   };
-  const win = rankingWindow(now);
-  let weekStars = s.weekKey === win.key ? s.weekStars : 0;
-  if (win.open) weekStars += stars;
+  const starred = addWeekStars(s, stars, now);
   const ledger: LedgerEntry[] = [];
-  if (goldTaken) pushLedger(ledger, s, "raid_loot", "gold", goldTaken, input.defenderNick);
-  const pass = { ...s.pass, stars: s.pass.stars + stars };
+  if (goldTaken) pushLedger(ledger, starred, "raid_loot", "gold", goldTaken, input.defenderNick);
   return {
     save: {
-      ...s,
+      ...starred,
       army: {
         infantry: s.army.infantry - input.startedArmy.infantry + army.infantry,
         archers: s.army.archers - input.startedArmy.archers + army.archers,
@@ -1063,11 +1079,6 @@ export function applyRaidFinish(
         defender: s.army.defender - input.startedArmy.defender + army.defender,
       },
       gold: s.gold + goldTaken,
-      stars: s.stars + stars,
-      weekStars,
-      weekKey: win.key,
-      raidsWon: s.raidsWon + (stars > 0 ? 1 : 0),
-      pass,
     },
     ledger,
   };

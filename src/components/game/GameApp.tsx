@@ -1520,6 +1520,7 @@ function ProfileSheet() {
   const bread = useGame((s) => s.bread);
   const niens = useGame((s) => s.niens);
   const stars = useGame((s) => s.stars);
+  const weekStars = useGame((s) => s.weekStars);
   const raidsWon = useGame((s) => s.raidsWon);
   const army = useGame((s) => s.army);
   const buildings = useGame((s) => s.buildings);
@@ -1676,7 +1677,7 @@ function ProfileSheet() {
           Cartas tropa {troopCards} · Cartas general {generalCards}
         </li>
         <li>
-          Estrelas {stars} · Incursões {raidsWon}
+          Estrelas {stars} · Semana {weekStars} ★ · Incursões {raidsWon}
         </li>
         <li>
           Tropas {troops} · Estruturas {buildings.length}
@@ -2673,6 +2674,9 @@ function Results() {
             8.400)
           </li>
           {!spectator && <li>Tropas perdidas: {r.casualties}. Vivos: {alive} voltaram.</li>}
+          {!spectator && r.stars > 0 && (
+            <li className="text-niens">Ranking da semana: +{r.stars} ★</li>
+          )}
           {spectator && <li>Escudo de 1 hora ativado. Pão e Niens intactos.</li>}
         </ul>
         <p className="mt-3 text-xs text-parchment-dim">
@@ -2693,16 +2697,19 @@ function Results() {
 function RankSheet() {
   const [board, setBoard] = useState<RankRow[]>([]);
   const [rank, setRank] = useState(0);
+  const [yourStars, setYourStars] = useState(0);
   const [claim, setClaim] = useState(false);
   const [claimed, setClaimed] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const refreshLedger = useGame((s) => s.refreshLedger);
+  const weekStars = useGame((s) => s.weekStars);
 
   useEffect(() => {
     void weeklyBoard()
       .then((r) => {
         setBoard(r.board);
         setRank(r.yourRank);
+        setYourStars(r.yourStars);
         setClaim(r.week.claim);
         setClaimed(r.claimed);
       })
@@ -2732,16 +2739,18 @@ function RankSheet() {
   return (
     <div className="space-y-3">
       <p className="text-sm text-parchment-dim">
-        Segunda 8h às domingo 23h de Brasília. Quem mais ganhar estrelas entra no top 20. 20º–8º{" "}
-        {GOLD_NAME_PL} (50 mil a 300 mil). 7º–4º: 3 cartas tropa. Top 3: 4 cartas tropa + 2 general.
+        Segunda 8h às domingo 23h de Brasília. Cada estrela de batalha (condado, treino ou vitória no
+        campo) entra no ranking. Top 20 divide o prêmio. 20º–8º {GOLD_NAME_PL} (50 mil a 300 mil).
+        7º–4º: 3 cartas tropa. Top 3: 4 cartas tropa + 2 general.
       </p>
       <p className="text-xs text-parchment-dim">
         {win.open
           ? "Semana aberta."
           : win.claim
             ? "Semana fechada — recolhe o prêmio."
-            : "À espera da segunda 8h."}
-        {rank > 0 ? ` Tu estás em #${rank}.` : ""}
+            : "À espera da segunda 8h."}{" "}
+        Tu: {Math.max(weekStars, yourStars)} ★
+        {rank > 0 ? ` · #${rank}` : ""}.
       </p>
       {claim && !claimed && rank > 0 && rank <= 20 && (
         <button
@@ -2755,6 +2764,9 @@ function RankSheet() {
       {claimed && <p className="text-sm text-niens">Prêmio da semana já selado.</p>}
       {msg && <p className="text-sm text-niens">{msg}</p>}
       <div className="space-y-1">
+        {board.length === 0 && (
+          <p className="text-sm text-parchment-dim">Ainda não há estrelas nesta semana. Ataca um condado.</p>
+        )}
         {board.map((r, i) => (
           <div
             key={r.playerId}

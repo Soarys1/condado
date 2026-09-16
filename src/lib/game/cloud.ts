@@ -41,6 +41,7 @@ export type GameActionResult = {
   yourRank?: number;
   claimed?: boolean;
   week?: { key: string; open: boolean; claim: boolean; start: number; end: number };
+  yourStars?: number;
   rows?: LedgerRow[];
   nick?: string | null;
   id?: string;
@@ -178,6 +179,7 @@ export async function weeklyBoard() {
   return {
     board: r.board ?? [],
     yourRank: r.yourRank ?? 0,
+    yourStars: r.yourStars ?? 0,
     claimed: Boolean(r.claimed),
     week: r.week ?? { key: "", open: false, claim: false, start: 0, end: 0 },
   };

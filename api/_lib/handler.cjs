@@ -949,20 +949,6 @@ function findNick(id) {
 	if (key.startsWith("CDN-") && key.length >= 8) return `Senhor ${key.slice(4, 8)}`;
 	return null;
 }
-function botWeekBoard(weekKey) {
-	return LORDS.map((l, i) => {
-		let h = 2166136261;
-		const seed = weekKey + l.id;
-		for (let c = 0; c < seed.length; c++) h = Math.imul(h ^ seed.charCodeAt(c), 16777619);
-		const stars = 12 + (h >>> 0) % 90 + i * 3;
-		return {
-			playerId: l.id,
-			nick: l.nick,
-			stars,
-			bot: true
-		};
-	});
-}
 //#endregion
 //#region src/lib/game/save.ts
 const DEFAULT_LEVELS = {
@@ -2165,6 +2151,22 @@ function applyWeeklyPrize(s, rank) {
 		prize
 	};
 }
+function addWeekStars(s, stars, now = Date.now(), opts) {
+	const n = Math.max(0, Math.min(3, Math.floor(Number(stars) || 0)));
+	const win = rankingWindow(now);
+	const weekStars = (s.weekKey === win.key ? s.weekStars : 0) + (win.open ? n : 0);
+	return {
+		...s,
+		stars: s.stars + n,
+		weekStars,
+		weekKey: win.key,
+		pass: {
+			...s.pass,
+			stars: s.pass.stars + n
+		},
+		raidsWon: s.raidsWon + (opts?.countRaid !== false && n > 0 ? 1 : 0)
+	};
+}
 function applyRaidFinish(s, input) {
 	const now = input.now ?? Date.now();
 	const stars = Math.max(0, Math.min(3, Math.floor(input.stars)));
@@ -2178,18 +2180,12 @@ function applyRaidFinish(s, input) {
 		generaless: clampSurvivor("generaless", input.survivors, input.startedArmy),
 		defender: clampSurvivor("defender", input.survivors, input.startedArmy)
 	};
-	const win = rankingWindow(now);
-	let weekStars = s.weekKey === win.key ? s.weekStars : 0;
-	if (win.open) weekStars += stars;
+	const starred = addWeekStars(s, stars, now);
 	const ledger = [];
-	if (goldTaken) pushLedger(ledger, s, "raid_loot", "gold", goldTaken, input.defenderNick);
-	const pass = {
-		...s.pass,
-		stars: s.pass.stars + stars
-	};
+	if (goldTaken) pushLedger(ledger, starred, "raid_loot", "gold", goldTaken, input.defenderNick);
 	return {
 		save: {
-			...s,
+			...starred,
 			army: {
 				infantry: s.army.infantry - input.startedArmy.infantry + army.infantry,
 				archers: s.army.archers - input.startedArmy.archers + army.archers,
@@ -2198,12 +2194,7 @@ function applyRaidFinish(s, input) {
 				generaless: s.army.generaless - input.startedArmy.generaless + army.generaless,
 				defender: s.army.defender - input.startedArmy.defender + army.defender
 			},
-			gold: s.gold + goldTaken,
-			stars: s.stars + stars,
-			weekStars,
-			weekKey: win.key,
-			raidsWon: s.raidsWon + (stars > 0 ? 1 : 0),
-			pass
+			gold: s.gold + goldTaken
 		},
 		ledger
 	};
@@ -2250,6 +2241,10 @@ const RATE = {
 		windowMs: 6e4
 	},
 	finishRaid: {
+		n: 8,
+		windowMs: 6e4
+	},
+	finishTrainingRaid: {
 		n: 8,
 		windowMs: 6e4
 	},
@@ -2682,6 +2677,7 @@ async function dispatch(tx, player, action, payload, requestId) {
 		case "listRaidTargets": return listTargetsAction(player);
 		case "startRaid": return startRaidAction(write(), player, String(payload.targetId ?? ""), requestId);
 		case "finishRaid": return finishRaidAction(write(), player, payload, requestId);
+		case "finishTrainingRaid": return finishTrainingRaidAction(write(), player, payload, requestId);
 		case "sendChat": return sendChatAction(write(), player, String(payload.text ?? ""), requestId);
 		case "syncAccountEmail": return syncEmail(write(), player, requestId);
 		case "adminLookup": return adminLookup(player, String(payload.playerId ?? ""));
@@ -2782,6 +2778,8 @@ async function createProfile(tx, player, payload, requestId) {
 		if (fpTaken.exists && fpTaken.data()?.userId !== player.uid) throw new GameError("Já existe um condado neste aparelho.");
 	}
 	const save = defaultSave(nick, referredBy);
+	save.weekKey = rankingWindow().key;
+	save.weekStars = 0;
 	writeProfile(tx, ref, {
 		...save,
 		userId: player.uid,
@@ -3132,27 +3130,37 @@ async function weeklyBoardAction(player) {
 	const win = rankingWindow();
 	const meSnap = await profileRef(player.uid).get();
 	const you = meSnap.exists ? profileFromDoc(player.uid, meSnap.data()) : null;
-	const q = await col("condado_profiles").where("weekKey", "==", win.key).orderBy("weekStars", "desc").limit(20).get();
+	const mineStars = you && you.weekKey === win.key ? you.weekStars : 0;
 	const byId = /* @__PURE__ */ new Map();
-	for (const b of botWeekBoard(win.key)) byId.set(b.playerId, {
-		...b,
-		bot: true
+	try {
+		const q = await col("condado_profiles").where("weekKey", "==", win.key).limit(80).get();
+		for (const d of q.docs) {
+			const r = d.data();
+			const playerId = String(r.playerId ?? "");
+			if (!playerId) continue;
+			const stars = Number(r.weekStars ?? 0);
+			byId.set(playerId, {
+				playerId,
+				nick: String(r.nick ?? "Senhor"),
+				stars,
+				you: you?.player.id === playerId
+			});
+		}
+	} catch {}
+	if (you) byId.set(you.player.id, {
+		playerId: you.player.id,
+		nick: you.player.nick,
+		stars: mineStars,
+		you: true
 	});
-	for (const d of q.docs) {
-		const r = d.data();
-		byId.set(String(r.playerId), {
-			playerId: String(r.playerId),
-			nick: String(r.nick),
-			stars: Number(r.weekStars ?? 0),
-			you: you?.player.id === r.playerId
-		});
-	}
-	const board = [...byId.values()].sort((a, b) => b.stars - a.stars).slice(0, 20);
-	const yourRank = board.findIndex((r) => r.you) + 1;
+	const ranked = [...byId.values()].sort((a, b) => b.stars - a.stars || a.nick.localeCompare(b.nick, "pt"));
+	const board = ranked.slice(0, 20);
+	const yourRank = ranked.findIndex((r) => r.you) + 1;
 	const claim = you ? await col("condado_week_claims").doc(`${player.uid}_${win.key}`).get() : null;
 	return {
 		board,
 		yourRank,
+		yourStars: mineStars,
 		claimed: Boolean(claim?.exists),
 		week: win
 	};
@@ -3162,21 +3170,24 @@ async function claimWeeklyAction(tx, player, requestId) {
 	if (!win.claim) throw new GameError("O prêmio abre domingo às 23h de Brasília.");
 	const claimRef = col("condado_week_claims").doc(`${player.uid}_${win.key}`);
 	if ((await tx.get(claimRef)).exists) throw new GameError("Prêmio já recolhido.");
-	const boardQ = await tx.get(col("condado_profiles").where("weekKey", "==", win.key).orderBy("weekStars", "desc").limit(20));
+	const boardQ = await tx.get(col("condado_profiles").where("weekKey", "==", win.key).limit(80));
 	const prep = await preparePlayer(tx, player.uid);
 	const byId = /* @__PURE__ */ new Map();
-	for (const b of botWeekBoard(win.key)) byId.set(b.playerId, {
-		playerId: b.playerId,
-		stars: b.stars
-	});
 	for (const d of boardQ.docs) {
 		const r = d.data();
-		byId.set(String(r.playerId), {
-			playerId: String(r.playerId),
+		const playerId = String(r.playerId ?? "");
+		if (!playerId) continue;
+		byId.set(playerId, {
+			playerId,
 			stars: Number(r.weekStars ?? 0)
 		});
 	}
-	const rank = [...byId.values()].sort((a, b) => b.stars - a.stars).slice(0, 20).findIndex((r) => r.playerId === prep.profile.player.id) + 1;
+	const mineStars = prep.profile.weekKey === win.key ? prep.profile.weekStars : 0;
+	byId.set(prep.profile.player.id, {
+		playerId: prep.profile.player.id,
+		stars: mineStars
+	});
+	const rank = [...byId.values()].sort((a, b) => b.stars - a.stars).findIndex((r) => r.playerId === prep.profile.player.id) + 1;
 	if (!weeklyPrize(rank)) throw new GameError("Fora do top 20 desta semana.");
 	const r = applyWeeklyPrize(withoutMeta(prep.profile), rank);
 	const profile = {
@@ -3193,7 +3204,8 @@ async function claimWeeklyAction(tx, player, requestId) {
 	return {
 		save: withoutMeta(profile),
 		toast: `Prêmio do ${rank}º lugar recolhido.`,
-		yourRank: rank
+		yourRank: rank,
+		yourStars: mineStars
 	};
 }
 async function listTransfersAction(player) {
@@ -3392,6 +3404,53 @@ async function finishRaidAction(tx, player, payload, requestId) {
 		resolvedAt: Date.now()
 	}, { merge: true });
 	return { save: withoutMeta(me) };
+}
+async function finishTrainingRaidAction(tx, player, payload, requestId) {
+	const stars = Math.max(0, Math.min(3, Math.floor(Number(payload.stars ?? 0))));
+	const survivors = payload.survivors ?? {};
+	const targetId = String(payload.targetId ?? "treino");
+	const prep = await preparePlayer(tx, player.uid);
+	const registered = registerAttack(withoutMeta(prep.profile), targetId, false);
+	const startedRaw = normalizeArmy(payload.startedArmy, prep.profile.army);
+	const startedArmy = {
+		infantry: Math.min(startedRaw.infantry, prep.profile.army.infantry),
+		archers: Math.min(startedRaw.archers, prep.profile.army.archers),
+		cavalry: Math.min(startedRaw.cavalry, prep.profile.army.cavalry),
+		general: Math.min(startedRaw.general, prep.profile.army.general),
+		generaless: Math.min(startedRaw.generaless, prep.profile.army.generaless),
+		defender: Math.min(startedRaw.defender, prep.profile.army.defender)
+	};
+	const goldTaken = Math.min(lootForStars(stars, registered.countyLevel), Math.max(0, Math.floor(Number(payload.goldTaken ?? 0))));
+	const raid = applyRaidFinish(registered, {
+		stars,
+		survivors,
+		startedArmy,
+		goldTaken,
+		defenderNick: String(payload.targetNick ?? "Treino"),
+		defenderLevel: registered.countyLevel
+	});
+	const me = {
+		...prep.profile,
+		...raid.save,
+		attacksByTarget: registered.attacksByTarget,
+		raids: [{
+			id: makeId("r"),
+			at: Date.now(),
+			attacker: prep.profile.player.nick,
+			defender: String(payload.targetNick ?? "Treino"),
+			gold: goldTaken,
+			bread: 0,
+			incoming: false,
+			destruction: Number(payload.destruction ?? 0),
+			troopsLost: Number(payload.troopsLost ?? 0),
+			stars
+		}, ...prep.profile.raids].slice(0, 24)
+	};
+	commitPrepared(tx, player.uid, me, requestId, [...prep.ledger, ...raid.ledger], prep.creditRefs);
+	return {
+		save: withoutMeta(me),
+		toast: stars ? `${stars} estrela${stars === 1 ? "" : "s"} no ranking da semana.` : void 0
+	};
 }
 async function sendChatAction(tx, player, textRaw, requestId) {
 	const text = textRaw.trim().slice(0, 160);
@@ -4658,9 +4717,16 @@ async function finishAllianceDuelAction(tx, player, payload, requestId) {
 			source: String(session.defenderNick ?? "duelo")
 		}];
 		const used = (p.war?.attacks[foePlayerId] ?? 0) + (p.userId === atkUid ? 1 : 0);
+		const won = p.userId === atkUid && winner === "atk" || p.userId === defUid && winner === "def";
+		const starred = addWeekStars(withoutMeta({
+			...p,
+			army,
+			gold: p.gold + gold
+		}), won ? 3 : 0, Date.now(), { countRaid: false });
 		return {
 			profile: {
 				...p,
+				...starred,
 				army,
 				gold: p.gold + gold,
 				alliance: alliance ? allianceStateOf(alliance) : p.alliance,

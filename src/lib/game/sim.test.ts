@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { defaultSave, toSave } from "./save";
 import {
   GameError,
+  addWeekStars,
   applyRaidFinish,
   buyNienSim,
   claimPassAllSim,
@@ -22,7 +23,7 @@ import {
   upgradeCountySim,
   settle,
 } from "./sim";
-import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT, trainCostFor, ALLIANCE_FOUND_NIENS, allianceAtWarToday, allianceXpToNext, applyAllianceXp, warWindow, GRID } from "./constants";
+import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT, trainCostFor, ALLIANCE_FOUND_NIENS, allianceAtWarToday, allianceXpToNext, applyAllianceXp, warWindow, GRID, rankingWindow } from "./constants";
 import { isFieldDeployTile } from "./iso";
 
 describe("economia pura", () => {
@@ -346,5 +347,52 @@ describe("economia pura", () => {
     assert.equal(isFieldDeployTile(GRID - 2, 20, "atk"), false);
     assert.equal(isFieldDeployTile(GRID - 2, 20, "def"), true);
     assert.equal(isFieldDeployTile(1, 20, "def"), false);
+  });
+
+  it("estrelas de batalha entram no ranking da semana e resetam na semana nova", () => {
+    const open = new Date("2026-09-16T12:00:00-03:00").getTime();
+    const closed = new Date("2026-09-20T23:30:00-03:00").getTime();
+    const win = rankingWindow(open);
+    assert.equal(win.open, true);
+    assert.equal(win.key, "2026-09-14");
+    assert.equal(rankingWindow(closed).open, false);
+    assert.equal(rankingWindow(closed).claim, true);
+
+    const save = defaultSave("Teste");
+    save.weekKey = win.key;
+    save.weekStars = 4;
+    save.stars = 10;
+    const started = { ...save.army };
+    const r = applyRaidFinish(save, {
+      stars: 2,
+      survivors: started,
+      startedArmy: started,
+      goldTaken: 0,
+      defenderNick: "Alvo",
+      now: open,
+    });
+    assert.equal(r.save.weekStars, 6);
+    assert.equal(r.save.weekKey, win.key);
+    assert.equal(r.save.stars, 12);
+    assert.equal(r.save.pass.stars, save.pass.stars + 2);
+
+    const duel = addWeekStars(r.save, 3, open, { countRaid: false });
+    assert.equal(duel.weekStars, 9);
+    assert.equal(duel.raidsWon, r.save.raidsWon);
+
+    const nextWeek = new Date("2026-09-21T09:00:00-03:00").getTime();
+    const settled = settle(r.save, nextWeek);
+    assert.equal(settled.save.weekStars, 0);
+    assert.equal(settled.save.weekKey, rankingWindow(nextWeek).key);
+
+    const late = applyRaidFinish(save, {
+      stars: 3,
+      survivors: started,
+      startedArmy: started,
+      goldTaken: 0,
+      defenderNick: "Alvo",
+      now: closed,
+    });
+    assert.equal(late.save.weekStars, 4);
   });
 });
