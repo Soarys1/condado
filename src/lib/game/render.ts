@@ -147,6 +147,17 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) ||
       s.buildings.length > 90 ||
       !!(battle && battle.troops.length > 50);
+
+    const villageLayout = s.inspect?.buildings?.length ? s.inspect.buildings : s.buildings;
+    if (s.inspect) {
+      const home = villageLayout.find((b) => b.type === "castle");
+      if (home) {
+        const t = tileCenter(home.gx, home.gy, 3);
+        cam.x += (t.x - cam.x) * 0.12;
+        cam.y += (t.y - cam.y) * 0.12;
+      }
+    }
+
     applyCam();
     drawGround();
     if (s.screen === "village" || s.screen === "prep" || s.screen === "battle" || s.placing)
@@ -165,7 +176,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
           alive: b.alive,
           dir: b.dir,
         }))
-      : s.buildings.map((b) => ({
+      : villageLayout.map((b) => ({
           id: b.id,
           type: b.type,
           gx: b.gx,
@@ -205,7 +216,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       if (it.kind === "t" && it.t) drawTroop(it.t, !!(battle && it.t.id && battle.selected.has(it.t.id)));
     }
 
-    if (s.screen === "village") {
+    if (s.screen === "village" && !s.inspect) {
       for (const b of s.buildings) {
         if (b.type !== "mine" && b.type !== "farm") continue;
         if (!inView(b.gx, b.gy, 2)) continue;
@@ -822,6 +833,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
       return;
     }
     if (st.screen === "spectate") return;
+    if (st.inspect) return;
     if (st.placing) {
       st.confirmPlace(g.gx, g.gy);
       return;
@@ -830,6 +842,7 @@ export function createRuntime(canvas: HTMLCanvasElement): Runtime {
 
     const bubble = bubbleAt(st.buildings, world.x, world.y);
     if (bubble) {
+      if (st.collectBusy) return;
       st.collect(bubble.id);
       return;
     }

@@ -8,6 +8,7 @@ import {
   buyNienSim,
   claimPassAllSim,
   collectBuilding,
+  collectAllBuildings,
   creditResource,
   EMPTY_ARMY,
   lootForStars,
@@ -23,7 +24,7 @@ import {
   upgradeCountySim,
   settle,
 } from "./sim";
-import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT, trainCostFor, ALLIANCE_FOUND_NIENS, allianceAtWarToday, allianceXpToNext, applyAllianceXp, warWindow, GRID, rankingWindow } from "./constants";
+import { NIEN_COST_GOLD, NIEN_SELL_GOLD, LOOT_CAP, lootCapForCounty, freePassReward, passCostNiens, passCostWithDiscount, productionPerSec, PASS_BOOST_MULT, trainCostFor, ALLIANCE_FOUND_NIENS, allianceAtWarToday, allianceXpToNext, applyAllianceXp, warWindow, GRID, rankingWindow, inCeasefire, CEASEFIRE_MS } from "./constants";
 import { isFieldDeployTile } from "./iso";
 
 describe("economia pura", () => {
@@ -39,6 +40,25 @@ describe("economia pura", () => {
     assert.equal(r.save.gold, save.gold + amt);
     assert.equal(r.ledger[0]?.amount, amt);
     assert.throws(() => collectBuilding(r.save, mine.id), GameError);
+  });
+
+  it("recolher tudo duas vezes não duplica", () => {
+    const save = defaultSave("Teste");
+    const now = Date.now();
+    save.buildings = save.buildings.map((b) =>
+      b.type === "mine" || b.type === "farm" ? { ...b, lastCollect: now - 12 * 3600_000, level: 3 } : b,
+    );
+    const first = collectAllBuildings(save, now);
+    assert.ok(first.save.gold > save.gold || first.save.bread > save.bread);
+    assert.throws(() => collectAllBuildings(first.save, now), GameError);
+    assert.throws(() => collectAllBuildings(first.save, now + 50), GameError);
+  });
+
+  it("cessar-fogo de 7 dias bloqueia o mesmo rival", () => {
+    const until = Date.now() + CEASEFIRE_MS;
+    assert.equal(inCeasefire({ "AL-Y": until }, "AL-Y"), true);
+    assert.equal(inCeasefire({ "AL-Y": Date.now() - 1000 }, "AL-Y"), false);
+    assert.equal(inCeasefire({}, "AL-Y"), false);
   });
 
   it("não deixa comprar Nien sem libras", () => {
@@ -308,9 +328,11 @@ describe("economia pura", () => {
       level: 1,
       xp: 0,
       leaderId: save.player.id,
+      viceId: null,
       slots: 30,
       openJoin: true,
       joinRequests: [],
+      ceasefire: {},
     };
     save.war = {
       week: "2000-01-01",

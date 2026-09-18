@@ -145,6 +145,11 @@ const ALLIANCE_DUEL_LOSS_GOLD = 6e3;
 const ALLIANCE_DUEL_WIN_POT = 2e4;
 const ALLIANCE_DUEL_LOSS_POT = 8e3;
 const ALLIANCE_CHALLENGE_MS = 9e4;
+const CEASEFIRE_MS = 6048e5;
+function inCeasefire(map, foeId, now = Date.now()) {
+	if (!foeId) return false;
+	return Number(map?.[foeId] ?? 0) > now;
+}
 const BUILDINGS = {
 	castle: {
 		type: "castle",
@@ -852,6 +857,125 @@ function wallRow(buildings, start) {
 	}
 	return out;
 }
+function mulberry(seed) {
+	let s = seed >>> 0;
+	return () => {
+		s += 1831565813;
+		let t = s;
+		t = Math.imul(t ^ t >>> 15, t | 1);
+		t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+		return ((t ^ t >>> 14) >>> 0) / 4294967296;
+	};
+}
+function hashStr(s) {
+	let h = 2166136261;
+	for (let i = 0; i < s.length; i++) {
+		h ^= s.charCodeAt(i);
+		h = Math.imul(h, 16777619);
+	}
+	return h >>> 0;
+}
+function generateBase(seed, rank) {
+	const rng = mulberry(hashStr(seed) ^ rank * 9973);
+	const buildings = [];
+	buildings.push({
+		id: nid("c"),
+		type: "castle",
+		gx: 14,
+		gy: 14,
+		level: Math.min(5, 1 + Math.floor(rank / 2))
+	});
+	const ring = [];
+	for (let i = 12; i <= 18; i++) ring.push([
+		i,
+		12,
+		"h"
+	], [
+		i,
+		18,
+		"h"
+	]);
+	for (let i = 12; i <= 18; i++) ring.push([
+		12,
+		i,
+		"v"
+	], [
+		18,
+		i,
+		"v"
+	]);
+	for (const [x, y, dir] of ring) if (rng() < .55 + rank * .08) {
+		if (canPlace(buildings, "wall", x, y)) buildings.push({
+			id: nid("w"),
+			type: "wall",
+			gx: x,
+			gy: y,
+			level: 1,
+			dir
+		});
+	}
+	const extras = [
+		{
+			type: "mine",
+			n: 1 + Math.floor(rank / 2)
+		},
+		{
+			type: "farm",
+			n: 1 + Math.floor(rank / 2)
+		},
+		{
+			type: "watchtower",
+			n: rank >= 1 ? 1 + Math.floor(rank / 2) : 0
+		},
+		{
+			type: "catapult",
+			n: rank >= 3 ? rank - 2 : 0
+		},
+		{
+			type: "barracks",
+			n: rank >= 1 ? 1 : 0
+		},
+		{
+			type: "camp",
+			n: rank >= 2 ? 1 : 0
+		},
+		{
+			type: "training",
+			n: rank >= 2 ? 1 : 0
+		}
+	];
+	for (const ex of extras) for (let i = 0; i < ex.n; i++) {
+		let placed = false;
+		for (let t = 0; t < 80 && !placed; t++) {
+			const gx = 3 + Math.floor(rng() * 36);
+			const gy = 3 + Math.floor(rng() * 36);
+			if (canPlace(buildings, ex.type, gx, gy)) {
+				buildings.push({
+					id: nid(ex.type[0]),
+					type: ex.type,
+					gx,
+					gy,
+					level: 1 + Math.floor(rng() * Math.min(4, rank + 1))
+				});
+				placed = true;
+			}
+		}
+	}
+	if (rank >= 2) for (let i = 0; i < 14 + rank * 6; i++) {
+		const gx = 4 + Math.floor(rng() * 36);
+		const gy = 4 + Math.floor(rng() * 36);
+		const dir = rng() < .5 ? "h" : "v";
+		if (canPlace(buildings, "wall", gx, gy)) buildings.push({
+			id: nid("w"),
+			type: "wall",
+			gx,
+			gy,
+			level: 1,
+			dir
+		});
+	}
+	return buildings;
+}
 //#endregion
 //#region src/lib/game/bots.ts
 const LORDS = [
@@ -1106,6 +1230,7 @@ function migrate(s) {
 		level: Math.max(1, Number(s.alliance.level ?? 1)),
 		xp: Math.max(0, Number(s.alliance.xp ?? 0)),
 		leaderId: String(s.alliance.leaderId ?? s.player?.id ?? ""),
+		viceId: s.alliance.viceId ? String(s.alliance.viceId) : null,
 		slots: Math.max(30, Number(s.alliance.slots ?? 30)),
 		openJoin: s.alliance.openJoin !== false,
 		joinRequests: Array.isArray(s.alliance.joinRequests) ? s.alliance.joinRequests.map((r) => ({
@@ -1114,7 +1239,8 @@ function migrate(s) {
 			nick: String(r.nick ?? "Senhor"),
 			uid: r.uid ? String(r.uid) : void 0,
 			at: Number(r.at ?? 0)
-		})) : []
+		})) : [],
+		ceasefire: s.alliance.ceasefire && typeof s.alliance.ceasefire === "object" ? Object.fromEntries(Object.entries(s.alliance.ceasefire).map(([k, v]) => [String(k), Number(v)])) : {}
 	} : null;
 	const war = s.war ? {
 		week: String(s.war.week ?? ""),
@@ -2308,6 +2434,14 @@ const RATE = {
 		n: 4,
 		windowMs: 6e4
 	},
+	kickAllianceMember: {
+		n: 12,
+		windowMs: 6e4
+	},
+	setAllianceVice: {
+		n: 8,
+		windowMs: 6e4
+	},
 	respondAllianceDuel: {
 		n: 12,
 		windowMs: 6e4
@@ -2568,7 +2702,10 @@ const READ_ONLY = /* @__PURE__ */ new Set([
 	"adminLookup",
 	"listAllianceFoes",
 	"listAllianceHall",
-	"pollAllianceDuel"
+	"pollAllianceDuel",
+	"inspectPlayer",
+	"listAlliances",
+	"listLiveBattles"
 ]);
 async function handleGameAction(player, action, payload, requestId) {
 	if (!requestId || requestId.length < 8 || requestId.length > 80) throw new GameError("Pedido inválido.");
@@ -2654,6 +2791,11 @@ async function dispatch(tx, player, action, payload, requestId) {
 		case "recruitAlliance": return recruitAllianceAction(write(), player, requestId);
 		case "acceptJoin": return acceptJoinAction(write(), player, String(payload.requestId ?? ""), requestId);
 		case "rejectJoin": return rejectJoinAction(write(), player, String(payload.requestId ?? ""), requestId);
+		case "kickAllianceMember": return kickAllianceMemberAction(write(), player, String(payload.memberId ?? ""), requestId);
+		case "setAllianceVice": return setAllianceViceAction(write(), player, String(payload.memberId ?? ""), requestId);
+		case "listAlliances": return listAlliancesAction();
+		case "inspectPlayer": return inspectPlayerAction(String(payload.id ?? ""));
+		case "listLiveBattles": return listLiveBattlesAction();
 		case "listAllianceFoes":
 		case "listAllianceHall": return listAllianceHallAction(player);
 		case "declareWar": return declareWarAction(write(), player, String(payload.allianceId ?? ""), requestId);
@@ -2841,8 +2983,11 @@ async function syncProfile(tx, player, requestId) {
 					resolved: true,
 					xp: a.xp,
 					level: a.level,
-					warDay: a.warDay
+					warDay: a.warDay,
+					ceasefire: a.ceasefire,
+					pot: a.pot
 				}, { merge: true });
+				if (payout.foeCeasefire) tx.set(allianceRef(payout.foeCeasefire.id), { ceasefire: payout.foeCeasefire.map }, { merge: true });
 			}
 			profile = {
 				...profile,
@@ -3312,6 +3457,17 @@ async function startRaidAction(tx, player, targetId, requestId) {
 		createdAt: Date.now(),
 		open: true
 	});
+	publishLive(tx, sessionId, {
+		kind: "raid",
+		attackerId: me.player.id,
+		attackerNick: me.player.nick,
+		defenderId: dest.player.id,
+		defenderNick: dest.player.nick,
+		buildings: publicBuildingsOf(dest.buildings),
+		startedArmy: me.army,
+		attackerLevels: me.troopLevels,
+		attackerCamp: me.campLevel
+	});
 	return {
 		save: withoutMeta(me),
 		sessionId,
@@ -3403,6 +3559,7 @@ async function finishRaidAction(tx, player, payload, requestId) {
 		stars,
 		resolvedAt: Date.now()
 	}, { merge: true });
+	closeLive(tx, sessionId);
 	return { save: withoutMeta(me) };
 }
 async function finishTrainingRaidAction(tx, player, payload, requestId) {
@@ -3539,6 +3696,8 @@ function allianceFromDoc(id, data) {
 		name: String(data.name ?? "Aliança"),
 		leaderId: String(data.leaderId ?? ""),
 		leaderUid: String(data.leaderUid ?? ""),
+		viceId: String(data.viceId ?? ""),
+		viceUid: String(data.viceUid ?? ""),
 		minLevel: Math.max(1, Number(data.minLevel ?? 1)),
 		level: Math.max(1, Number(data.level ?? 1)),
 		xp: Math.max(0, Number(data.xp ?? 0)),
@@ -3564,7 +3723,8 @@ function allianceFromDoc(id, data) {
 			uid: r.uid ? String(r.uid) : void 0,
 			at: Number(r.at ?? 0)
 		})) : [],
-		pot: Math.max(0, Number(data.pot ?? 0))
+		pot: Math.max(0, Number(data.pot ?? 0)),
+		ceasefire: data.ceasefire && typeof data.ceasefire === "object" ? Object.fromEntries(Object.entries(data.ceasefire).map(([k, v]) => [k, Number(v)])) : {}
 	};
 }
 function allianceStateOf(a) {
@@ -3580,10 +3740,51 @@ function allianceStateOf(a) {
 		level: a.level,
 		xp: a.xp,
 		leaderId: a.leaderId,
+		viceId: a.viceId || null,
 		slots: allianceSlots(a.level),
 		openJoin: a.openJoin,
-		joinRequests: a.joinRequests
+		joinRequests: a.joinRequests,
+		ceasefire: a.ceasefire
 	};
+}
+function officerRole(a, playerId) {
+	if (a.leaderId === playerId) return "leader";
+	if (a.viceId && a.viceId === playerId) return "vice";
+	return null;
+}
+function publicBuildingsOf(buildings) {
+	return buildings.map((b) => ({
+		id: b.id,
+		type: b.type,
+		gx: b.gx,
+		gy: b.gy,
+		level: b.level,
+		dir: b.dir
+	}));
+}
+function toPublicProfile(p) {
+	return {
+		id: p.player.id,
+		nick: p.player.nick,
+		countyLevel: p.countyLevel,
+		stars: p.stars,
+		raidsWon: p.raidsWon,
+		allianceId: p.alliance?.id ?? null,
+		allianceName: p.alliance?.name ?? null,
+		title: `Condado Nv.${p.countyLevel}`,
+		lootCap: lootCapForCounty(p.countyLevel),
+		buildings: publicBuildingsOf(p.buildings),
+		shieldUntil: p.shieldUntil ?? 0
+	};
+}
+function publishLive(tx, id, data) {
+	tx.set(col("condado_live").doc(id), {
+		...data,
+		startedAt: Date.now()
+	});
+}
+function closeLive(tx, id) {
+	tx.delete(col("condado_live").doc(id));
 }
 function trimAllianceChat(chat, requests) {
 	const pending = new Set(requests.map((r) => r.id));
@@ -3659,16 +3860,38 @@ async function readAlliancePayout(tx, a) {
 			share
 		});
 	}
+	let ceasefire = a.ceasefire;
+	let foeCeasefire;
+	if (!a.sittingOut && a.foeId) {
+		const until = Date.now() + CEASEFIRE_MS;
+		ceasefire = {
+			...a.ceasefire,
+			[a.foeId]: until
+		};
+		const foeSnap = await tx.get(allianceRef(a.foeId));
+		if (foeSnap.exists) {
+			const foe = allianceFromDoc(foeSnap.id, foeSnap.data());
+			foeCeasefire = {
+				id: foe.id,
+				map: {
+					...foe.ceasefire,
+					[a.id]: until
+				}
+			};
+		}
+	}
 	return {
 		next: {
 			...a,
 			xp,
 			level,
 			resolved: true,
-			pot: 0
+			pot: 0,
+			ceasefire
 		},
 		rows,
-		settled: true
+		settled: true,
+		foeCeasefire
 	};
 }
 function writeAlliancePayout(tx, rows, requestId, exceptUid) {
@@ -3714,7 +3937,10 @@ async function foundAllianceAction(tx, player, payload, requestId) {
 		resolved: true,
 		openJoin,
 		joinRequests: [],
-		pot: 0
+		pot: 0,
+		viceId: "",
+		viceUid: "",
+		ceasefire: {}
 	};
 	const niens = prep.profile.niens - 5;
 	const profile = {
@@ -3757,7 +3983,7 @@ async function joinAllianceAction(tx, player, allianceIdRaw, requestId) {
 	if (a.members.length >= allianceSlots(a.level)) throw new GameError("Aliança lotada.");
 	if (a.members.some((m) => m.id === prep.profile.player.id)) throw new GameError("Já estás nesta aliança.");
 	if (!a.openJoin) {
-		if (a.joinRequests.some((r) => r.playerId === prep.profile.player.id || r.uid === player.uid)) throw new GameError("Pedido já enviado. Espera o líder no chat da aliança.");
+		if (a.joinRequests.some((r) => r.playerId === prep.profile.player.id || r.uid === player.uid)) throw new GameError("Pedido já enviado. Espera o líder ou o vice no chat da aliança.");
 		const req = {
 			id: makeId("JR"),
 			playerId: prep.profile.player.id,
@@ -3781,7 +4007,7 @@ async function joinAllianceAction(tx, player, allianceIdRaw, requestId) {
 			joinRequests: a.joinRequests,
 			chat: a.chat
 		}, { merge: true });
-		return { toast: "Pedido enviado. O líder vê no chat da aliança até aceitar ou recusar." };
+		return { toast: "Pedido enviado. O líder ou o vice vê no chat da aliança até aceitar ou recusar." };
 	}
 	a.members.push({
 		id: prep.profile.player.id,
@@ -3820,12 +4046,29 @@ async function leaveAllianceAction(tx, player, requestId) {
 			tx.delete(aref);
 			tx.delete(col("condado_alliance_names").doc(a.name.toLowerCase()));
 		} else {
-			const leaderId = a.leaderId === prep.profile.player.id ? members[0].id : a.leaderId;
-			const leaderUid = a.leaderId === prep.profile.player.id ? members[0].uid : a.leaderUid;
+			let leaderId = a.leaderId;
+			let leaderUid = a.leaderUid;
+			let viceId = a.viceId;
+			let viceUid = a.viceUid;
+			if (a.leaderId === prep.profile.player.id) {
+				const vice = viceId ? members.find((m) => m.id === viceId) : void 0;
+				const next = vice ?? members[0];
+				leaderId = next.id;
+				leaderUid = next.uid;
+				if (vice && next.id === vice.id) {
+					viceId = "";
+					viceUid = "";
+				}
+			} else if (a.viceId === prep.profile.player.id) {
+				viceId = "";
+				viceUid = "";
+			}
 			tx.set(aref, {
 				members,
 				leaderId,
-				leaderUid
+				leaderUid,
+				viceId,
+				viceUid
 			}, { merge: true });
 		}
 	}
@@ -3862,11 +4105,11 @@ async function acceptJoinAction(tx, player, requestIdRaw, requestId) {
 	if (!reqId) throw new GameError("Pedido inválido.");
 	const prep = await preparePlayer(tx, player.uid);
 	if (!prep.profile.alliance) throw new GameError("Sem aliança.");
-	if (prep.profile.alliance.leaderId !== prep.profile.player.id) throw new GameError("Só o líder aceita pedidos.");
 	const aref = allianceRef(prep.profile.alliance.id);
 	const asnap = await tx.get(aref);
 	if (!asnap.exists) throw new GameError("Aliança não encontrada.");
 	const a = allianceFromDoc(asnap.id, asnap.data());
+	if (!officerRole(a, prep.profile.player.id)) throw new GameError("Só o líder ou o vice aceitam pedidos.");
 	const req = a.joinRequests.find((r) => r.id === reqId);
 	if (!req) throw new GameError("Este pedido já foi resolvido.");
 	if (a.members.length >= allianceSlots(a.level)) throw new GameError("Aliança lotada.");
@@ -3934,11 +4177,11 @@ async function rejectJoinAction(tx, player, requestIdRaw, requestId) {
 	if (!reqId) throw new GameError("Pedido inválido.");
 	const prep = await preparePlayer(tx, player.uid);
 	if (!prep.profile.alliance) throw new GameError("Sem aliança.");
-	if (prep.profile.alliance.leaderId !== prep.profile.player.id) throw new GameError("Só o líder recusa pedidos.");
 	const aref = allianceRef(prep.profile.alliance.id);
 	const asnap = await tx.get(aref);
 	if (!asnap.exists) throw new GameError("Aliança não encontrada.");
 	const a = allianceFromDoc(asnap.id, asnap.data());
+	if (!officerRole(a, prep.profile.player.id)) throw new GameError("Só o líder ou o vice recusam pedidos.");
 	const req = a.joinRequests.find((r) => r.id === reqId);
 	if (!req) throw new GameError("Este pedido já foi resolvido.");
 	a.joinRequests = a.joinRequests.filter((r) => r.id !== reqId);
@@ -4088,11 +4331,24 @@ async function listAllianceHallAction(player) {
 			members: x.members.length,
 			slots: allianceSlots(x.level),
 			atWar: allianceAtWarToday(x),
-			foeName: allianceAtWarToday(x) ? x.foeName : ""
+			foeName: allianceAtWarToday(x) ? x.foeName : "",
+			ceasefireUntil: x.ceasefire[a.id] || a.ceasefire[x.id] || 0
 		})).sort((p, q) => p.name.localeCompare(q.name, "pt")),
 		challenges: await listInbox(player.uid),
 		save: allianceSave
 	};
+}
+function writeSettledWar(tx, a, payout) {
+	if (!payout.settled) return;
+	tx.set(allianceRef(a.id), {
+		resolved: true,
+		xp: a.xp,
+		level: a.level,
+		warDay: a.warDay,
+		ceasefire: a.ceasefire,
+		pot: a.pot
+	}, { merge: true });
+	if (payout.foeCeasefire) tx.set(allianceRef(payout.foeCeasefire.id), { ceasefire: payout.foeCeasefire.map }, { merge: true });
 }
 async function declareWarAction(tx, player, allianceIdRaw, requestId) {
 	const foeId = allianceIdRaw.trim();
@@ -4120,10 +4376,32 @@ async function declareWarAction(tx, player, allianceIdRaw, requestId) {
 		gold: mine.profile.gold
 	} : prep.profile;
 	const extraLedger = mine ? mine.ledger : [];
-	if (myPay.settled) writeAlliancePayout(tx, myPay.rows, requestId, player.uid);
-	if (foePay.settled) writeAlliancePayout(tx, foePay.rows, requestId);
+	if (myPay.settled) {
+		writeAlliancePayout(tx, myPay.rows, requestId, player.uid);
+		writeSettledWar(tx, a, myPay);
+	}
+	if (foePay.settled) {
+		writeAlliancePayout(tx, foePay.rows, requestId);
+		writeSettledWar(tx, foe, foePay);
+	}
 	if (allianceAtWarToday(a)) throw new GameError(`A tua aliança já está em guerra com ${a.foeName || "outra aliança"}.`);
 	if (allianceAtWarToday(foe)) throw new GameError(`${foe.name} já está em guerra e não pode ser chamada.`);
+	if (inCeasefire(a.ceasefire, foe.id) || inCeasefire(foe.ceasefire, a.id)) {
+		const profile = {
+			...baseProfile,
+			alliance: allianceStateOf(a),
+			war: warFromAlliance(a),
+			allianceChat: a.chat.map((m) => ({
+				...m,
+				self: m.fromId === prep.profile.player.id
+			}))
+		};
+		commitPrepared(tx, player.uid, profile, requestId, [...prep.ledger, ...extraLedger], prep.creditRefs);
+		return {
+			save: withoutMeta(profile),
+			toast: "Cessar-fogo de 7 dias com esta aliança. Escolhe outro rival."
+		};
+	}
 	const win = warWindow();
 	const ours = warLinkFields(foe.id, foe.name, win.key);
 	const theirs = warLinkFields(a.id, a.name, win.key);
@@ -4156,11 +4434,13 @@ async function declareWarAction(tx, player, allianceIdRaw, requestId) {
 	await dropWarQueue(tx, win.key, [a.id, foe.id]);
 	tx.set(aref, {
 		...ours,
-		chat: a.chat
+		chat: a.chat,
+		ceasefire: a.ceasefire
 	}, { merge: true });
 	tx.set(foeRef, {
 		...theirs,
-		chat: foe.chat
+		chat: foe.chat,
+		ceasefire: foe.ceasefire
 	}, { merge: true });
 	const war = {
 		...warFromAlliance(a),
@@ -4423,6 +4703,19 @@ async function respondAllianceDuelAction(tx, player, sessionId, accept, requestI
 		defenderStarted: prep.profile.army,
 		open: true
 	}, { merge: true });
+	publishLive(tx, sessionId, {
+		kind: "alliance",
+		attackerId: String(session.attackerId ?? ""),
+		attackerNick: String(session.attackerNick ?? "Senhor"),
+		defenderId: String(session.defenderId ?? ""),
+		defenderNick: String(session.defenderNick ?? "Senhor"),
+		startedArmy: session.attackerArmy,
+		attackerLevels: session.attackerLevels,
+		attackerCamp: session.attackerCamp,
+		foeArmy: prep.profile.army,
+		foeLevels: prep.profile.troopLevels,
+		foeCamp: prep.profile.campLevel
+	});
 	commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
 	return {
 		save: withoutMeta(prep.profile),
@@ -4612,6 +4905,7 @@ async function abandonAllianceDuelAction(tx, player, sessionId, requestId) {
 		open: false,
 		abandonedBy: player.uid
 	}, { merge: true });
+	closeLive(tx, sessionId);
 	commitPrepared(tx, player.uid, prep.profile, requestId, prep.ledger, prep.creditRefs);
 	return {
 		save: withoutMeta(prep.profile),
@@ -4772,6 +5066,7 @@ async function finishAllianceDuelAction(tx, player, payload, requestId) {
 		winner,
 		resolvedAt: Date.now()
 	}, { merge: true });
+	closeLive(tx, sessionId);
 	const myWin = isAtk && winner === "atk" || isDef && winner === "def";
 	const gold = isAtk ? atkGold : defGold;
 	const toast = winner === "draw" ? `Empate no campo. +1 ponto e ${gold.toLocaleString("pt")} Libras.` : myWin ? `Vitória no campo. +3 pontos, ${gold.toLocaleString("pt")} Libras e ${ALLIANCE_DUEL_WIN_POT.toLocaleString("pt")} no pote.` : `Derrota no campo. +1 ponto, ${gold.toLocaleString("pt")} Libras e ${ALLIANCE_DUEL_LOSS_POT.toLocaleString("pt")} no pote.`;
@@ -4782,6 +5077,190 @@ async function finishAllianceDuelAction(tx, player, payload, requestId) {
 		status: "done",
 		duelGold: gold
 	};
+}
+async function kickAllianceMemberAction(tx, player, memberIdRaw, requestId) {
+	const memberId = memberIdRaw.trim();
+	if (!memberId) throw new GameError("Escolhe quem expulsar.");
+	const prep = await preparePlayer(tx, player.uid);
+	if (!prep.profile.alliance) throw new GameError("Sem aliança.");
+	const aref = allianceRef(prep.profile.alliance.id);
+	const asnap = await tx.get(aref);
+	if (!asnap.exists) throw new GameError("Aliança não encontrada.");
+	const a = allianceFromDoc(asnap.id, asnap.data());
+	const role = officerRole(a, prep.profile.player.id);
+	if (!role) throw new GameError("Só o líder ou o vice podem expulsar.");
+	if (memberId === a.leaderId) throw new GameError("Ninguém expulsa o dono da aliança.");
+	if (role === "vice" && memberId === a.viceId) throw new GameError("O vice não se expulsa. Sai da aliança.");
+	const target = a.members.find((m) => m.id === memberId);
+	if (!target) throw new GameError("Este senhor não está na aliança.");
+	let kicked = null;
+	if (target.uid) {
+		const snap = await tx.get(profileRef(target.uid));
+		if (snap.exists) kicked = {
+			...profileFromDoc(target.uid, snap.data()),
+			alliance: null,
+			war: null,
+			allianceChat: []
+		};
+	}
+	const members = a.members.filter((m) => m.id !== memberId);
+	const viceId = a.viceId === memberId ? "" : a.viceId;
+	const viceUid = a.viceId === memberId ? "" : a.viceUid;
+	const next = {
+		...a,
+		members,
+		viceId,
+		viceUid
+	};
+	const profile = {
+		...prep.profile,
+		alliance: allianceStateOf(next)
+	};
+	commitPrepared(tx, player.uid, profile, requestId, prep.ledger, prep.creditRefs);
+	tx.set(aref, {
+		members,
+		viceId,
+		viceUid
+	}, { merge: true });
+	if (kicked && target.uid) writeProfile(tx, profileRef(target.uid), kicked);
+	return {
+		save: withoutMeta(profile),
+		toast: `${target.nick} foi expulso da aliança.`
+	};
+}
+async function setAllianceViceAction(tx, player, memberIdRaw, requestId) {
+	const memberId = memberIdRaw.trim();
+	const prep = await preparePlayer(tx, player.uid);
+	if (!prep.profile.alliance) throw new GameError("Sem aliança.");
+	const aref = allianceRef(prep.profile.alliance.id);
+	const asnap = await tx.get(aref);
+	if (!asnap.exists) throw new GameError("Aliança não encontrada.");
+	const a = allianceFromDoc(asnap.id, asnap.data());
+	if (a.leaderId !== prep.profile.player.id) throw new GameError("Só o dono nomeia o vice-líder.");
+	if (!memberId || memberId === a.leaderId) {
+		const next = {
+			...a,
+			viceId: "",
+			viceUid: ""
+		};
+		const profile = {
+			...prep.profile,
+			alliance: allianceStateOf(next)
+		};
+		commitPrepared(tx, player.uid, profile, requestId, prep.ledger, prep.creditRefs);
+		tx.set(aref, {
+			viceId: "",
+			viceUid: ""
+		}, { merge: true });
+		return {
+			save: withoutMeta(profile),
+			toast: "A aliança ficou sem vice-líder."
+		};
+	}
+	const target = a.members.find((m) => m.id === memberId);
+	if (!target) throw new GameError("Este senhor não está na aliança.");
+	const next = {
+		...a,
+		viceId: target.id,
+		viceUid: target.uid
+	};
+	const profile = {
+		...prep.profile,
+		alliance: allianceStateOf(next)
+	};
+	commitPrepared(tx, player.uid, profile, requestId, prep.ledger, prep.creditRefs);
+	tx.set(aref, {
+		viceId: target.id,
+		viceUid: target.uid
+	}, { merge: true });
+	return {
+		save: withoutMeta(profile),
+		toast: `${target.nick} é o novo vice-líder.`
+	};
+}
+async function listAlliancesAction() {
+	const alliances = (await col("condado_alliances").limit(40).get()).docs.map((d) => {
+		const a = allianceFromDoc(d.id, d.data());
+		const leader = a.members.find((m) => m.id === a.leaderId);
+		return {
+			id: a.id,
+			name: a.name,
+			minLevel: a.minLevel,
+			level: a.level,
+			members: a.members.length,
+			slots: allianceSlots(a.level),
+			leaderNick: leader?.nick ?? "Senhor",
+			openJoin: a.openJoin
+		};
+	});
+	alliances.sort((x, y) => y.level - x.level || x.name.localeCompare(y.name, "pt"));
+	return { alliances };
+}
+async function inspectPlayerAction(idRaw) {
+	const id = idRaw.trim().toUpperCase();
+	const npc = findLord(id);
+	if (npc) return {
+		profile: {
+			id: npc.id,
+			nick: npc.nick,
+			countyLevel: npc.countyLevel ?? npc.rank + 1,
+			stars: 0,
+			raidsWon: 0,
+			allianceId: npc.allianceId ?? null,
+			allianceName: npc.allianceId ?? null,
+			title: npc.title,
+			lootCap: npc.lootGold || lootCapForCounty(npc.countyLevel ?? npc.rank + 1),
+			buildings: publicBuildingsOf(generateBase(npc.id, npc.rank)),
+			shieldUntil: npc.shieldUntil ?? 0
+		},
+		id,
+		nick: npc.nick
+	};
+	const idx = await col("condado_player_index").doc(id).get();
+	if (!idx.exists) return {
+		id,
+		nick: null
+	};
+	const uid = String(idx.data()?.userId ?? "");
+	const snap = await profileRef(uid).get();
+	if (!snap.exists) return {
+		id,
+		nick: String(idx.data()?.nick ?? "")
+	};
+	const p = profileFromDoc(uid, snap.data());
+	return {
+		profile: toPublicProfile(p),
+		id: p.player.id,
+		nick: p.player.nick
+	};
+}
+async function listLiveBattlesAction() {
+	const snap = await col("condado_live").limit(24).get();
+	const now = Date.now();
+	const live = [];
+	for (const d of snap.docs) {
+		const r = d.data();
+		const startedAt = Number(r.startedAt ?? 0);
+		if (startedAt && now - startedAt > 6e5) continue;
+		live.push({
+			id: d.id,
+			kind: r.kind === "alliance" ? "alliance" : "raid",
+			attackerId: String(r.attackerId ?? ""),
+			attackerNick: String(r.attackerNick ?? "Senhor"),
+			defenderId: String(r.defenderId ?? ""),
+			defenderNick: String(r.defenderNick ?? "Senhor"),
+			startedAt,
+			buildings: Array.isArray(r.buildings) ? r.buildings : void 0,
+			startedArmy: r.startedArmy,
+			foeArmy: r.foeArmy,
+			foeLevels: r.foeLevels,
+			foeCamp: r.foeCamp ? Number(r.foeCamp) : void 0,
+			attackerLevels: r.attackerLevels,
+			attackerCamp: r.attackerCamp ? Number(r.attackerCamp) : void 0
+		});
+	}
+	live.sort((a, b) => b.startedAt - a.startedAt);
+	return { live };
 }
 //#endregion
 //#region src/lib/game/server/http.server.ts

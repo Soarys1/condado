@@ -9,7 +9,7 @@ import {
 import { auth, db } from "@/lib/firebase";
 import { CHAT_TTL_MS } from "./constants";
 import type { ResourceKind, Tradable } from "./constants";
-import type { AllianceRival, ChatMsg, DuelChallenge, Lord, MarketOffer, SaveState } from "./types";
+import type { AllianceListing, AllianceRival, ChatMsg, DuelChallenge, LiveBattle, Lord, MarketOffer, PublicProfile, SaveState } from "./types";
 import { deviceFingerprint, getDeviceId } from "./device";
 
 export type RankRow = {
@@ -62,6 +62,9 @@ export type GameActionResult = {
   status?: string;
   side?: "atk" | "def";
   duel?: Record<string, unknown>;
+  profile?: PublicProfile;
+  alliances?: AllianceListing[];
+  live?: LiveBattle[];
 };
 
 async function playAction(action: string, payload: Record<string, unknown> = {}, requestId?: string): Promise<GameActionResult> {
@@ -289,6 +292,42 @@ export function listenGlobalChat(onRows: (rows: ChatMsg[]) => void): Unsubscribe
     },
     () => {
       /* offline */
+    },
+  );
+}
+
+export function listenLiveBattles(onRows: (rows: LiveBattle[]) => void): Unsubscribe {
+  const q = query(collection(db, "condado_live"), limit(24));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const now = Date.now();
+      const rows: LiveBattle[] = snap.docs
+        .map((d) => {
+          const r = d.data();
+          return {
+            id: d.id,
+            kind: r.kind === "alliance" ? ("alliance" as const) : ("raid" as const),
+            attackerId: String(r.attackerId ?? ""),
+            attackerNick: String(r.attackerNick ?? "Senhor"),
+            defenderId: String(r.defenderId ?? ""),
+            defenderNick: String(r.defenderNick ?? "Senhor"),
+            startedAt: Number(r.startedAt ?? 0),
+            buildings: Array.isArray(r.buildings) ? r.buildings : undefined,
+            startedArmy: r.startedArmy,
+            foeArmy: r.foeArmy,
+            foeLevels: r.foeLevels,
+            foeCamp: r.foeCamp ? Number(r.foeCamp) : undefined,
+            attackerLevels: r.attackerLevels,
+            attackerCamp: r.attackerCamp ? Number(r.attackerCamp) : undefined,
+          } as LiveBattle;
+        })
+        .filter((b) => b.attackerId && (!b.startedAt || now - b.startedAt < 10 * 60_000))
+        .sort((a, b) => b.startedAt - a.startedAt);
+      onRows(rows);
+    },
+    () => {
+      /* rules ainda não publicadas */
     },
   );
 }

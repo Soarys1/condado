@@ -79,6 +79,12 @@ export const ALLIANCE_DUEL_LOSS_POT = 8_000;
 export const ALLIANCE_CHALLENGE_MS = 90_000;
 /** Prep + fight + challenge window, used to expire stuck PvP sessions. */
 export const ALLIANCE_DUEL_STALE_MS = PREP_MS + BATTLE_MS + ALLIANCE_CHALLENGE_MS + 60_000;
+export const CEASEFIRE_MS = 7 * 24 * 3600_000;
+
+export function inCeasefire(map: Record<string, number> | undefined, foeId: string, now = Date.now()): boolean {
+  if (!foeId) return false;
+  return Number(map?.[foeId] ?? 0) > now;
+}
 
 
 export type BuildingType =

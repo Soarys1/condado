@@ -67,11 +67,14 @@ import { defaultSave, flushCloud, loadSave, persist, setCloudSync, wipeSave } fr
 import type {
   BuildingInst,
   ChatMsg,
+  AllianceListing,
   DuelChallenge,
   GameScreen,
+  LiveBattle,
   Lord,
   MarketOffer,
   PlaceGhost,
+  PublicProfile,
   SaveState,
   SheetId,
   TransferRecord,
@@ -96,6 +99,7 @@ import {
   createProfile,
   creditReferral,
   listenGlobalChat,
+  listenLiveBattles,
   listMarket,
   listRaidTargets,
   listTransfers,
@@ -148,6 +152,11 @@ function applyServerSave(save: SaveState, extra?: { toast?: string | null; offer
     marchLord: cur.marchLord,
     lookup: cur.lookup,
     raidTargets: extra?.raidTargets ?? cur.raidTargets,
+    inspect: cur.inspect,
+    watchLive: cur.watchLive,
+    collectBusy: cur.collectBusy,
+    liveBattles: cur.liveBattles,
+    allianceList: cur.allianceList,
     chat: cur.chat,
     allianceChat: save.allianceChat?.length ? save.allianceChat : cur.allianceChat,
     ledger: save.ledger?.length ? save.ledger : cur.ledger,
@@ -350,6 +359,11 @@ interface GameStore extends SaveState {
   marchLord: Lord | null;
   lookup: { id: string; nick: string } | null;
   raidTargets: Lord[];
+  inspect: PublicProfile | null;
+  watchLive: boolean;
+  collectBusy: boolean;
+  liveBattles: LiveBattle[];
+  allianceList: AllianceListing[];
   duelInbox: DuelChallenge[];
   admin: boolean;
   needsCounty: boolean;
@@ -412,6 +426,12 @@ interface GameStore extends SaveState {
   recruitAlliance: () => void;
   acceptJoin: (requestId: string) => void;
   rejectJoin: (requestId: string) => void;
+  kickAllianceMember: (memberId: string) => void;
+  setAllianceVice: (memberId: string) => void;
+  refreshAlliances: () => Promise<void>;
+  openInspect: (id: string) => void;
+  closeInspect: () => void;
+  spectateLive: (live: LiveBattle) => void;
   startAllianceDuel: (lord: Lord) => void;
   declareWar: (allianceId: string) => void;
   respondDuel: (sessionId: string, accept: boolean) => void;
@@ -460,10 +480,12 @@ function wireCloudSync() {
 }
 
 let chatUnsub: (() => void) | null = null;
+let liveUnsub: (() => void) | null = null;
 let liveChat = false;
 
 function startLiveChat() {
   chatUnsub?.();
+  liveUnsub?.();
   liveChat = false;
   if (!auth.currentUser) return;
   try {
@@ -473,6 +495,13 @@ function startLiveChat() {
     });
   } catch {
     liveChat = false;
+  }
+  try {
+    liveUnsub = listenLiveBattles((rows) => {
+      useGame.setState({ liveBattles: rows });
+    });
+  } catch {
+    /* rules */
   }
 }
 
@@ -519,6 +548,11 @@ export const useGame = create<GameStore>((set, get) => ({
   marchLord: null,
   lookup: null,
   raidTargets: [],
+  inspect: null,
+  watchLive: false,
+  collectBusy: false,
+  liveBattles: [],
+  allianceList: [],
   duelInbox: [],
   admin: false,
   needsCounty: false,
@@ -616,6 +650,8 @@ export const useGame = create<GameStore>((set, get) => ({
   resetGame: () => {
     chatUnsub?.();
     chatUnsub = null;
+    liveUnsub?.();
+    liveUnsub = null;
     liveChat = false;
     setCloudSync(null);
     wipeSave();
@@ -624,7 +660,7 @@ export const useGame = create<GameStore>((set, get) => ({
     raidSessionId = null;
     raidKind = "raid";
     stopDuelLoop();
-    set({ ...defaultSave(), hydrated: true, screen: "splash", sheet: null, toast: null, bootError: null, needsCounty: false, duelInbox: [] });
+    set({ ...defaultSave(), hydrated: true, screen: "splash", sheet: null, toast: null, bootError: null, needsCounty: false, duelInbox: [], inspect: null, watchLive: false, collectBusy: false, liveBattles: [], allianceList: [] });
   },
 
   tick: (now) => {
@@ -852,6 +888,7 @@ export const useGame = create<GameStore>((set, get) => ({
 
   collect: (id) => {
     const s = get();
+    if (s.collectBusy || s.inspect) return;
     const b = s.buildings.find((x) => x.id === id);
     if (!b) return;
     const kind = producerKind(b.type);
@@ -861,21 +898,29 @@ export const useGame = create<GameStore>((set, get) => ({
       set({ toast: "Ainda está a produzir." });
       return;
     }
+    set({ collectBusy: true });
     const buildings = s.buildings.map((x) => (x.id === id ? { ...x, lastCollect: Date.now() } : x));
-    if (kind === "gold") set({ gold: s.gold + amt, buildings, toast: `+${amt} ${goldWord(amt)}` });
-    else set({ bread: s.bread + amt, buildings, toast: `+${amt} pão` });
+    if (isLive()) {
+      set({ buildings, toast: "A recolher…" });
+      void liveAction("collect", { id })
+        .then(() => sfxCoin())
+        .catch((error) => {
+          if (error instanceof Error && /produzir|pronto para recolher/i.test(error.message)) return;
+          liveFail(error);
+        })
+        .finally(() => useGame.setState({ collectBusy: false }));
+      return;
+    }
+    if (kind === "gold") set({ gold: s.gold + amt, buildings, collectBusy: false, toast: `+${amt} ${goldWord(amt)}` });
+    else set({ bread: s.bread + amt, buildings, collectBusy: false, toast: `+${amt} pão` });
     persist({ ...get() });
     sfxCoin();
-    if (isLive()) {
-      void liveAction("collect", { id }).catch((error) => {
-        if (error instanceof Error && /produzir|pronto para recolher/i.test(error.message)) return;
-        liveFail(error);
-      });
-    }
   },
 
   collectAll: () => {
     const s = get();
+    if (s.collectBusy || s.inspect) return;
+    set({ collectBusy: true });
     let gold = 0;
     let bread = 0;
     const now = Date.now();
@@ -894,23 +939,29 @@ export const useGame = create<GameStore>((set, get) => ({
       return b;
     });
     if (!gold && !bread) {
-      set({ toast: "Nada pronto para recolher." });
+      set({ collectBusy: false, toast: "Nada pronto para recolher." });
+      return;
+    }
+    if (isLive()) {
+      set({ buildings, toast: "A recolher…" });
+      void liveAction("collectAll")
+        .then(() => sfxCoin())
+        .catch((error) => {
+          if (error instanceof Error && /pronto para recolher/i.test(error.message)) return;
+          liveFail(error);
+        })
+        .finally(() => useGame.setState({ collectBusy: false }));
       return;
     }
     set({
       buildings,
       gold: s.gold + gold,
       bread: s.bread + bread,
+      collectBusy: false,
       toast: `Coletado ${gold} ${goldWord(gold)} e ${bread} pão.`,
     });
     persist({ ...get() });
     sfxCoin();
-    if (isLive()) {
-      void liveAction("collectAll").catch((error) => {
-        if (error instanceof Error && /pronto para recolher/i.test(error.message)) return;
-        liveFail(error);
-      });
-    }
   },
 
   upgrade: (id) => {
@@ -1135,7 +1186,7 @@ export const useGame = create<GameStore>((set, get) => ({
   setDeployType: (deployType) => set({ deployType }),
 
   deploy: (gx, gy) => {
-    if (!battle) return false;
+    if (!battle || battle.spectator) return false;
     const s = get();
     const type = s.deployType;
     const side = battle.pvp ? duelSide : "atk";
@@ -1199,6 +1250,12 @@ export const useGame = create<GameStore>((set, get) => ({
   },
 
   finishBattle: () => {
+    if (get().watchLive) {
+      battle = null;
+      raidTarget = null;
+      set({ screen: "village", watchLive: false, toast: "Fim da batalha assistida." });
+      return;
+    }
     if (!battle?.result || !raidTarget) {
       battle = null;
       raidTarget = null;
@@ -1992,9 +2049,11 @@ export const useGame = create<GameStore>((set, get) => ({
         level: 1,
         xp: 0,
         leaderId: s.player.id,
+        viceId: null,
         slots: allianceSlots(1),
         openJoin,
         joinRequests: [],
+        ceasefire: {},
       },
       toast: openJoin ? "Aliança fundada. Entrada livre." : "Aliança fundada. Quem entra precisa de pedido.",
     });
@@ -2057,6 +2116,138 @@ export const useGame = create<GameStore>((set, get) => ({
     if (isLive()) {
       void liveAction("rejectJoin", { requestId }).then(() => sfxClick()).catch(liveFail);
     }
+  },
+
+  kickAllianceMember: (memberId) => {
+    if (!memberId) return;
+    if (isLive()) {
+      void liveAction("kickAllianceMember", { memberId }).then(() => sfxClick()).catch(liveFail);
+    }
+  },
+
+  setAllianceVice: (memberId) => {
+    if (isLive()) {
+      void liveAction("setAllianceVice", { memberId }).then(() => sfxStar()).catch(liveFail);
+    }
+  },
+
+  refreshAlliances: async () => {
+    if (!isLive()) {
+      set({
+        allianceList: ALLIANCES.map((a) => ({
+          id: a.id,
+          name: a.name,
+          minLevel: 1,
+          level: 1,
+          members: a.members.length,
+          slots: 30,
+          leaderNick: findNick(a.members[0] ?? "") ?? "Senhor",
+          openJoin: true,
+        })),
+      });
+      return;
+    }
+    try {
+      const r = await playAction("listAlliances");
+      set({ allianceList: r.alliances ?? [] });
+    } catch {
+      /* offline */
+    }
+  },
+
+  openInspect: (id) => {
+    const key = id.trim();
+    if (!key) return;
+    const s = get();
+    if (key.toUpperCase() === s.player.id.toUpperCase()) {
+      set({ inspect: null, toast: "Este é o teu condado." });
+      return;
+    }
+    if (isLive()) {
+      void playAction("inspectPlayer", { id: key })
+        .then((r) => {
+          if (!r.profile) {
+            set({ toast: "Condado não encontrado." });
+            return;
+          }
+          set({
+            inspect: r.profile,
+            sheet: null,
+            selectedId: null,
+            toast: `A observar o condado de ${r.profile.nick}.`,
+          });
+          sfxClick();
+        })
+        .catch(liveFail);
+      return;
+    }
+    const lord = findLord(key);
+    if (!lord) {
+      set({ toast: "Condado não encontrado." });
+      return;
+    }
+    set({
+      inspect: {
+        id: lord.id,
+        nick: lord.nick,
+        countyLevel: lord.countyLevel ?? lord.rank + 1,
+        stars: 0,
+        raidsWon: 0,
+        allianceId: lord.allianceId ?? null,
+        allianceName: lord.allianceId ?? null,
+        title: lord.title,
+        lootCap: lord.lootGold,
+        buildings: generateBase(lord.id, lord.rank),
+        shieldUntil: lord.shieldUntil ?? 0,
+      },
+      sheet: null,
+      toast: `A observar o condado de ${lord.nick}.`,
+    });
+  },
+
+  closeInspect: () => {
+    requestCamFocus("village");
+    set({ inspect: null, toast: "De volta ao teu condado." });
+  },
+
+  spectateLive: (live) => {
+    const s = get();
+    if (s.screen === "prep" || s.screen === "battle" || s.screen === "march") {
+      set({ toast: "Termina o teu combate antes de assistir outro." });
+      return;
+    }
+    if (live.attackerId === s.player.id || live.defenderId === s.player.id) {
+      set({ toast: "Esta é a tua batalha." });
+      return;
+    }
+    const empty = { infantry: 8, archers: 4, cavalry: 2, general: 0, generaless: 0, defender: 2 };
+    const layout = live.buildings && live.buildings.length ? live.buildings : generateBase(live.defenderId, 1);
+    battle = new Battle(layout, live.startedArmy ?? empty, 0, {
+      spectator: true,
+      mode: live.kind === "alliance" ? "field" : "raid",
+      levels: live.attackerLevels,
+      campLevel: live.attackerCamp ?? 1,
+      foeArmy: live.foeArmy,
+      foeLevels: live.foeLevels,
+      foeCamp: live.foeCamp,
+      lootCap: 0,
+    });
+    raidTarget = {
+      id: live.defenderId,
+      nick: live.defenderNick,
+      title: live.kind === "alliance" ? "Guerra de aliança" : "Ataque",
+      rank: 1,
+      lootGold: 0,
+      lootBread: 0,
+    };
+    set({
+      screen: "spectate",
+      watchLive: true,
+      sheet: null,
+      inspect: null,
+      toast: `A assistir: ${live.attackerNick} vs ${live.defenderNick}. Simulação local.`,
+    });
+    sfxHorn();
   },
 
   declareWar: (allianceId) => {
@@ -2384,7 +2575,7 @@ export const useGame = create<GameStore>((set, get) => ({
 
   beginIncoming: (lord) => {
     const s = get();
-    if (s.screen !== "village") return;
+    if (s.screen !== "village" || s.inspect || s.watchLive) return;
     const day = brtDayKey();
     const warOn = !!(s.war && warWindow().open && !s.war.sittingOut);
     const received = s.attacksReceivedDay === day ? s.attacksReceived : 0;
@@ -2444,7 +2635,7 @@ export const useGame = create<GameStore>((set, get) => ({
     raidSessionId = null;
     raidKind = "raid";
     requestCamFocus("village");
-    set({ screen: "village", sheet: null });
+    set({ screen: "village", sheet: null, watchLive: false });
   },
 
   skipPass: () => {

@@ -169,6 +169,7 @@ function migrate(s: SaveState): SaveState {
         level: Math.max(1, Number(s.alliance.level ?? 1)),
         xp: Math.max(0, Number(s.alliance.xp ?? 0)),
         leaderId: String(s.alliance.leaderId ?? s.player?.id ?? ""),
+        viceId: s.alliance.viceId ? String(s.alliance.viceId) : null,
         slots: Math.max(30, Number(s.alliance.slots ?? 30)),
         openJoin: s.alliance.openJoin !== false,
         joinRequests: Array.isArray(s.alliance.joinRequests)
@@ -180,6 +181,10 @@ function migrate(s: SaveState): SaveState {
               at: Number(r.at ?? 0),
             }))
           : [],
+        ceasefire:
+          s.alliance.ceasefire && typeof s.alliance.ceasefire === "object"
+            ? Object.fromEntries(Object.entries(s.alliance.ceasefire).map(([k, v]) => [String(k), Number(v)]))
+            : {},
       }
     : null;
   const war = s.war

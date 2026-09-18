@@ -83,6 +83,11 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /condado_live/{id} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+    }
+
     match /usuarios/{uid} {
       allow read, write: if false;
     }

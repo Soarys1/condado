@@ -216,6 +216,7 @@ export function GameApp() {
       <DuelBanner />
       {(screen === "prep" || screen === "battle") && <BattleHUD />}
       {screen === "spectate" && <SpectateHUD />}
+      {screen === "village" && <InspectHUD />}
       {screen === "march" && <MarchOverlay />}
       {screen === "results" && <Results />}
       {screen === "raid" && <RaidSelect />}
@@ -466,6 +467,8 @@ function HUD() {
   const flipPlacingDir = useGame((s) => s.flipPlacingDir);
   const screen = useGame((s) => s.screen);
   const collectAll = useGame((s) => s.collectAll);
+  const collectBusy = useGame((s) => s.collectBusy);
+  const inspect = useGame((s) => s.inspect);
   const countyLevel = useGame((s) => s.countyLevel);
   const shieldUntil = useGame((s) => s.shieldUntil);
   const boostUntil = useGame((s) => s.boostUntil);
@@ -493,13 +496,14 @@ function HUD() {
               +40%
             </span>
           )}
-          {screen === "village" && (
+          {screen === "village" && !inspect && (
             <button
               type="button"
               onClick={collectAll}
-              className="flex h-11 shrink-0 items-center rounded-md border border-line bg-panel/80 px-3 text-xs text-parchment-dim"
+              disabled={collectBusy}
+              className="flex h-11 shrink-0 items-center rounded-md border border-line bg-panel/80 px-3 text-xs text-parchment-dim disabled:opacity-50"
             >
-              Coletar
+              {collectBusy ? "A recolher…" : "Coletar"}
             </button>
           )}
           <button
@@ -587,7 +591,7 @@ function HUD() {
         </div>
       )}
 
-      {screen === "village" && (
+      {screen === "village" && !inspect && (
         <nav className="absolute inset-x-0 bottom-0 z-20 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
           <div className="mx-auto flex max-w-lg justify-between gap-1 px-3">
             <NavBtn
@@ -973,7 +977,15 @@ function ChatSheet() {
               className={`rounded-md px-3 py-2 ${m.self ? "bg-moss/20 ml-6" : "bg-ink-2 mr-4"}`}
             >
               <div className="flex items-baseline justify-between gap-2">
-                <p className="font-display text-[0.7rem] text-niens">{m.fromNick}</p>
+                <p className="font-display text-[0.7rem] text-niens">
+                  <button
+                    type="button"
+                    className="underline decoration-niens/40 underline-offset-2"
+                    onClick={() => useGame.getState().openInspect(m.fromId)}
+                  >
+                    {m.fromNick}
+                  </button>
+                </p>
                 <p className="text-[0.65rem] tabular text-parchment-dim">
                   {new Date(m.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                   {left < 60_000 ? ` · some em ${Math.max(1, Math.ceil(left / 1000))}s` : ""}
@@ -1951,12 +1963,22 @@ function AllianceSheet() {
   const raidTargets = useGame((s) => s.raidTargets);
   const acceptJoin = useGame((s) => s.acceptJoin);
   const rejectJoin = useGame((s) => s.rejectJoin);
+  const kickAllianceMember = useGame((s) => s.kickAllianceMember);
+  const setAllianceVice = useGame((s) => s.setAllianceVice);
+  const openInspect = useGame((s) => s.openInspect);
+  const joinAlliance = useGame((s) => s.joinAlliance);
+  const refreshAlliances = useGame((s) => s.refreshAlliances);
+  const allianceList = useGame((s) => s.allianceList);
   const [name, setName] = useState("");
   const [openJoin, setOpenJoin] = useState(true);
   const [text, setText] = useState("");
   const [tab, setTab] = useState<"hall" | "war" | "chat">("hall");
   const [foes, setFoes] = useState<typeof raidTargets>([]);
   const [rivals, setRivals] = useState<AllianceRival[]>([]);
+  useEffect(() => {
+    if (alliance) return;
+    void refreshAlliances();
+  }, [alliance, refreshAlliances]);
   const chatEnd = useRef<HTMLDivElement>(null);
   const win = warWindow();
   const atWar = !!(war && allianceAtWarToday(war));
@@ -2000,12 +2022,13 @@ function AllianceSheet() {
       <div className="space-y-3">
         <p className="text-sm text-parchment-dim">
           Fundar custa {ALLIANCE_FOUND_NIENS} Niens. Escolhe se quem chega entra livre ou precisa de
-          pedido — o pedido fica no chat da aliança até o líder aceitar ou recusar. Guerra dura 1
+          pedido — o pedido fica no chat da aliança até o líder ou o vice aceitar ou recusar. Guerra dura 1
           dia: o líder escolhe o rival na aba Guerra. Duelos 1v1 no campo limpo — o lorde tem de
           aceitar. Vitória 3 pontos, {formatRes(ALLIANCE_DUEL_WIN_GOLD)} {GOLD_NAME_PL} e{" "}
           {formatRes(ALLIANCE_DUEL_WIN_POT)} no pote. Derrota 1 ponto, {formatRes(ALLIANCE_DUEL_LOSS_GOLD)}{" "}
           e {formatRes(ALLIANCE_DUEL_LOSS_POT)} no pote. Quem ganha a guerra leva {ALLIANCE_XP_WIN} XP;
           o pote divide-se por quem lutou. Nv.2 pede {formatRes(ALLIANCE_XP_BASE)} XP, depois dobra até 7.
+          Depois de uma guerra real, cessar-fogo de 7 dias com o mesmo rival.
         </p>
         <input
           value={name}
@@ -2036,11 +2059,33 @@ function AllianceSheet() {
         >
           Fundar · {ALLIANCE_FOUND_NIENS} Niens {niens < ALLIANCE_FOUND_NIENS ? "(faltam gemas)" : ""}
         </button>
+        <p className="pt-2 text-xs uppercase tracking-[0.18em] text-parchment-dim">Alianças abertas</p>
+        {allianceList.length === 0 && (
+          <p className="text-sm text-parchment-dim">Nenhuma aliança publicada ainda. Funda a tua.</p>
+        )}
+        {allianceList.map((a) => (
+          <div key={a.id} className="rounded-md border border-line bg-ink-2 p-3">
+            <p className="font-display">{a.name}</p>
+            <p className="text-xs text-parchment-dim">
+              Nv.{a.level} · {a.members}/{a.slots} · {a.openJoin ? "entrada livre" : "com pedido"} · líder {a.leaderNick}
+            </p>
+            <button
+              type="button"
+              onClick={() => joinAlliance(a.id)}
+              className="mt-2 h-10 w-full rounded-md border border-niens/40 text-xs"
+            >
+              {a.openJoin ? "Entrar" : "Pedir entrada"}
+            </button>
+          </div>
+        ))}
       </div>
     );
   }
   const slots = alliance.slots || allianceSlots(alliance.level || 1);
   const leader = alliance.leaderId === player.id;
+  const vice = alliance.viceId === player.id;
+  const officer = leader || vice;
+  const viceNick = alliance.members.find((m) => m.id === alliance.viceId)?.nick;
   const pending = (alliance.joinRequests ?? []).length;
   const live = Boolean(auth.currentUser);
   const shownRivals: AllianceRival[] = live
@@ -2072,6 +2117,7 @@ function AllianceSheet() {
       <p className="mb-2 text-xs text-parchment-dim">
         Nv.{alliance.level || 1} · {alliance.xp ?? 0} XP · {alliance.members.length}/{slots} vagas ·{" "}
         {alliance.openJoin ? "entrada livre" : "entrada com pedido"}
+        {viceNick ? ` · vice ${viceNick}` : ""}
       </p>
       <div className="mb-3 grid grid-cols-3 gap-2">
         {tabBtn("hall", "Aliança")}
@@ -2081,16 +2127,32 @@ function AllianceSheet() {
       {tab === "hall" && (
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
           <div className="max-h-48 space-y-1 overflow-y-auto rounded-md border border-line bg-ink-2 p-2">
-            {alliance.members.map((m) => (
-              <div key={m.id} className="flex items-center justify-between px-2 py-1 text-sm">
-                <span>{m.nick}</span>
-                {m.id === alliance.leaderId ? (
-                  <span className="text-[0.65rem] uppercase tracking-[0.16em] text-niens">Líder</span>
-                ) : (
-                  <span className="text-[0.65rem] text-parchment-dim">Membro</span>
-                )}
-              </div>
-            ))}
+            {alliance.members.map((m) => {
+              const tag = m.id === alliance.leaderId ? "dono" : m.id === alliance.viceId ? "vice" : "membro";
+              return (
+                <div key={m.id} className="flex items-center gap-2 px-2 py-1 text-sm">
+                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => openInspect(m.id)}>
+                    {m.nick}
+                    <span className="ml-1 text-[0.65rem] uppercase tracking-[0.12em] text-niens">{tag}</span>
+                  </button>
+                  {leader && m.id !== player.id && m.id !== alliance.viceId && (
+                    <button type="button" className="text-[0.65rem] text-niens" onClick={() => setAllianceVice(m.id)}>
+                      Vice
+                    </button>
+                  )}
+                  {leader && m.id === alliance.viceId && (
+                    <button type="button" className="text-[0.65rem] text-parchment-dim" onClick={() => setAllianceVice("")}>
+                      Tirar
+                    </button>
+                  )}
+                  {officer && m.id !== alliance.leaderId && m.id !== player.id && (
+                    <button type="button" className="text-[0.65rem] text-iron" onClick={() => kickAllianceMember(m.id)}>
+                      Expulsar
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
           {leader && (
             <button
@@ -2195,7 +2257,8 @@ function AllianceSheet() {
                 <p className="text-sm text-parchment-dim">Não há outras alianças ainda.</p>
               )}
               {shownRivals.map((r) => {
-                const busy = r.atWar;
+                const fire = (r.ceasefireUntil ?? 0) > Date.now();
+                const busy = r.atWar || fire;
                 const canCall = leader && !busy;
                 return (
                   <button
@@ -2211,7 +2274,7 @@ function AllianceSheet() {
                       <span className="block">{r.name}</span>
                       <span className="text-xs text-parchment-dim">
                         Nv.{r.level} · {r.members}/{r.slots} senhores
-                        {busy ? ` · em guerra vs ${r.foeName || "outra"}` : ""}
+                        {busy ? (fire ? " · cessar-fogo 7 dias" : ` · em guerra vs ${r.foeName || "outra"}`) : ""}
                       </span>
                     </span>
                     <span className="shrink-0 text-xs text-parchment-dim">
@@ -2239,7 +2302,7 @@ function AllianceSheet() {
                   </p>
                 </div>
                 <p className="text-sm leading-snug">{m.text}</p>
-                {leader && m.joinRequestId && (alliance.joinRequests ?? []).some((r) => r.id === m.joinRequestId) && (
+                {officer && m.joinRequestId && (alliance.joinRequests ?? []).some((r) => r.id === m.joinRequestId) && (
                   <div className="mt-2 grid grid-cols-2 gap-2">
                     <button
                       type="button"
@@ -2265,7 +2328,7 @@ function AllianceSheet() {
                 <div key={r.id} className="rounded-md bg-ink-2 px-3 py-2">
                   <p className="font-display text-[0.7rem] text-niens">{r.nick}</p>
                   <p className="text-sm">{r.nick} pede para entrar.</p>
-                  {leader && (
+                  {officer && (
                     <div className="mt-2 grid grid-cols-2 gap-2">
                       <button
                         type="button"
@@ -2315,18 +2378,28 @@ function AllianceSheet() {
 function RaidSelect() {
   const beginAttack = useGame((s) => s.beginAttack);
   const returnVillage = useGame((s) => s.returnVillage);
+  const openInspect = useGame((s) => s.openInspect);
+  const spectateLive = useGame((s) => s.spectateLive);
   const war = useGame((s) => s.war);
   const shieldUntil = useGame((s) => s.shieldUntil);
   const attacksByTarget = useGame((s) => s.attacksByTarget);
   const raidTargets = useGame((s) => s.raidTargets);
+  const liveBattles = useGame((s) => s.liveBattles);
   const refreshTargets = useGame((s) => s.refreshTargets);
   const countyLevel = useGame((s) => s.countyLevel);
+  const player = useGame((s) => s.player);
   const day = brtDayKey();
   const atWar = !!(war && allianceAtWarToday(war));
   useEffect(() => {
     void refreshTargets();
+    void playAction("listLiveBattles")
+      .then((r) => {
+        if (r.live) useGame.setState({ liveBattles: r.live });
+      })
+      .catch(() => undefined);
   }, [refreshTargets]);
   const list = raidTargets;
+  const live = liveBattles.filter((b) => b.attackerId !== player.id && b.defenderId !== player.id);
   return (
     <div className="absolute inset-0 z-30 flex items-end bg-ink/55 md:items-center md:justify-center">
       <div className="panel w-full max-h-[82dvh] overflow-y-auto rounded-t-xl p-4 md:max-w-lg md:rounded-xl">
@@ -2352,19 +2425,38 @@ function RaidSelect() {
             Guerra vs {war?.foeName}: o 1v1 é na aba Aliança → Guerra. Aqui só se ataca condados.
           </p>
         )}
+        {live.length > 0 && (
+          <div className="mb-3 space-y-2">
+            <p className="text-xs uppercase tracking-[0.18em] text-parchment-dim">Batalhas ao vivo</p>
+            {live.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => spectateLive(b)}
+                className="flex w-full items-center justify-between rounded-md border border-niens/40 bg-ink-2/60 p-3 text-left"
+              >
+                <span className="text-sm">
+                  {b.attackerNick} vs {b.defenderNick}
+                  <span className="ml-2 text-xs text-parchment-dim">
+                    {b.kind === "alliance" ? "guerra" : "ataque"}
+                  </span>
+                </span>
+                <span className="text-xs text-niens">Assistir</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="space-y-2">
           {list.map((l) => {
             const rec = attacksByTarget[l.id];
             const used = rec && rec.day === day ? rec.count : 0;
             const shielded = (l.shieldUntil ?? 0) > Date.now();
             return (
-              <button
+              <div
                 key={l.id}
-                type="button"
-                onClick={() => beginAttack(l)}
-                className="flex w-full items-center gap-3 rounded-md border border-line bg-ink-2/60 p-3 text-left"
+                className="flex w-full items-center gap-2 rounded-md border border-line bg-ink-2/60 p-3"
               >
-                <Shield className="size-5 text-parchment-dim" />
+                <Shield className="size-5 shrink-0 text-parchment-dim" />
                 <div className="min-w-0 flex-1">
                   <p className="font-display">
                     {l.nick}
@@ -2376,8 +2468,24 @@ function RaidSelect() {
                     {` · ${used}/${DAILY_ATTACK_CAP} hoje`}
                   </p>
                 </div>
-                <ChevronRight className="size-4 text-parchment-dim" />
-              </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    openInspect(l.id);
+                    returnVillage();
+                  }}
+                  className="h-10 rounded-md border border-line px-2 text-xs"
+                >
+                  Ver
+                </button>
+                <button
+                  type="button"
+                  onClick={() => beginAttack(l)}
+                  className="h-10 rounded-md border border-niens/40 px-2 text-xs"
+                >
+                  Atacar
+                </button>
+              </div>
             );
           })}
           {list.length === 0 && (
@@ -2445,6 +2553,8 @@ function MarchOverlay() {
 
 function SpectateHUD() {
   const [, bump] = useState(0);
+  const watchLive = useGame((s) => s.watchLive);
+  const returnVillage = useGame((s) => s.returnVillage);
   useEffect(() => {
     const id = window.setInterval(() => bump((n) => n + 1), 200);
     return () => window.clearInterval(id);
@@ -2459,9 +2569,45 @@ function SpectateHUD() {
       </div>
       <div className="pointer-events-auto absolute inset-x-0 bottom-0 pb-[max(0.8rem,env(safe-area-inset-bottom))]">
         <p className="mx-auto w-[min(92%,22rem)] rounded-md border border-line bg-panel/90 px-4 py-3 text-center text-sm shadow-panel">
-          Estás a ser atacado por {raidTarget?.nick ?? "um senhor"}. Só podes assistir. Pão e Niens
-          estão a salvo. Escudo de 1 hora após o combate.
+          {watchLive
+            ? `A assistir ${raidTarget?.nick ?? "esta batalha"}. Simulação local — não é o quadro ao segundo.`
+            : `Estás a ser atacado por ${raidTarget?.nick ?? "um senhor"}. Só podes assistir. Pão e Niens estão a salvo. Escudo de 1 hora após o combate.`}
         </p>
+        {watchLive && (
+          <button
+            type="button"
+            onClick={returnVillage}
+            className="mx-auto mt-2 block h-10 rounded-md border border-line bg-panel px-4 text-xs"
+          >
+            Deixar de assistir
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InspectHUD() {
+  const inspect = useGame((s) => s.inspect);
+  const closeInspect = useGame((s) => s.closeInspect);
+  if (!inspect) return null;
+  const shielded = (inspect.shieldUntil ?? 0) > Date.now();
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 pb-[max(5.5rem,calc(env(safe-area-inset-bottom)+4.2rem))]">
+      <div className="pointer-events-auto mx-auto w-[min(94%,26rem)] rounded-md border border-line bg-panel/95 p-3 shadow-panel">
+        <p className="font-display">{inspect.nick}</p>
+        <p className="text-xs text-parchment-dim">
+          {inspect.title} · {inspect.id}
+          {inspect.allianceName ? ` · ${inspect.allianceName}` : " · sem aliança"}
+        </p>
+        <p className="text-xs text-parchment-dim">
+          Saque até {formatRes(inspect.lootCap)} {GOLD_NAME_PL} · {inspect.stars} estrelas · {inspect.raidsWon} vitórias
+          {shielded ? " · escudo" : ""}
+        </p>
+        <p className="mt-1 text-[0.7rem] text-parchment-dim">Niens e o tesouro exato não se revelam.</p>
+        <button type="button" onClick={closeInspect} className="mt-2 h-10 w-full rounded-md border border-line text-sm">
+          Voltar ao teu condado
+        </button>
       </div>
     </div>
   );

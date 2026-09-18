@@ -270,7 +270,6 @@ export class Battle {
 
   canDeploy(type: TroopType, gx: number, gy: number, side: TroopSide = "atk"): boolean {
     if (this.phase !== "prep" && this.phase !== "fight") return false;
-    if (this.spectator) return false;
     if (this.remainingOf(type, side) <= 0) return false;
     if (isHero(type)) {
       const used = this.troops.some((t) => t.alive && t.side === side && t.type === type);

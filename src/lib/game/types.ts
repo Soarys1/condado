@@ -147,9 +147,53 @@ export interface AllianceState {
   level: number;
   xp: number;
   leaderId: string;
+  viceId: string | null;
   slots: number;
   openJoin: boolean;
   joinRequests: AllianceJoinRequest[];
+  ceasefire: Record<string, number>;
+}
+
+export interface AllianceListing {
+  id: string;
+  name: string;
+  minLevel: number;
+  level: number;
+  members: number;
+  slots: number;
+  leaderNick: string;
+  openJoin: boolean;
+}
+
+export interface PublicProfile {
+  id: string;
+  nick: string;
+  countyLevel: number;
+  stars: number;
+  raidsWon: number;
+  allianceId: string | null;
+  allianceName: string | null;
+  title: string;
+  lootCap: number;
+  buildings: BuildingInst[];
+  shieldUntil: number;
+}
+
+export interface LiveBattle {
+  id: string;
+  kind: "raid" | "alliance";
+  attackerId: string;
+  attackerNick: string;
+  defenderId: string;
+  defenderNick: string;
+  startedAt: number;
+  buildings?: BuildingInst[];
+  startedArmy?: ArmyCounts;
+  foeArmy?: ArmyCounts;
+  foeLevels?: TroopLevels;
+  foeCamp?: number;
+  attackerLevels?: TroopLevels;
+  attackerCamp?: number;
 }
 
 export interface WarState {
@@ -186,6 +230,7 @@ export interface AllianceRival {
   slots: number;
   atWar: boolean;
   foeName: string;
+  ceasefireUntil?: number;
 }
 
 export interface SaveState {
